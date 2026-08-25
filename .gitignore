@@ -1,0 +1,62 @@
+# ===========================
+# Python / Backend
+# ===========================
+# Virtual environments (covers .venv, venv, env, etc.)
+.venv/
+venv/
+env/
+ENV/
+backend/.venv/
+
+# Python cache files (covers root and backend/__pycache__)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyc
+*.pyo
+*.pyd
+
+# Databases
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Backend runtime folders (seen in your filelist)
+backend/cache/
+backend/logs/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ===========================
+# Node.js / Frontend
+# ===========================
+# Dependencies (covers frontend/node_modules)
+node_modules/
+
+# Build output (covers frontend/dist if you build)
+dist/
+*.log
+
+# ===========================
+# Environment Variables
+# ===========================
+.env
+.env.local
+.env.*.local
+
+# ===========================
+# IDEs & OS
+# ===========================
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.dbfilelist.txt 
