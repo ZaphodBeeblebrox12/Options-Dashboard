@@ -73,11 +73,23 @@ function App() {
     }
   }, [lastMessage]);
 
+  // Initialize currentIndex to the latest snapshot on first load
   useEffect(() => {
     if (timestamps.length > 0 && currentIndex < 0) {
       setCurrentIndex(timestamps.length - 1);
     }
   }, [timestamps, currentIndex]);
+
+  // FIXED: Keep playhead pinned to the live edge while in live mode.
+  // Uses a functional update so we only re-render when the index actually changes.
+  useEffect(() => {
+    if (liveMode && timestamps.length > 0) {
+      setCurrentIndex((prev) => {
+        const latest = timestamps.length - 1;
+        return prev === latest ? prev : latest;
+      });
+    }
+  }, [timestamps.length, liveMode]);
 
   useEffect(() => {
     if (isPlaying) {
@@ -196,6 +208,8 @@ function App() {
     window.location.reload();
   }, []);
 
+  // FIXED: Exit live mode when changing dates so the slider doesn't fight
+  // the empty -> loaded transition and the user starts in replay mode.
   const handleDateChange = useCallback((date: string) => {
     setSelectedDate(date);
     setCurrentIndex(-1);
