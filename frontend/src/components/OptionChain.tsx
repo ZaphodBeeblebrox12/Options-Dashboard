@@ -27,7 +27,7 @@ interface OptionChainProps {
   onSelectStrike: (strike: number) => void;
 }
 
-export const OptionChain: React.FC<OptionChainProps> = ({
+const OptionChainComponent: React.FC<OptionChainProps> = ({
   options,
   spot,
   futures,
@@ -290,3 +290,5 @@ export const OptionChain: React.FC<OptionChainProps> = ({
     </div>
   );
 };
+
+export const OptionChain = React.memo(OptionChainComponent);

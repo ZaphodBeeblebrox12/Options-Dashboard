@@ -237,6 +237,8 @@ class MockIndexStreamer:
         self.expiry_datetime = datetime.now() + __import__("datetime").timedelta(days=7)
         self.expiry_datetime = self.expiry_datetime.replace(hour=15, minute=30, second=0, microsecond=0)
         self.expiry_str = self.expiry_datetime.strftime("%d%b%Y").upper()
+        self._state_cache = None
+        self._state_cache_time = 0
 
     def start(self):
         self.running = True
@@ -277,6 +279,13 @@ class MockIndexStreamer:
             self.thread.join(timeout=5)
 
     def get_current_state(self):
+        now = time.time()
+        if self._state_cache is not None and now - self._state_cache_time < 1.0:
+            return {
+                **self._state_cache,
+                "data": {**self._state_cache["data"], "timestamp": datetime.now().isoformat()}
+            }
+
         from calculations import calculate_analytics
         data = self.data_store.get_data()
         spot = self.spot_poller.get_spot()
@@ -307,7 +316,7 @@ class MockIndexStreamer:
                         "gex": analytics_opt.get("gex"),
                     })
 
-            return {
+            result = {
                 "type": "tick",
                 "data": {
                     "index_name": self.index_name,
@@ -328,6 +337,9 @@ class MockIndexStreamer:
                     "expiry": self.expiry_str,
                 }
             }
+            self._state_cache = result
+            self._state_cache_time = time.time()
+            return result
         except Exception as e:
             logger.error(f"[{self.index_name}] Mock analytics error: {e}")
             return {
@@ -374,6 +386,9 @@ if ANGEL_ONE_AVAILABLE:
             self.contract_multiplier = 50
             self.expiry_datetime = None
             self.expiry_str = None
+
+            self._state_cache = None
+            self._state_cache_time = 0
 
             self._load_instruments()
 
@@ -597,6 +612,13 @@ if ANGEL_ONE_AVAILABLE:
                 self.thread.join(timeout=5)
 
         def get_current_state(self):
+            now = time.time()
+            if self._state_cache is not None and now - self._state_cache_time < 1.0:
+                return {
+                    **self._state_cache,
+                    "data": {**self._state_cache["data"], "timestamp": datetime.now().isoformat()}
+                }
+
             from calculations import calculate_analytics
             data = self.data_store.get_data()
             spot = self.spot_poller.get_spot()
@@ -644,7 +666,7 @@ if ANGEL_ONE_AVAILABLE:
                             "gex": analytics_opt.get("gex"),
                         })
 
-                return {
+                result = {
                     "type": "tick",
                     "data": {
                         "index_name": self.index_name,
@@ -665,6 +687,9 @@ if ANGEL_ONE_AVAILABLE:
                         "expiry": self.expiry_str,
                     }
                 }
+                self._state_cache = result
+                self._state_cache_time = time.time()
+                return result
             except Exception as e:
                 logger.error(f"[{self.index_name}] Analytics error: {e}")
                 return {

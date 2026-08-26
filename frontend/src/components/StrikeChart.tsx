@@ -45,7 +45,7 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   );
 };
 
-export const StrikeChart: React.FC<StrikeChartProps> = ({ data, strike }) => {
+const StrikeChartComponent: React.FC<StrikeChartProps> = ({ data, strike }) => {
   const chartData = useMemo(() => {
     // Group by timestamp, split CE/PE
     const grouped: Record<string, any> = {};
@@ -125,3 +125,5 @@ export const StrikeChart: React.FC<StrikeChartProps> = ({ data, strike }) => {
     </div>
   );
 };
+
+export const StrikeChart = React.memo(StrikeChartComponent);

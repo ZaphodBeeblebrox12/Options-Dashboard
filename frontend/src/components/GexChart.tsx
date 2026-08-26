@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   BarChart,
   Bar,
@@ -39,7 +39,7 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   );
 };
 
-export const GexChart: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, gammaFlip }) => {
+const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, gammaFlip }) => {
   if (!data || data.length === 0) {
     return (
       <div className="terminal-panel h-[280px] flex items-center justify-center">
@@ -49,7 +49,9 @@ export const GexChart: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, ga
   }
 
   // Sample data for performance if too many strikes
-  const chartData = data.length > 50 ? data.filter((_, i) => i % 2 === 0) : data;
+  const chartData = useMemo(() =>
+    data.length > 50 ? data.filter((_, i) => i % 2 === 0) : data,
+  [data]);
 
   return (
     <div className="terminal-panel">
@@ -105,3 +107,5 @@ export const GexChart: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, ga
     </div>
   );
 };
+
+export const GexChart = React.memo(GexChartComponent);

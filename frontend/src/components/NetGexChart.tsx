@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   AreaChart,
   Area,
@@ -31,7 +31,7 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   );
 };
 
-export const NetGexChart: React.FC<NetGexChartProps> = ({ data }) => {
+const NetGexChartComponent: React.FC<NetGexChartProps> = ({ data }) => {
   if (!data || data.length === 0) {
     return (
       <div className="terminal-panel h-[200px] flex items-center justify-center">
@@ -40,10 +40,12 @@ export const NetGexChart: React.FC<NetGexChartProps> = ({ data }) => {
     );
   }
 
-  const chartData = data.map((d) => ({
-    time: d.timestamp.split(' ')[1] || d.timestamp,
-    net_gex: d.net_gex,
-  }));
+  const chartData = useMemo(() =>
+    data.map((d) => ({
+      time: d.timestamp.split(' ')[1] || d.timestamp,
+      net_gex: d.net_gex,
+    })),
+  [data]);
 
   return (
     <div className="terminal-panel">
@@ -83,3 +85,5 @@ export const NetGexChart: React.FC<NetGexChartProps> = ({ data }) => {
     </div>
   );
 };
+
+export const NetGexChart = React.memo(NetGexChartComponent);

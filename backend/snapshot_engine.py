@@ -1,5 +1,6 @@
 """Snapshot engine: captures market state every 30s during market hours and queues for DB write."""
 import queue
+import time
 import threading
 import sqlite3
 from datetime import datetime, time as dt_time
@@ -206,7 +207,7 @@ class SnapshotEngine:
                 for _ in range(30):
                     if not self.running:
                         break
-                    threading.Event().wait(1)
+                    time.sleep(1)
 
         self.timer_thread = threading.Thread(target=timer_loop, daemon=True)
         self.timer_thread.start()

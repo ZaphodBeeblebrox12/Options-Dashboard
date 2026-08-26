@@ -118,7 +118,7 @@ async def broadcast_loop():
     """Broadcast live data every 2 seconds to all connected clients."""
     while True:
         try:
-            await asyncio.sleep(2)
+            await asyncio.sleep(5)
             if manager.active_connections:
                 for index_name in STREAMING_INDICES:
                     if index_name in streamer_adapter.streamers:
