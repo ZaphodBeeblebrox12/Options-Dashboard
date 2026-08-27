@@ -233,12 +233,17 @@ function App() {
     setFullMode((prev) => !prev);
   }, []);
 
+  // FIXED: Auto-set date to today when entering LIVE mode to prevent
+  // the UI from showing yesterday's date while displaying live data.
   const toggleLiveMode = useCallback(() => {
     setLiveMode((prev) => {
       const next = !prev;
       if (next) {
         setIsPlaying(false);
         setCurrentIndex(timestamps.length - 1);
+        // Sync date to today when entering live mode
+        const today = new Date().toISOString().split('T')[0];
+        setSelectedDate(today);
       }
       return next;
     });

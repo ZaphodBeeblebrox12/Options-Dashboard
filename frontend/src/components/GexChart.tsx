@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef, useState, useLayoutEffect } from 'react';
 import {
   BarChart,
   Bar,
@@ -24,6 +24,13 @@ interface GexChartProps {
   atmStrike: number | null;
   maxPain: number | null;
   gammaFlip: number | null;
+}
+
+interface RefLineConfig {
+  key: string;
+  strike: number;
+  color: string;
+  text: string;
 }
 
 const CustomTooltip = ({ active, payload, label }: any) => {
@@ -67,26 +74,85 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   );
 };
 
+function buildRefLineConfigs(
+  atmStrike: number | null,
+  maxPain: number | null,
+  gammaFlip: number | null
+): RefLineConfig[] {
+  const raw = [
+    { key: 'atm', strike: atmStrike, color: '#eab308', text: 'ATM' },
+    { key: 'mp', strike: maxPain, color: '#d946ef', text: 'MAX PAIN' },
+    { key: 'gf', strike: gammaFlip, color: '#06b6d4', text: 'GAMMA FLIP' },
+  ].filter((r): r is RefLineConfig => r.strike !== null);
+  return raw;
+}
+
 const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, gammaFlip }) => {
-  if (!data || data.length === 0) {
-    return (
-      <div className="terminal-panel h-[280px] flex items-center justify-center">
-        <span className="text-terminal-muted text-sm">No GEX data available</span>
-      </div>
-    );
-  }
+  // ── ALL HOOKS MUST RUN UNCONDITIONALLY ───────────────────────────
+  const chartWrapRef = useRef<HTMLDivElement>(null);
+  const [chartWidth, setChartWidth] = useState(0);
+  const widthRef = useRef(0);
 
-  const { chartData, yDomain, yTickFormatter, barSize } = useMemo(() => {
-    // 1. FIND MAX GEX FOR THRESHOLD FILTERING
+  // Robust measurement: retries with rAF until width > 0, re-runs when data arrives
+  useLayoutEffect(() => {
+    if (!chartWrapRef.current) return;
+    const el = chartWrapRef.current;
+    let rafId = 0;
+    let timeoutId: ReturnType<typeof setTimeout>;
+    let attempts = 0;
+
+    const measure = () => {
+      const rect = el.getBoundingClientRect();
+      const w = Math.round(rect.width);
+      if (w > 0 && w !== widthRef.current) {
+        widthRef.current = w;
+        setChartWidth(w);
+      }
+    };
+
+    const retryLoop = () => {
+      if (widthRef.current === 0 && attempts < 30) {
+        attempts++;
+        measure();
+        rafId = requestAnimationFrame(retryLoop);
+      }
+    };
+
+    measure();
+    rafId = requestAnimationFrame(retryLoop);
+    timeoutId = setTimeout(measure, 150);
+
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+
+    return () => {
+      ro.disconnect();
+      cancelAnimationFrame(rafId);
+      clearTimeout(timeoutId);
+    };
+  }, [data?.length]); // <-- re-measure when data arrives
+
+  // ── Compute chart data (runs even if data is empty) ───────────────
+  const memoized = useMemo(() => {
+    if (!data || data.length === 0) {
+      return {
+        hasData: false,
+        chartData: [] as GexData[],
+        yDomain: [0, 0] as [number, number],
+        yTickFormatter: (v: number) => String(v),
+        barSize: 10,
+        refLines: [] as RefLineConfig[],
+      };
+    }
+
+    // 1. THRESHOLD FILTERING
     const maxAbsGex = Math.max(...data.map((d) => Math.abs(d.net_gex)), 1);
-    const threshold = maxAbsGex * 0.015; // 1.5% of max — kills the noise
+    const threshold = maxAbsGex * 0.015;
 
-    // 2. FIND ATM INDEX FOR RANGE FILTERING
     let atmIdx = -1;
     if (atmStrike) {
       atmIdx = data.findIndex((d) => d.strike === atmStrike);
     }
-    // Fallback: strike with max |net_gex| is usually near ATM
     if (atmIdx < 0) {
       let maxVal = 0;
       data.forEach((d, i) => {
@@ -95,7 +161,6 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
       });
     }
 
-    // 3. FILTER: meaningful GEX OR near ATM
     const filtered = data.filter((d, idx) => {
       const hasMeaningfulGex = Math.abs(d.net_gex) >= threshold;
       const nearAtm = atmIdx >= 0 ? Math.abs(idx - atmIdx) <= 10 : true;
@@ -103,14 +168,13 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
       return hasMeaningfulGex || nearAtm || isKeyStrike;
     });
 
-    // 4. COMPUTE Y-AXIS DOMAIN WITH PADDING
+    // 2. Y-AXIS
     const gexValues = filtered.map((d) => d.net_gex);
     const minGex = Math.min(...gexValues, 0);
     const maxGex = Math.max(...gexValues, 0);
     const pad = Math.max((maxGex - minGex) * 0.08, maxAbsGex * 0.05);
     const domain: [number, number] = [minGex - pad, maxGex + pad];
 
-    // 5. ADAPTIVE Y-AXIS FORMATTER
     const absMax = Math.max(Math.abs(minGex), Math.abs(maxGex));
     let formatter: (v: number) => string;
     if (absMax >= 1_000_000) {
@@ -121,24 +185,72 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
       formatter = (v: number) => v.toFixed(0);
     }
 
-    // 6. ADAPTIVE BAR SIZE
+    // 3. BAR SIZE
     const size = Math.min(32, Math.max(10, Math.floor(700 / filtered.length)));
 
+    // 4. REF LINES
+    const refLineConfigs = buildRefLineConfigs(atmStrike, maxPain, gammaFlip);
+
     return {
+      hasData: true,
       chartData: filtered,
       yDomain: domain,
       yTickFormatter: formatter,
       barSize: size,
+      refLines: refLineConfigs,
     };
   }, [data, atmStrike, maxPain, gammaFlip]);
 
-  if (chartData.length === 0) {
+  // ── Compute label pixel positions ─────────────────────────────────
+  const plotLeft = 60;
+  const plotRight = 15;
+  const plotWidth = Math.max(chartWidth - plotLeft - plotRight, 1);
+
+  const labelPositions = useMemo(() => {
+    if (chartWidth === 0 || memoized.chartData.length === 0) return [];
+
+    const n = memoized.chartData.length;
+    const positions = memoized.refLines.map((cfg) => {
+      const idx = memoized.chartData.findIndex((d) => d.strike === cfg.strike);
+      if (idx < 0) return null;
+      const x = plotLeft + (idx / Math.max(n - 1, 1)) * plotWidth;
+      return { ...cfg, x, idx };
+    }).filter(Boolean) as Array<RefLineConfig & { x: number; idx: number }>;
+
+    // Collision stagger
+    const STAGGER_PX = 14;
+    const MIN_GAP = 55;
+    const sorted = [...positions].sort((a, b) => a.x - b.x);
+
+    return sorted.map((item, i) => {
+      let topOffset = 8;
+      for (let j = 0; j < i; j++) {
+        if (Math.abs(item.x - sorted[j].x) < MIN_GAP) {
+          topOffset += STAGGER_PX;
+        }
+      }
+      return { ...item, topOffset };
+    });
+  }, [chartWidth, memoized.chartData, memoized.refLines, plotLeft, plotWidth]);
+
+  // ── NOW safe to do conditional returns ─────────────────────────────
+  if (!memoized.hasData) {
+    return (
+      <div className="terminal-panel h-[280px] flex items-center justify-center">
+        <span className="text-terminal-muted text-sm">No GEX data available</span>
+      </div>
+    );
+  }
+
+  if (memoized.chartData.length === 0) {
     return (
       <div className="terminal-panel h-[280px] flex items-center justify-center">
         <span className="text-terminal-muted text-sm">No significant GEX data</span>
       </div>
     );
   }
+
+  const { chartData, yDomain, yTickFormatter, barSize, refLines } = memoized;
 
   return (
     <div className="terminal-panel">
@@ -158,11 +270,13 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
           </span>
         </div>
       </div>
-      <div className="h-[280px] p-2">
+
+      {/* Chart + label overlay wrapper */}
+      <div ref={chartWrapRef} className="relative h-[280px]">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart
             data={chartData}
-            margin={{ top: 30, right: 15, left: 5, bottom: 5 }}
+            margin={{ top: 38, right: 15, left: 5, bottom: 5 }}
             barCategoryGap="20%"
           >
             <CartesianGrid strokeDasharray="3 3" stroke="#1a1a2e" vertical={false} />
@@ -185,7 +299,6 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
             />
             <ReferenceLine y={0} stroke="#374151" strokeWidth={1} />
 
-            {/* Single diverging Net GEX bar */}
             <Bar
               dataKey="net_gex"
               name="Net GEX"
@@ -202,7 +315,6 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
                   strokeWidth={1}
                 />
               ))}
-              {/* Show value on top of tallest bars only to avoid clutter */}
               <LabelList
                 dataKey="net_gex"
                 position="top"
@@ -210,7 +322,9 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
                   const absMax = Math.max(...chartData.map((d) => Math.abs(d.net_gex)));
                   if (Math.abs(v) < absMax * 0.25) return '';
                   const sign = v >= 0 ? '+' : '';
-                  return `${sign}${(v / (absMax >= 1e6 ? 1e6 : absMax >= 1e3 ? 1e3 : 1)).toFixed(1)}${absMax >= 1e6 ? 'M' : absMax >= 1e3 ? 'K' : ''}`;
+                  const div = absMax >= 1e6 ? 1e6 : absMax >= 1e3 ? 1e3 : 1;
+                  const suffix = absMax >= 1e6 ? 'M' : absMax >= 1e3 ? 'K' : '';
+                  return `${sign}${(v / div).toFixed(1)}${suffix}`;
                 }}
                 style={{
                   fill: '#9ca3af',
@@ -220,57 +334,52 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
               />
             </Bar>
 
-            {/* Reference lines — placed last so they render on top */}
+            {/* Dashed lines only — no Recharts labels */}
             {atmStrike && (
-              <ReferenceLine
-                x={atmStrike}
-                stroke="#eab308"
-                strokeDasharray="5 5"
-                strokeWidth={2}
-                label={{
-                  value: 'ATM',
-                  fill: '#eab308',
-                  fontSize: 10,
-                  fontWeight: 'bold',
-                  position: 'insideTopLeft',
-                  offset: 10,
-                }}
-              />
+              <ReferenceLine x={atmStrike} stroke="#eab308" strokeDasharray="5 5" strokeWidth={2} />
             )}
             {maxPain && (
-              <ReferenceLine
-                x={maxPain}
-                stroke="#d946ef"
-                strokeDasharray="5 5"
-                strokeWidth={2}
-                label={{
-                  value: 'MAX PAIN',
-                  fill: '#d946ef',
-                  fontSize: 10,
-                  fontWeight: 'bold',
-                  position: 'insideTop',
-                  offset: 10,
-                }}
-              />
+              <ReferenceLine x={maxPain} stroke="#d946ef" strokeDasharray="5 5" strokeWidth={2} />
             )}
             {gammaFlip && (
-              <ReferenceLine
-                x={gammaFlip}
-                stroke="#06b6d4"
-                strokeDasharray="5 5"
-                strokeWidth={2}
-                label={{
-                  value: 'GAMMA FLIP',
-                  fill: '#06b6d4',
-                  fontSize: 10,
-                  fontWeight: 'bold',
-                  position: 'insideTopRight',
-                  offset: 10,
-                }}
-              />
+              <ReferenceLine x={gammaFlip} stroke="#06b6d4" strokeDasharray="5 5" strokeWidth={2} />
             )}
           </BarChart>
         </ResponsiveContainer>
+
+        {/* ── Custom HTML label overlay ───────────────────────────── */}
+        {chartWidth > 0 && labelPositions.map((cfg) => {
+          const nearLeft = cfg.x < plotLeft + 30;
+          const nearRight = cfg.x > chartWidth - plotRight - 30;
+          let transform = 'translateX(-50%)';
+          if (nearLeft) transform = 'translateX(0%)';
+          if (nearRight) transform = 'translateX(-100%)';
+
+          return (
+            <div
+              key={cfg.key}
+              className="absolute pointer-events-none"
+              style={{
+                left: `${cfg.x}px`,
+                top: `${cfg.topOffset}px`,
+                transform,
+                zIndex: 50,
+              }}
+            >
+              <span
+                className="text-[10px] font-mono font-bold whitespace-nowrap px-1.5 py-0.5 rounded"
+                style={{
+                  color: cfg.color,
+                  backgroundColor: 'rgba(13, 13, 23, 0.9)',
+                  textShadow: `0 0 8px ${cfg.color}60`,
+                  border: `1px solid ${cfg.color}40`,
+                }}
+              >
+                {cfg.text}
+              </span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
