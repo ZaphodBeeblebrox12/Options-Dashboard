@@ -1,10 +1,18 @@
-"""Snapshot engine: captures market state every 30s during market hours and queues for DB write."""
+"""Snapshot engine: captures market state every 30s during market hours and queues for DB write.
+
+FIXES APPLIED (v2.1):
+1. Daily OI baseline tracking — oi_change = current_oi - day_baseline_oi
+   (matches broker: change from market open / previous close)
+2. Removed tick-level prev_oi usage that caused near-zero erratic replay values
+3. Baselines persist to DB and load on restart (with yesterday's last OI fallback)
+4. Added oi_change_pct for percentage display
+"""
 import queue
 import time
 import threading
 import sqlite3
 from datetime import datetime, time as dt_time
-from database import get_db_connection
+from database import get_db_connection, get_daily_baseline, set_daily_baseline, get_yesterday_last_oi
 from calculations import calculate_analytics
 
 
@@ -30,6 +38,37 @@ class SnapshotEngine:
         self.writer_thread.start()
         self.market_was_open = False
 
+        # v2.1: Daily OI baselines per index — {(strike, option_type): baseline_oi}
+        self.daily_baselines = {}
+        self.baseline_loaded_for_index = set()
+
+    def _get_or_create_baseline(self, conn, index_name, strike, option_type, current_oi):
+        """Get the daily OI baseline for a contract. Creates from DB/yesterday/current if not exists."""
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        key = (index_name, strike, option_type)
+
+        if key in self.daily_baselines:
+            return self.daily_baselines[key]
+
+        # 1. Try today's DB baseline
+        baseline = get_daily_baseline(conn, today_str, index_name, strike, option_type)
+        if baseline is not None:
+            self.daily_baselines[key] = baseline
+            return baseline
+
+        # 2. Try yesterday's last snapshot OI (most accurate for restarts)
+        baseline = get_yesterday_last_oi(conn, index_name, strike, option_type)
+        if baseline is not None:
+            self.daily_baselines[key] = baseline
+            set_daily_baseline(conn, today_str, index_name, strike, option_type, baseline, source="yesterday_close")
+            return baseline
+
+        # 3. Fallback: current OI becomes baseline (first-ever sighting)
+        baseline = current_oi
+        self.daily_baselines[key] = baseline
+        set_daily_baseline(conn, today_str, index_name, strike, option_type, baseline, source="first_reading")
+        return baseline
+
     def capture_snapshot(self, data_store, spot_poller, index_name="NIFTY",
                         contract_multiplier=50, expiry_datetime=None):
         """Create a snapshot from current market state and queue it."""
@@ -46,7 +85,6 @@ class SnapshotEngine:
             spot = spot_poller.get_spot()
             msg_count = getattr(data_store, 'msg_count', 0)
 
-            # DEBUG: Log what we see for each index
             print(f"[SnapshotEngine] {index_name}: msg_count={msg_count}, strikes={len(data)}, spot={spot}")
 
             if not data:
@@ -64,6 +102,13 @@ class SnapshotEngine:
                 data, spot, futures, expiry_datetime, contract_multiplier
             )
 
+            # v2.1: Get a DB connection for baseline management
+            baseline_conn = None
+            try:
+                baseline_conn = get_db_connection()
+            except Exception as e:
+                print(f"[SnapshotEngine] Baseline DB connection failed: {e}")
+
             snapshot = {
                 "timestamp": timestamp,
                 "index_name": index_name,
@@ -80,15 +125,30 @@ class SnapshotEngine:
             for strike in sorted(data.keys()):
                 for opt_type in ["CE", "PE"]:
                     opt = data[strike].get(opt_type, {})
-                    prev = prev_oi.get(strike, {}).get(opt_type, opt.get("oi", 0))
-                    oi_change = opt.get("oi", 0) - prev
+                    current_oi = opt.get("oi", 0)
+
+                    # v2.1 FIX: Use daily baseline instead of tick-level prev_oi
+                    if baseline_conn:
+                        baseline = self._get_or_create_baseline(
+                            baseline_conn, index_name, strike, opt_type, current_oi
+                        )
+                    else:
+                        # Fallback if DB unavailable
+                        key = (index_name, strike, opt_type)
+                        if key not in self.daily_baselines:
+                            self.daily_baselines[key] = current_oi
+                        baseline = self.daily_baselines[key]
+
+                    oi_change = current_oi - baseline
+                    oi_change_pct = round((oi_change / baseline) * 100, 2) if baseline > 0 else 0.0
 
                     opt_snapshot = {
                         "index_name": index_name,
                         "strike": strike,
                         "option_type": opt_type,
-                        "oi": opt.get("oi", 0),
+                        "oi": current_oi,
                         "oi_change": oi_change,
+                        "oi_change_pct": oi_change_pct,
                         "volume": opt.get("volume", 0),
                         "ltp": opt.get("ltp", 0),
                         "iv": opt.get("iv"),
@@ -99,6 +159,9 @@ class SnapshotEngine:
                         "gex": opt.get("gex"),
                     }
                     snapshot["options"].append(opt_snapshot)
+
+            if baseline_conn:
+                baseline_conn.close()
 
             with self.lock:
                 self.latest_snapshots[index_name] = snapshot
@@ -117,6 +180,8 @@ class SnapshotEngine:
 
         except Exception as e:
             print(f"[SnapshotEngine] Error capturing snapshot: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _db_writer_loop(self):
         print("[SnapshotEngine] DB writer started")
@@ -164,8 +229,8 @@ class SnapshotEngine:
         for opt in snapshot["options"]:
             cursor.execute("""
                 INSERT OR REPLACE INTO option_snapshots
-                (snapshot_id, index_name, strike, option_type, oi, oi_change, volume, ltp, iv, delta, gamma, theta, vega, gex)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (snapshot_id, index_name, strike, option_type, oi, oi_change, oi_change_pct, volume, ltp, iv, delta, gamma, theta, vega, gex)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 snapshot_id,
                 opt["index_name"],
@@ -173,6 +238,7 @@ class SnapshotEngine:
                 opt["option_type"],
                 opt["oi"],
                 opt["oi_change"],
+                opt["oi_change_pct"],
                 opt["volume"],
                 opt["ltp"],
                 opt["iv"],

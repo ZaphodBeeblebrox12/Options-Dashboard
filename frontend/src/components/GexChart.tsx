@@ -88,12 +88,11 @@ function buildRefLineConfigs(
 }
 
 const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, gammaFlip }) => {
-  // ── ALL HOOKS MUST RUN UNCONDITIONALLY ───────────────────────────
   const chartWrapRef = useRef<HTMLDivElement>(null);
   const [chartWidth, setChartWidth] = useState(0);
   const widthRef = useRef(0);
 
-  // Robust measurement: retries with rAF until width > 0, re-runs when data arrives
+  // ── Robust width measurement ────────────────────────────────────
   useLayoutEffect(() => {
     if (!chartWrapRef.current) return;
     const el = chartWrapRef.current;
@@ -130,9 +129,11 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
       cancelAnimationFrame(rafId);
       clearTimeout(timeoutId);
     };
-  }, [data?.length]); // <-- re-measure when data arrives
+  }, [data?.length]);
 
-  // ── Compute chart data (runs even if data is empty) ───────────────
+  const isMobile = chartWidth > 0 && chartWidth < 768;
+
+  // ── Compute chart data ──────────────────────────────────────────
   const memoized = useMemo(() => {
     if (!data || data.length === 0) {
       return {
@@ -145,7 +146,7 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
       };
     }
 
-    // 1. THRESHOLD FILTERING
+    // 1. THRESHOLD FILTERING (identical to original)
     const maxAbsGex = Math.max(...data.map((d) => Math.abs(d.net_gex)), 1);
     const threshold = maxAbsGex * 0.015;
 
@@ -161,14 +162,35 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
       });
     }
 
-    const filtered = data.filter((d, idx) => {
+    let filtered = data.filter((d, idx) => {
       const hasMeaningfulGex = Math.abs(d.net_gex) >= threshold;
       const nearAtm = atmIdx >= 0 ? Math.abs(idx - atmIdx) <= 10 : true;
       const isKeyStrike = d.strike === maxPain || d.strike === gammaFlip || d.strike === atmStrike;
       return hasMeaningfulGex || nearAtm || isKeyStrike;
     });
 
-    // 2. Y-AXIS
+    // 2. MOBILE ONLY: dynamic strike window
+    if (isMobile && chartWidth > 0 && filtered.length > 0) {
+      const plotLeft = 40;
+      const plotRight = 15;
+      const usableWidth = chartWidth - plotLeft - plotRight;
+      const minPxPerBar = 22; // mobile minimum
+      const maxBars = Math.max(7, Math.floor(usableWidth / minPxPerBar));
+
+      if (filtered.length > maxBars) {
+        const atmIdxF = atmStrike ? filtered.findIndex((d) => d.strike === atmStrike) : -1;
+        const centerIdx = atmIdxF >= 0 ? atmIdxF : Math.floor(filtered.length / 2);
+        const half = Math.floor(maxBars / 2);
+        let start = Math.max(0, centerIdx - half);
+        let end = Math.min(filtered.length, start + maxBars);
+        if (end - start < maxBars) {
+          start = Math.max(0, end - maxBars);
+        }
+        filtered = filtered.slice(start, end);
+      }
+    }
+
+    // 3. Y-AXIS (identical to original)
     const gexValues = filtered.map((d) => d.net_gex);
     const minGex = Math.min(...gexValues, 0);
     const maxGex = Math.max(...gexValues, 0);
@@ -185,10 +207,21 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
       formatter = (v: number) => v.toFixed(0);
     }
 
-    // 3. BAR SIZE
-    const size = Math.min(32, Math.max(10, Math.floor(700 / filtered.length)));
+    // 4. BAR SIZE
+    let barSize: number;
+    if (isMobile) {
+      const n = filtered.length;
+      const plotLeft = 40;
+      const plotRight = 15;
+      const usableWidth = Math.max(chartWidth - plotLeft - plotRight, 1);
+      const rawSize = Math.floor((usableWidth / Math.max(n, 1)) * 0.65);
+      barSize = Math.max(3, Math.min(10, rawSize));
+    } else {
+      // ORIGINAL desktop formula — unchanged
+      barSize = Math.min(32, Math.max(10, Math.floor(700 / filtered.length)));
+    }
 
-    // 4. REF LINES
+    // 5. REF LINES
     const refLineConfigs = buildRefLineConfigs(atmStrike, maxPain, gammaFlip);
 
     return {
@@ -196,44 +229,44 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
       chartData: filtered,
       yDomain: domain,
       yTickFormatter: formatter,
-      barSize: size,
+      barSize,
       refLines: refLineConfigs,
     };
-  }, [data, atmStrike, maxPain, gammaFlip]);
+  }, [data, atmStrike, maxPain, gammaFlip, chartWidth, isMobile]);
 
-  // ── Compute label pixel positions ─────────────────────────────────
-  const plotLeft = 60;
+  // ── Compute label pixel positions (desktop only logic) ──────────
+  const plotLeft = isMobile ? 40 : 60;
   const plotRight = 15;
   const plotWidth = Math.max(chartWidth - plotLeft - plotRight, 1);
 
   const labelPositions = useMemo(() => {
-    if (chartWidth === 0 || memoized.chartData.length === 0) return [];
+    if (!isMobile && chartWidth > 0 && memoized.chartData.length > 0) {
+      const n = memoized.chartData.length;
+      const positions = memoized.refLines.map((cfg) => {
+        const idx = memoized.chartData.findIndex((d) => d.strike === cfg.strike);
+        if (idx < 0) return null;
+        const x = plotLeft + (idx / Math.max(n - 1, 1)) * plotWidth;
+        return { ...cfg, x, idx };
+      }).filter(Boolean) as Array<RefLineConfig & { x: number; idx: number }>;
 
-    const n = memoized.chartData.length;
-    const positions = memoized.refLines.map((cfg) => {
-      const idx = memoized.chartData.findIndex((d) => d.strike === cfg.strike);
-      if (idx < 0) return null;
-      const x = plotLeft + (idx / Math.max(n - 1, 1)) * plotWidth;
-      return { ...cfg, x, idx };
-    }).filter(Boolean) as Array<RefLineConfig & { x: number; idx: number }>;
+      const STAGGER_PX = 14;
+      const MIN_GAP = 55;
+      const sorted = [...positions].sort((a, b) => a.x - b.x);
 
-    // Collision stagger
-    const STAGGER_PX = 14;
-    const MIN_GAP = 55;
-    const sorted = [...positions].sort((a, b) => a.x - b.x);
-
-    return sorted.map((item, i) => {
-      let topOffset = 8;
-      for (let j = 0; j < i; j++) {
-        if (Math.abs(item.x - sorted[j].x) < MIN_GAP) {
-          topOffset += STAGGER_PX;
+      return sorted.map((item, i) => {
+        let topOffset = 8;
+        for (let j = 0; j < i; j++) {
+          if (Math.abs(item.x - sorted[j].x) < MIN_GAP) {
+            topOffset += STAGGER_PX;
+          }
         }
-      }
-      return { ...item, topOffset };
-    });
-  }, [chartWidth, memoized.chartData, memoized.refLines, plotLeft, plotWidth]);
+        return { ...item, topOffset };
+      });
+    }
+    return [];
+  }, [isMobile, chartWidth, memoized.chartData, memoized.refLines, plotLeft, plotWidth]);
 
-  // ── NOW safe to do conditional returns ─────────────────────────────
+  // ── Conditional returns ─────────────────────────────────────────
   if (!memoized.hasData) {
     return (
       <div className="terminal-panel h-[280px] flex items-center justify-center">
@@ -252,10 +285,21 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
 
   const { chartData, yDomain, yTickFormatter, barSize, refLines } = memoized;
 
+  // ── Desktop vs Mobile chart config ──────────────────────────────
+  const chartHeight = isMobile ? 180 : 280;
+  const marginTop = isMobile ? 4 : 38;
+  const margin = { top: marginTop, right: 15, left: 5, bottom: 5 };
+  const categoryGap = isMobile ? '25%' : '20%';
+  const axisFontSize = isMobile ? 8 : 10;
+  const yAxisWidth = isMobile ? 38 : 55;
+  const minTickGap = isMobile ? 12 : 30;
+  const showBarLabels = !isMobile;
+  const showOverlays = !isMobile;
+
   return (
     <div className="terminal-panel">
       <div className="terminal-header flex items-center justify-between">
-        <span>GEX by Strike</span>
+        <span className="text-xs sm:text-sm">GEX by Strike</span>
         <div className="flex items-center gap-3 text-[10px]">
           <span className="flex items-center gap-1.5">
             <span className="w-3 h-3 rounded-sm bg-green-500/70" />
@@ -265,33 +309,32 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
             <span className="w-3 h-3 rounded-sm bg-red-500/70" />
             <span className="text-terminal-muted">−GEX (Resistance)</span>
           </span>
-          <span className="text-terminal-muted/60 ml-2">
+          <span className="text-terminal-muted/60 ml-2 hidden sm:inline">
             {chartData.length} of {data.length} strikes
           </span>
         </div>
       </div>
 
-      {/* Chart + label overlay wrapper */}
-      <div ref={chartWrapRef} className="relative h-[280px]">
+      <div ref={chartWrapRef} style={{ height: chartHeight }} className="relative">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart
             data={chartData}
-            margin={{ top: 38, right: 15, left: 5, bottom: 5 }}
-            barCategoryGap="20%"
+            margin={margin}
+            barCategoryGap={categoryGap}
           >
             <CartesianGrid strokeDasharray="3 3" stroke="#1a1a2e" vertical={false} />
             <XAxis
               dataKey="strike"
-              tick={{ fill: '#6b7280', fontSize: 10, fontFamily: 'JetBrains Mono' }}
+              tick={{ fill: '#6b7280', fontSize: axisFontSize, fontFamily: 'JetBrains Mono' }}
               tickFormatter={(v) => v.toLocaleString('en-IN')}
               interval="preserveStartEnd"
-              minTickGap={30}
+              minTickGap={minTickGap}
             />
             <YAxis
               domain={yDomain}
-              tick={{ fill: '#6b7280', fontSize: 10, fontFamily: 'JetBrains Mono' }}
+              tick={{ fill: '#6b7280', fontSize: axisFontSize, fontFamily: 'JetBrains Mono' }}
               tickFormatter={yTickFormatter}
-              width={55}
+              width={yAxisWidth}
             />
             <Tooltip
               content={<CustomTooltip />}
@@ -315,26 +358,27 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
                   strokeWidth={1}
                 />
               ))}
-              <LabelList
-                dataKey="net_gex"
-                position="top"
-                formatter={(v: number) => {
-                  const absMax = Math.max(...chartData.map((d) => Math.abs(d.net_gex)));
-                  if (Math.abs(v) < absMax * 0.25) return '';
-                  const sign = v >= 0 ? '+' : '';
-                  const div = absMax >= 1e6 ? 1e6 : absMax >= 1e3 ? 1e3 : 1;
-                  const suffix = absMax >= 1e6 ? 'M' : absMax >= 1e3 ? 'K' : '';
-                  return `${sign}${(v / div).toFixed(1)}${suffix}`;
-                }}
-                style={{
-                  fill: '#9ca3af',
-                  fontSize: 9,
-                  fontFamily: 'JetBrains Mono',
-                }}
-              />
+              {showBarLabels && (
+                <LabelList
+                  dataKey="net_gex"
+                  position="top"
+                  formatter={(v: number) => {
+                    const absMax = Math.max(...chartData.map((d) => Math.abs(d.net_gex)));
+                    if (Math.abs(v) < absMax * 0.25) return '';
+                    const sign = v >= 0 ? '+' : '';
+                    const div = absMax >= 1e6 ? 1e6 : absMax >= 1e3 ? 1e3 : 1;
+                    const suffix = absMax >= 1e6 ? 'M' : absMax >= 1e3 ? 'K' : '';
+                    return `${sign}${(v / div).toFixed(1)}${suffix}`;
+                  }}
+                  style={{
+                    fill: '#9ca3af',
+                    fontSize: 9,
+                    fontFamily: 'JetBrains Mono',
+                  }}
+                />
+              )}
             </Bar>
 
-            {/* Dashed lines only — no Recharts labels */}
             {atmStrike && (
               <ReferenceLine x={atmStrike} stroke="#eab308" strokeDasharray="5 5" strokeWidth={2} />
             )}
@@ -347,8 +391,8 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
           </BarChart>
         </ResponsiveContainer>
 
-        {/* ── Custom HTML label overlay ───────────────────────────── */}
-        {chartWidth > 0 && labelPositions.map((cfg) => {
+        {/* ── Desktop HTML overlays only ── */}
+        {showOverlays && chartWidth > 0 && labelPositions.map((cfg) => {
           const nearLeft = cfg.x < plotLeft + 30;
           const nearRight = cfg.x > chartWidth - plotRight - 30;
           let transform = 'translateX(-50%)';
@@ -381,6 +425,22 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
           );
         })}
       </div>
+
+      {/* ── Bottom legend: mobile only ── */}
+      {isMobile && refLines.length > 0 && (
+        <div className="flex flex-wrap items-center justify-center gap-2 sm:gap-3 px-2 sm:px-3 py-1.5 sm:py-2 border-t border-terminal-border text-[9px] sm:text-[10px] font-mono">
+          {refLines.map((cfg) => (
+            <span key={cfg.key} className="flex items-center gap-1">
+              <span
+                className="w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-sm"
+                style={{ backgroundColor: cfg.color, opacity: 0.7 }}
+              />
+              <span style={{ color: cfg.color }}>{cfg.text}</span>
+              <span className="text-terminal-muted">{cfg.strike.toLocaleString('en-IN')}</span>
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 };

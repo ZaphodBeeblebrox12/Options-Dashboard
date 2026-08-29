@@ -1,11 +1,13 @@
 """Real-time Angel One SmartAPI v2 integration for NIFTY/SENSEX.
 
-MATCHES nifty_streamer_rich.py EXACTLY:
-- _on_error triggers reconnect (like working script)
-- _on_close does NOT auto-reconnect (prevents double-reconnect storms)
-- FORCE_REAL env var to block mock fallback
-- Full try/except on all callbacks
-- Same token parsing as working script
+FIXES APPLIED (v2.2):
+1. Daily OI baseline tracking — oi_change = current_oi - day_baseline_oi
+   (matches broker: change from market open / previous close)
+2. Removed hardcoded prev_oi = 0 in both Mock and Real streamers
+3. Added oi_change_pct for percentage display
+4. Baselines persist to DB and load on restart (with yesterday fallback)
+5. FIX v2.2: Live streamer now seeds baselines from yesterday's closing OI
+   on startup, so OI Change matches broker even if server starts mid-day.
 """
 import os
 import copy
@@ -22,17 +24,11 @@ logger = logging.getLogger(__name__)
 FORCE_REAL = os.getenv("FORCE_REAL", "false").lower() in ("1", "true", "yes")
 
 # ── Scalable index configuration ─────────────────────────────
-# Add new symbols here. Real mode auto-discovers strikes from scrip master.
-# Mock mode uses the config below for synthetic data generation.
 STREAMING_INDICES = ["NIFTY", "SENSEX"]
 
 INDEX_MOCK_CONFIG = {
     "NIFTY":     {"base_spot": 24500.0, "strike_range": (24000, 25100), "strike_step": 50},
     "SENSEX":    {"base_spot": 80500.0, "strike_range": (79500, 81500), "strike_step": 100},
-    # ── Add more symbols here ─────────────────────────────────
-    # "BANKNIFTY": {"base_spot": 52000.0, "strike_range": (51000, 53000), "strike_step": 100},
-    # "FINNIFTY":  {"base_spot": 23500.0, "strike_range": (23000, 24000), "strike_step": 50},
-    # "MIDCPNIFTY":{"base_spot": 13200.0, "strike_range": (12700, 13700), "strike_step": 25},
 }
 
 # ── Try to import Angel One libs ─────────────────────────────
@@ -63,7 +59,7 @@ def is_market_open() -> bool:
 
 
 # =====================================================================
-#  AUTH MANAGER (matches nifty_streamer_rich.py)
+#  AUTH MANAGER
 # =====================================================================
 if ANGEL_ONE_AVAILABLE:
     class AuthManager:
@@ -131,15 +127,19 @@ if ANGEL_ONE_AVAILABLE:
 
 
 # =====================================================================
-#  LIVE DATA STORE (matches nifty_streamer_rich.py)
+#  LIVE DATA STORE  (v2.2 — with daily OI baseline)
 # =====================================================================
 class LiveDataStore:
+    """Thread-safe data store with tick-level prev_oi AND daily baseline tracking."""
+
     def __init__(self):
         self.data = {}
         self.prev_oi = {}
-        self.lock = threading.Lock()
+        self.daily_oi_baseline = {}      # (strike, option_type) -> baseline_oi
+        self.baseline_loaded_from_db = False
         self.msg_count = 0
         self.last_update = None
+        self.lock = threading.Lock()
 
     def update(self, strike, option_type, ltp, oi, volume):
         with self.lock:
@@ -158,6 +158,10 @@ class LiveDataStore:
                 "volume": volume,
                 "last_update": datetime.now().isoformat()
             }
+            # Capture baseline on first sighting of the day
+            key = (strike, option_type)
+            if key not in self.daily_oi_baseline:
+                self.daily_oi_baseline[key] = oi
 
     def get_snapshot(self):
         with self.lock:
@@ -173,6 +177,34 @@ class LiveDataStore:
             ce_count = sum(1 for s in self.data if "CE" in self.data[s] and self.data[s]["CE"])
             pe_count = sum(1 for s in self.data if "PE" in self.data[s] and self.data[s]["PE"])
             return self.msg_count, strikes, ce_count, pe_count
+
+    # ── Daily baseline methods ───────────────────────────────
+    def get_daily_baseline(self, strike, option_type):
+        with self.lock:
+            return self.daily_oi_baseline.get((strike, option_type), None)
+
+    def set_daily_baseline(self, strike, option_type, oi):
+        """FIX v2.2: Allow external seeding of baselines (e.g. from yesterday's close)."""
+        with self.lock:
+            self.daily_oi_baseline[(strike, option_type)] = oi
+
+    def load_baselines_from_dict(self, baselines):
+        """Load baselines from DB dict: {(strike, type): oi}"""
+        with self.lock:
+            self.daily_oi_baseline.update(baselines)
+            self.baseline_loaded_from_db = True
+
+    def compute_oi_change(self, strike, option_type, current_oi):
+        """Compute broker-style OI change: current - day baseline."""
+        with self.lock:
+            baseline = self.daily_oi_baseline.get((strike, option_type))
+            if baseline is None:
+                # First time seeing this contract — set baseline now
+                self.daily_oi_baseline[(strike, option_type)] = current_oi
+                baseline = current_oi
+            oi_change = current_oi - baseline
+            oi_change_pct = round((oi_change / baseline) * 100, 2) if baseline > 0 else 0.0
+            return oi_change, oi_change_pct
 
 
 class SpotPricePoller:
@@ -216,7 +248,7 @@ class SpotPricePoller:
 
 
 # =====================================================================
-#  MOCK STREAMER
+#  MOCK STREAMER  (v2.1 — fixed OI change)
 # =====================================================================
 class MockIndexStreamer:
     """Generates realistic synthetic option chain data for UI testing."""
@@ -301,11 +333,17 @@ class MockIndexStreamer:
                 for opt_type in ["CE", "PE"]:
                     opt = data[strike].get(opt_type, {})
                     analytics_opt = analytics["strikes_data"].get(strike, {}).get(opt_type, {})
+
+                    # FIX v2.1: Use daily baseline instead of hardcoded 0
+                    current_oi = opt.get("oi", 0)
+                    oi_change, oi_change_pct = self.data_store.compute_oi_change(strike, opt_type, current_oi)
+
                     enriched_options.append({
                         "strike": strike,
                         "option_type": opt_type,
-                        "oi": opt.get("oi", 0),
-                        "oi_change": 0,
+                        "oi": current_oi,
+                        "oi_change": oi_change,
+                        "oi_change_pct": oi_change_pct,
                         "volume": opt.get("volume", 0),
                         "ltp": opt.get("ltp", 0),
                         "iv": analytics_opt.get("iv"),
@@ -358,16 +396,11 @@ class MockIndexStreamer:
 
 
 # =====================================================================
-#  REAL STREAMER (matches nifty_streamer_rich.py EXACTLY)
+#  REAL STREAMER  (v2.2 — fixed OI change + yesterday baseline seed)
 # =====================================================================
 if ANGEL_ONE_AVAILABLE:
     class AngelOneIndexStreamer:
-        """Real-time streamer for a single index via Angel One SmartAPI v2.
-
-        CALLBACK BEHAVIOR (matches working script):
-        - _on_error → triggers reconnect (like nifty_streamer_rich.py)
-        - _on_close → does NOT auto-reconnect (prevents double-reconnect storms)
-        """
+        """Real-time streamer for a single index via Angel One SmartAPI v2."""
 
         def __init__(self, index_name: str, auth_manager):
             self.index_name = index_name
@@ -391,6 +424,8 @@ if ANGEL_ONE_AVAILABLE:
             self._state_cache_time = 0
 
             self._load_instruments()
+            self._load_baselines_from_db()
+            self._load_yesterday_baselines()   # FIX v2.2
 
         def _load_instruments(self):
             from scrip_master import scrip_master
@@ -428,6 +463,51 @@ if ANGEL_ONE_AVAILABLE:
             except Exception as e:
                 logger.error(f"[{self.index_name}] Instrument load failed: {e}")
                 raise
+
+        def _load_baselines_from_db(self):
+            """Load today's baselines from DB so OI change survives restarts."""
+            try:
+                from database import get_db_connection, load_all_baselines_for_date
+                today_str = datetime.now().strftime("%Y-%m-%d")
+                conn = get_db_connection()
+                baselines = load_all_baselines_for_date(conn, today_str, self.index_name)
+                conn.close()
+                if baselines:
+                    self.data_store.load_baselines_from_dict(baselines)
+                    logger.info(f"[{self.index_name}] Loaded {len(baselines)} OI baselines from DB")
+            except Exception as e:
+                logger.warning(f"[{self.index_name}] Could not load baselines from DB: {e}")
+
+        # FIX v2.2: Seed baselines from yesterday's closing OI on startup
+        def _load_yesterday_baselines(self):
+            """Seed baselines with yesterday's closing OI so OI change matches broker."""
+            try:
+                from database import get_db_connection
+                conn = get_db_connection()
+                cursor = conn.execute("""
+                    SELECT o.strike, o.option_type, o.oi
+                    FROM option_snapshots o
+                    JOIN snapshots s ON o.snapshot_id = s.id
+                    WHERE s.index_name = ?
+                      AND date(s.timestamp) < date('now')
+                    ORDER BY s.timestamp DESC
+                """, (self.index_name,))
+
+                loaded = 0
+                seen = set()
+                for row in cursor.fetchall():
+                    key = (row["strike"], row["option_type"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    self.data_store.set_daily_baseline(row["strike"], row["option_type"], row["oi"])
+                    loaded += 1
+
+                conn.close()
+                if loaded:
+                    logger.info(f"[{self.index_name}] Seeded {loaded} baselines from yesterday's closing OI")
+            except Exception as e:
+                logger.warning(f"[{self.index_name}] Could not load yesterday baselines: {e}")
 
         def _build_token_map(self):
             self.token_map = {}
@@ -489,12 +569,10 @@ if ANGEL_ONE_AVAILABLE:
                 )
 
         def _on_open(self, wsapp):
-            """MATCHES nifty_streamer_rich.py: subscribe index, futures, options."""
             try:
                 logger.info(f"[{self.index_name}] WebSocket connected")
                 self.ws_connected = True
 
-                # Subscribe index spot — NSE=1 for NIFTY, BSE=3 for SENSEX
                 if self.index_info and self.index_info.get("token"):
                     try:
                         idx_exch = 3 if self.index_name == "SENSEX" else 1
@@ -506,7 +584,6 @@ if ANGEL_ONE_AVAILABLE:
                     except Exception as e:
                         logger.error(f"[{self.index_name}] Index subscription error: {e}")
 
-                # Subscribe current-month futures — NFO=2 for NIFTY, BFO=4 for SENSEX
                 if self.futures_info and self.futures_info.get("token"):
                     try:
                         fut_exch = 4 if self.index_name == "SENSEX" else 2
@@ -518,7 +595,6 @@ if ANGEL_ONE_AVAILABLE:
                     except Exception as e:
                         logger.error(f"[{self.index_name}] Futures subscription error: {e}")
 
-                # Subscribe option tokens — NFO=2 for NIFTY, BFO=4 for SENSEX
                 if self.options_df is not None and len(self.options_df) > 0:
                     tokens = self.options_df["token"].tolist()
                     opt_exch = 4 if self.index_name == "SENSEX" else 2
@@ -534,31 +610,23 @@ if ANGEL_ONE_AVAILABLE:
                 logger.error(f"[{self.index_name}] on_open crash: {e}")
 
         def _on_data(self, wsapp, message):
-            """MATCHES nifty_streamer_rich.py EXACTLY:
-            - Check token against index_info['token'] for spot
-            - Check token against futures_info['token'] for futures
-            - Otherwise look up in token_map for options
-            """
             try:
                 if not isinstance(message, dict):
                     return
                 token = str(message.get("token", ""))
 
-                # Spot price update — matches working script
                 if self.index_info and token == self.index_info.get("token"):
                     ltp_raw = message.get("last_traded_price", 0) or 0
                     ltp = float(ltp_raw) / 100.0
                     self.spot_poller.update_from_ws(ltp)
                     return
 
-                # Futures price update — matches working script
                 if self.futures_info and token == self.futures_info.get("token"):
                     ltp_raw = message.get("last_traded_price", 0) or 0
                     ltp = float(ltp_raw) / 100.0
                     self.spot_poller.update_futures_from_ws(ltp)
                     return
 
-                # Option data — matches working script
                 if token not in self.token_map:
                     return
 
@@ -573,19 +641,15 @@ if ANGEL_ONE_AVAILABLE:
                 logger.error(f"[{self.index_name}] Data handling error: {e}")
 
         def _on_error(self, wsapp, error):
-            """MATCHES nifty_streamer_rich.py: error triggers reconnect."""
             logger.error(f"[{self.index_name}] WebSocket error: {error}")
             self.ws_connected = False
             self._reconnect_websocket()
 
         def _on_close(self, wsapp):
-            """MATCHES nifty_streamer_rich.py: close does NOT auto-reconnect.
-            Prevents double-reconnect storms when _on_error already triggered it."""
             logger.info(f"[{self.index_name}] WebSocket closed")
             self.ws_connected = False
 
         def _reconnect_websocket(self):
-            """MATCHES nifty_streamer_rich.py: stop websocket, wait, re-login, re-init."""
             logger.info(f"[{self.index_name}] Attempting WebSocket reconnection...")
             self._stop_websocket()
             time.sleep(5)
@@ -596,7 +660,6 @@ if ANGEL_ONE_AVAILABLE:
                 logger.error(f"[{self.index_name}] Reconnection failed: {e}")
 
         def _stop_websocket(self):
-            """MATCHES nifty_streamer_rich.py: close_connection with error swallow."""
             if self.sws:
                 try:
                     self.sws.close_connection()
@@ -649,13 +712,17 @@ if ANGEL_ONE_AVAILABLE:
                     for opt_type in ["CE", "PE"]:
                         opt = data[strike].get(opt_type, {})
                         analytics_opt = analytics["strikes_data"].get(strike, {}).get(opt_type, {})
-                        prev_oi = 0
-                        oi_change = opt.get("oi", 0) - prev_oi
+
+                        # FIX v2.1: Use daily baseline instead of hardcoded 0
+                        current_oi = opt.get("oi", 0)
+                        oi_change, oi_change_pct = self.data_store.compute_oi_change(strike, opt_type, current_oi)
+
                         enriched_options.append({
                             "strike": strike,
                             "option_type": opt_type,
-                            "oi": opt.get("oi", 0),
+                            "oi": current_oi,
                             "oi_change": oi_change,
+                            "oi_change_pct": oi_change_pct,
                             "volume": opt.get("volume", 0),
                             "ltp": opt.get("ltp", 0),
                             "iv": analytics_opt.get("iv"),
@@ -723,7 +790,6 @@ class StreamerAdapter:
     def start(self):
         self.running = True
 
-        # ── Try REAL mode first ──────────────────────────────────────
         if not self.force_mock and ANGEL_ONE_AVAILABLE:
             try:
                 self.auth_manager = AuthManager()
@@ -776,7 +842,6 @@ class StreamerAdapter:
             if self.force_mock:
                 logger.info("[StreamerAdapter] Mock mode forced by user.")
 
-        # ── Fall back to MOCK mode ───────────────────────────────────
         if FORCE_REAL:
             raise RuntimeError("FORCE_REAL=true but could not start real mode. Check logs above.")
 

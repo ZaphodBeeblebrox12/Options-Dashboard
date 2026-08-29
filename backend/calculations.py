@@ -7,6 +7,8 @@ import numpy as np
 
 # Constants
 RISK_FREE_RATE = 0.065  # 6.5% for India
+TICK_SIZE = 0.05        # NSE/BSE minimum tick
+SANITY_TOLERANCE = max(2.0, 2 * TICK_SIZE)  # ₹2 or 2 ticks, whichever is larger
 
 
 def _d1(S, K, T, r, sigma):
@@ -41,9 +43,32 @@ def black_scholes_price(S, K, T, r, sigma, option_type):
 
 
 def implied_volatility(S, K, T, r, market_price, option_type):
-    """Find implied volatility using Brent's method."""
+    """Find implied volatility using Brent's method.
+
+    Returns None if:
+    - market_price <= 0 or T <= 0
+    - Price is below intrinsic by more than SANITY_TOLERANCE (stale/bad data)
+    - Price exceeds theoretical upper bound + tolerance
+    - Brent solver fails to converge
+    """
     if market_price <= 0 or T <= 0:
-        return 0.2
+        return None
+
+    # ── Price sanity: lower bound check ─────────────────────────
+    if option_type == "CE":
+        intrinsic = max(S - K, 0)
+        upper_bound = S
+    else:
+        intrinsic = max(K - S, 0)
+        upper_bound = K
+
+    # Reject if below intrinsic by more than tolerance
+    if market_price < intrinsic - SANITY_TOLERANCE:
+        return None
+
+    # Reject if above theoretical max + tolerance
+    if market_price > upper_bound + SANITY_TOLERANCE:
+        return None
 
     def objective(sigma):
         return black_scholes_price(S, K, T, r, sigma, option_type) - market_price
@@ -52,25 +77,16 @@ def implied_volatility(S, K, T, r, market_price, option_type):
         iv = brentq(objective, 0.001, 2.0, xtol=1e-6, maxiter=100)
         return iv
     except (ValueError, RuntimeError):
-        return 0.2
+        return None
 
 
 def calculate_greeks(S, K, T, r, sigma, option_type):
-    """Calculate all Greeks for an option."""
-    if T <= 0 or sigma <= 0:
-        if option_type == "CE":
-            intrinsic = max(S - K, 0)
-            delta = 1.0 if S > K else 0.0
-        else:
-            intrinsic = max(K - S, 0)
-            delta = -1.0 if S < K else 0.0
-        return {
-            "delta": delta,
-            "gamma": 0.0,
-            "theta": 0.0,
-            "vega": 0.0,
-            "iv": sigma,
-        }
+    """Calculate all Greeks for an option.
+
+    Returns None for all Greeks if sigma is None or <= 0.
+    """
+    if sigma is None or T <= 0 or sigma <= 0:
+        return None
 
     d1 = _d1(S, K, T, r, sigma)
     d2 = _d2(S, K, T, r, sigma)
@@ -103,6 +119,8 @@ def calculate_gex(gamma: float, oi: int, option_type: str, contract_multiplier: 
     GEX = Gamma * OI * ContractMultiplier * sign
     For CE: positive gamma exposure
     For PE: negative gamma exposure (dealer short gamma)
+
+    Returns 0 if gamma is None.
     """
     if gamma is None or oi is None:
         return 0.0
@@ -179,7 +197,11 @@ def calculate_gamma_flip(strikes_data: Dict, spot: float) -> Optional[int]:
 
 def calculate_analytics(strikes_data: Dict, spot: float, futures: Optional[float] = None,
                        expiry_datetime=None, contract_multiplier: int = 50) -> Dict:
-    """Calculate all analytics for a snapshot with instrument-specific multiplier."""
+    """Calculate all analytics for a snapshot with instrument-specific multiplier.
+
+    Options that fail IV sanity checks are excluded from GEX calculations
+    but still displayed in the chain with their raw OI/volume/LTP.
+    """
     from datetime import datetime
 
     if expiry_datetime is None:
@@ -209,18 +231,32 @@ def calculate_analytics(strikes_data: Dict, spot: float, futures: Optional[float
             ltp = opt_data.get("ltp", 0)
             oi = opt_data.get("oi", 0)
 
+            # ── Calculate IV and Greeks ─────────────────────────────
+            iv = None
+            greeks = None
+            gex = 0.0
+
             if ltp > 0 and spot > 0:
                 iv = implied_volatility(spot, strike, T, RISK_FREE_RATE, ltp, opt_type)
-                greeks = calculate_greeks(spot, strike, T, RISK_FREE_RATE, iv, opt_type)
-                gex = calculate_gex(greeks["gamma"], oi, opt_type, contract_multiplier)
+                if iv is not None:
+                    greeks = calculate_greeks(spot, strike, T, RISK_FREE_RATE, iv, opt_type)
+                    if greeks:
+                        gex = calculate_gex(greeks["gamma"], oi, opt_type, contract_multiplier)
+                        net_gex += gex
+                        if abs(gex) > abs(max_gex):
+                            max_gex = gex
+                            max_gex_strike = strike
 
-                strikes_data[strike][opt_type].update(greeks)
-                strikes_data[strike][opt_type]["gex"] = gex
-
-                net_gex += gex
-                if abs(gex) > abs(max_gex):
-                    max_gex = gex
-                    max_gex_strike = strike
+            # Store everything — valid or invalid — with validity flag
+            strikes_data[strike][opt_type].update({
+                "iv": iv,
+                "delta": greeks["delta"] if greeks else None,
+                "gamma": greeks["gamma"] if greeks else None,
+                "theta": greeks["theta"] if greeks else None,
+                "vega": greeks["vega"] if greeks else None,
+                "gex": gex,
+                "quote_valid": iv is not None and greeks is not None,
+            })
 
     max_pain = calculate_max_pain(strikes_data, contract_multiplier)
     gamma_flip = calculate_gamma_flip(strikes_data, spot)

@@ -7,53 +7,161 @@ import { StrikeChart } from './components/StrikeChart';
 import { NetGexChart } from './components/NetGexChart';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useSnapshots, useSnapshot, useGexHistory, useStrikeHistory, useGexByStrike, useAvailableDates } from './hooks/useApi';
-import { Eye, EyeOff, Monitor, AlertTriangle, Info } from 'lucide-react';
+import { Eye, EyeOff, Monitor, AlertTriangle, Info, WifiOff } from 'lucide-react';
+
+const STORAGE_KEY = 'option_chain_view_state';
+const SCROLL_KEY = 'option_chain_scroll_y';
+
+interface PersistedState {
+  selectedIndex: string;
+  selectedDate: string;
+  currentTimestamp: string | null;
+  liveMode: boolean;
+  fullMode: boolean;
+  selectedStrike: number | null;
+}
+
+function loadPersistedState(): Partial<PersistedState> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return {};
+}
+
+function savePersistedState(state: PersistedState) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch {}
+}
 
 function App() {
-  const [selectedIndex, setSelectedIndex] = useState("NIFTY");
-  const [selectedDate, setSelectedDate] = useState(() => {
+  const persisted = loadPersistedState();
+
+  const [selectedIndex, setSelectedIndex] = useState(persisted.selectedIndex || "NIFTY");
+  const [selectedDate, setSelectedDate] = useState(persisted.selectedDate || (() => {
     const today = new Date();
     return today.toISOString().split('T')[0];
-  });
+  }));
   const [currentIndex, setCurrentIndex] = useState(-1);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [fullMode, setFullMode] = useState(false);
-  const [selectedStrike, setSelectedStrike] = useState<number | null>(null);
-  const [liveMode, setLiveMode] = useState(true);
+  const [fullMode, setFullMode] = useState(persisted.fullMode ?? false);
+  const [selectedStrike, setSelectedStrike] = useState<number | null>(persisted.selectedStrike ?? null);
+  const [liveMode, setLiveMode] = useState(persisted.liveMode ?? true);
   const [demoMode, setDemoMode] = useState(false);
   const [marketOpen, setMarketOpen] = useState(true);
-  // FIXED: wsError is now per-index so SENSEX errors don't break NIFTY display
   const [wsErrorMap, setWsErrorMap] = useState<Record<string, string | null>>({});
+  const [showReconnectBanner, setShowReconnectBanner] = useState(false);
   const playTimerRef = useRef<ReturnType<typeof setInterval>>();
+  const hasRestoredRef = useRef(false);
+  const enteringLiveRef = useRef(false);
+  const scrollRestoredRef = useRef(false);
 
   const wsUrl = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
   const { connected, lastMessage } = useWebSocket(wsUrl);
 
-  // API data — all index-aware
-  const timestamps = useSnapshots(selectedDate, selectedIndex);
+  const timestamps = useSnapshots(selectedDate, selectedIndex, liveMode);
   const currentTimestamp = (currentIndex >= 0 && currentIndex < timestamps.length) ? timestamps[currentIndex] : null;
-  const snapshot = useSnapshot(currentTimestamp, selectedIndex);
-  const gexHistory = useGexHistory(selectedDate, selectedIndex);
-  const strikeHistory = useStrikeHistory(selectedStrike, selectedDate, selectedIndex);
-  const gexByStrike = useGexByStrike(currentTimestamp, selectedIndex);
-  const availableDates = useAvailableDates(selectedIndex);
+  const { snapshot, isLoading: snapshotLoading } = useSnapshot(currentTimestamp, selectedIndex, liveMode);
+  const gexHistory = useGexHistory(selectedDate, selectedIndex, liveMode);
+  const strikeHistory = useStrikeHistory(selectedStrike, selectedDate, selectedIndex, liveMode);
+  const gexByStrike = useGexByStrike(currentTimestamp, selectedIndex, liveMode);
+  const availableDates = useAvailableDates(selectedIndex, liveMode);
 
-  // Live data per index
   const [liveDataMap, setLiveDataMap] = useState<Record<string, any>>({});
 
-  // DIAGNOSTIC: Log every message received
+  // ── Ref that always holds the latest saveable state ──────────────
+  const saveableStateRef = useRef<PersistedState>({
+    selectedIndex,
+    selectedDate,
+    currentTimestamp: null,
+    liveMode,
+    fullMode,
+    selectedStrike,
+  });
+
   useEffect(() => {
-    if (lastMessage) {
-      console.log('[APP] WS message:', {
-        type: lastMessage.type,
-        index: lastMessage.data?.index_name,
-        spot: lastMessage.data?.spot,
-        optionsCount: lastMessage.data?.options?.length,
-        message: lastMessage.data?.message,
-        error: lastMessage.data?.error,
+    saveableStateRef.current = {
+      selectedIndex,
+      selectedDate,
+      currentTimestamp: currentIndex >= 0 && currentIndex < timestamps.length ? timestamps[currentIndex] : null,
+      liveMode,
+      fullMode,
+      selectedStrike,
+    };
+  });
+
+  // ── Save state + scroll position before unload / hide ────────────
+  useEffect(() => {
+    const save = () => {
+      savePersistedState(saveableStateRef.current);
+      try {
+        localStorage.setItem(SCROLL_KEY, String(window.scrollY));
+      } catch {}
+    };
+    window.addEventListener('beforeunload', save);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') save();
+    });
+    return () => {
+      window.removeEventListener('beforeunload', save);
+    };
+  }, []);
+
+  // ── Restore timestamp from persisted state ───────────────────────
+  useEffect(() => {
+    if (hasRestoredRef.current) return;
+    if (timestamps.length === 0) return;
+
+    // If user explicitly entered live mode, jump to latest
+    if (enteringLiveRef.current) {
+      setCurrentIndex(timestamps.length - 1);
+      enteringLiveRef.current = false;
+      hasRestoredRef.current = true;
+      return;
+    }
+
+    // Otherwise try to restore the exact saved timestamp
+    const savedTs = persisted.currentTimestamp;
+    if (savedTs) {
+      const idx = timestamps.indexOf(savedTs);
+      if (idx >= 0) {
+        setCurrentIndex(idx);
+        hasRestoredRef.current = true;
+        return;
+      }
+    }
+
+    // Fallback: latest snapshot
+    setCurrentIndex(timestamps.length - 1);
+    hasRestoredRef.current = true;
+  }, [timestamps.length]);
+
+  // ── Restore scroll position once after timestamp is restored ─────
+  useEffect(() => {
+    if (currentIndex < 0) return; // Not restored yet
+    if (scrollRestoredRef.current) return;
+
+    const savedY = localStorage.getItem(SCROLL_KEY);
+    if (savedY) {
+      const y = parseInt(savedY, 10);
+      requestAnimationFrame(() => {
+        window.scrollTo({ top: y, behavior: 'instant' });
+        localStorage.removeItem(SCROLL_KEY);
       });
     }
-  }, [lastMessage]);
+    scrollRestoredRef.current = true;
+  }, [currentIndex]);
+
+  // ── Reconnect banner ─────────────────────────────────────────────
+  useEffect(() => {
+    if (!connected) {
+      setShowReconnectBanner(true);
+    } else {
+      const t = setTimeout(() => setShowReconnectBanner(false), 2000);
+      return () => clearTimeout(t);
+    }
+  }, [connected]);
 
   useEffect(() => {
     if (lastMessage?.type === 'tick') {
@@ -65,31 +173,12 @@ function App() {
       if (lastMessage.data.market_open !== undefined) {
         setMarketOpen(lastMessage.data.market_open);
       }
-      // FIXED: Store error/message per-index instead of globally
       setWsErrorMap((prev) => ({
         ...prev,
         [idx]: lastMessage.data.error || lastMessage.data.message || null,
       }));
     }
   }, [lastMessage]);
-
-  // Initialize currentIndex to the latest snapshot on first load
-  useEffect(() => {
-    if (timestamps.length > 0 && currentIndex < 0) {
-      setCurrentIndex(timestamps.length - 1);
-    }
-  }, [timestamps, currentIndex]);
-
-  // FIXED: Keep playhead pinned to the live edge while in live mode.
-  // Uses a functional update so we only re-render when the index actually changes.
-  useEffect(() => {
-    if (liveMode && timestamps.length > 0) {
-      setCurrentIndex((prev) => {
-        const latest = timestamps.length - 1;
-        return prev === latest ? prev : latest;
-      });
-    }
-  }, [timestamps.length, liveMode]);
 
   useEffect(() => {
     if (isPlaying) {
@@ -108,17 +197,16 @@ function App() {
     };
   }, [isPlaying, timestamps.length]);
 
-  // Reset when index changes
   useEffect(() => {
     setCurrentIndex(-1);
     setIsPlaying(false);
     setSelectedStrike(null);
+    hasRestoredRef.current = false;
+    scrollRestoredRef.current = false;
   }, [selectedIndex]);
 
   const liveData = liveDataMap[selectedIndex];
   const displayData = liveMode && liveData ? liveData : snapshot;
-
-  // FIXED: Only show error for the currently selected index
   const wsError = wsErrorMap[selectedIndex] || null;
 
   const spot = displayData?.spot ?? null;
@@ -173,19 +261,6 @@ function App() {
     return result;
   }, [options]);
 
-  // DIAGNOSTIC: Log render state
-  useEffect(() => {
-    console.log('[APP] Render state:', {
-      selectedIndex,
-      liveMode,
-      connected,
-      hasLiveData: !!liveData,
-      spot,
-      optionsCount: normalizedOptions.length,
-      wsError,
-    });
-  });
-
   const handlePlay = useCallback(() => {
     if (currentIndex >= timestamps.length - 1) {
       setCurrentIndex(0);
@@ -208,13 +283,13 @@ function App() {
     window.location.reload();
   }, []);
 
-  // FIXED: Exit live mode when changing dates so the slider doesn't fight
-  // the empty -> loaded transition and the user starts in replay mode.
   const handleDateChange = useCallback((date: string) => {
     setSelectedDate(date);
     setCurrentIndex(-1);
     setIsPlaying(false);
     setLiveMode(false);
+    hasRestoredRef.current = false;
+    scrollRestoredRef.current = false;
   }, []);
 
   const handleIndexChange = useCallback((index: string) => {
@@ -223,6 +298,9 @@ function App() {
     setIsPlaying(false);
     setSelectedStrike(null);
     setLiveMode(true);
+    enteringLiveRef.current = true;
+    hasRestoredRef.current = false;
+    scrollRestoredRef.current = false;
   }, []);
 
   const handleSelectStrike = useCallback((strike: number) => {
@@ -233,21 +311,21 @@ function App() {
     setFullMode((prev) => !prev);
   }, []);
 
-  // FIXED: Auto-set date to today when entering LIVE mode to prevent
-  // the UI from showing yesterday's date while displaying live data.
   const toggleLiveMode = useCallback(() => {
     setLiveMode((prev) => {
       const next = !prev;
       if (next) {
         setIsPlaying(false);
-        setCurrentIndex(timestamps.length - 1);
-        // Sync date to today when entering live mode
         const today = new Date().toISOString().split('T')[0];
         setSelectedDate(today);
+        setCurrentIndex(-1);
+        enteringLiveRef.current = true;
+        hasRestoredRef.current = false;
+        scrollRestoredRef.current = false;
       }
       return next;
     });
-  }, [timestamps.length]);
+  }, []);
 
   const atmStrike = React.useMemo(() => {
     if (!spot || normalizedOptions.length === 0) return null;
@@ -259,7 +337,16 @@ function App() {
 
   return (
     <div className="min-h-screen bg-terminal-bg">
-      {/* Demo Mode / Market Closed Banner */}
+      {/* Reconnecting banner */}
+      {showReconnectBanner && (
+        <div className="bg-amber-900/40 border-b border-amber-700/50 px-4 py-1.5 flex items-center justify-center gap-2">
+          <WifiOff className="w-3.5 h-3.5 text-amber-400" />
+          <span className="text-xs font-mono text-amber-300">
+            {connected ? 'Reconnected — resuming live data...' : 'Connection lost — replay data is cached. Reconnecting...'}
+          </span>
+        </div>
+      )}
+
       {demoMode && (
         <div className="bg-amber-900/30 border-b border-amber-700/50 px-4 py-1.5 flex items-center justify-center gap-2">
           <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
@@ -286,15 +373,19 @@ function App() {
       )}
 
       {/* Top bar */}
-      <div className="border-b border-terminal-border bg-terminal-panel px-4 py-2 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Monitor className="w-5 h-5 text-terminal-atm" />
-          <h1 className="text-sm font-bold tracking-wide">{selectedIndex} Option Chain Replay Dashboard</h1>
-          <span className={`text-[10px] font-mono px-2 py-0.5 rounded ${connected ? 'bg-terminal-pe/20 text-terminal-pe' : 'bg-terminal-ce/20 text-terminal-ce'}`}>
-            {connected ? 'WS Connected' : 'WS Disconnected'}
+      <div className="border-b border-terminal-border bg-terminal-panel px-3 sm:px-4 py-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Monitor className="w-5 h-5 text-terminal-atm shrink-0" />
+          <h1 className="text-sm font-bold tracking-wide">
+            <span className="sm:hidden">{selectedIndex} Dashboard</span>
+            <span className="hidden sm:inline">{selectedIndex} Option Chain Replay Dashboard</span>
+          </h1>
+          <span className={`text-[10px] font-mono px-2 py-0.5 rounded shrink-0 ${connected ? 'bg-terminal-pe/20 text-terminal-pe' : 'bg-terminal-ce/20 text-terminal-ce'}`}>
+            <span className="sm:hidden">{connected ? 'WS' : '—'}</span>
+            <span className="hidden sm:inline">{connected ? 'WS Connected' : 'WS Disconnected'}</span>
           </span>
           {demoMode && (
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-900/30 text-amber-400 border border-amber-700/30">
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-900/30 text-amber-400 border border-amber-700/30 shrink-0">
               DEMO
             </span>
           )}
@@ -316,13 +407,15 @@ function App() {
             className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono bg-terminal-bg text-terminal-muted hover:text-terminal-text transition-colors"
           >
             {fullMode ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-            {fullMode ? 'Compact' : 'Full'}
+            <span className="hidden sm:inline">{fullMode ? 'Compact' : 'Full'}</span>
           </button>
         </div>
       </div>
 
-      <div className="p-3 space-y-3">
+      <div className="p-2 sm:p-3 space-y-2 sm:space-y-3">
         <AnalyticsHeader
+          indexName={selectedIndex}
+          isFetching={snapshotLoading}
           spot={spot}
           futures={futures}
           futuresSpread={futuresSpread}
@@ -338,6 +431,7 @@ function App() {
         <ReplayControls
           timestamps={timestamps}
           currentIndex={currentIndex}
+          isFetching={snapshotLoading}
           isPlaying={isPlaying}
           onPlay={handlePlay}
           onPause={handlePause}

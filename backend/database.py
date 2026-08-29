@@ -27,6 +27,12 @@ def _migrate_db(conn):
         conn.execute("ALTER TABLE option_snapshots ADD COLUMN index_name TEXT NOT NULL DEFAULT 'NIFTY'")
         conn.commit()
 
+    # FIX: Add oi_change_pct to option_snapshots if missing (v2.1)
+    if not _column_exists(conn, "option_snapshots", "oi_change_pct"):
+        print("[DB] Migrating: adding oi_change_pct to option_snapshots...")
+        conn.execute("ALTER TABLE option_snapshots ADD COLUMN oi_change_pct REAL DEFAULT 0")
+        conn.commit()
+
     # Check if old unique index exists (without index_name) and drop it
     cursor = conn.execute("SELECT name, sql FROM sqlite_master WHERE type='index' AND name='idx_snapshots_timestamp'")
     row = cursor.fetchone()
@@ -81,6 +87,7 @@ def init_db():
             option_type TEXT NOT NULL,
             oi INTEGER DEFAULT 0,
             oi_change INTEGER DEFAULT 0,
+            oi_change_pct REAL DEFAULT 0,
             volume INTEGER DEFAULT 0,
             ltp REAL DEFAULT 0,
             iv REAL,
@@ -94,6 +101,21 @@ def init_db():
         )
     """)
 
+    # Daily OI baseline table — stores market-open OI for each contract
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS daily_oi_baseline (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            index_name TEXT NOT NULL DEFAULT 'NIFTY',
+            strike INTEGER NOT NULL,
+            option_type TEXT NOT NULL,
+            baseline_oi INTEGER NOT NULL,
+            source TEXT DEFAULT 'first_reading',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(date, index_name, strike, option_type)
+        )
+    """)
+
     # Indexes
     conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp ON snapshots(timestamp)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_date ON snapshots(date(timestamp))")
@@ -102,10 +124,12 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_option_snapshots_snapshot ON option_snapshots(snapshot_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_option_snapshots_strike ON option_snapshots(strike)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_option_snapshots_combo ON option_snapshots(snapshot_id, option_type, strike)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_baseline_lookup ON daily_oi_baseline(date, index_name, strike, option_type)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_baseline_date_index ON daily_oi_baseline(date, index_name)")
 
     conn.commit()
     conn.close()
-    print(f"[DB] Initialized at {DB_PATH} with WAL mode (multi-index support)")
+    print(f"[DB] Initialized at {DB_PATH} with WAL mode (multi-index support + OI baseline)")
 
 
 @contextmanager
@@ -124,3 +148,46 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
+
+
+# ─────────────────────────────────────────────────────────────
+# Daily OI Baseline Helpers
+# ─────────────────────────────────────────────────────────────
+
+def get_daily_baseline(conn, date_str, index_name, strike, option_type):
+    """Get the daily OI baseline for a specific contract."""
+    row = conn.execute(
+        "SELECT baseline_oi FROM daily_oi_baseline WHERE date = ? AND index_name = ? AND strike = ? AND option_type = ?",
+        (date_str, index_name, strike, option_type)
+    ).fetchone()
+    return row["baseline_oi"] if row else None
+
+
+def set_daily_baseline(conn, date_str, index_name, strike, option_type, baseline_oi, source="first_reading"):
+    """Set the daily OI baseline for a specific contract."""
+    conn.execute("""
+        INSERT OR REPLACE INTO daily_oi_baseline (date, index_name, strike, option_type, baseline_oi, source)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (date_str, index_name, strike, option_type, baseline_oi, source))
+    conn.commit()
+
+
+def get_yesterday_last_oi(conn, index_name, strike, option_type):
+    """Get the last recorded OI from the previous trading day."""
+    row = conn.execute("""
+        SELECT o.oi FROM option_snapshots o
+        JOIN snapshots s ON o.snapshot_id = s.id
+        WHERE s.index_name = ? AND o.strike = ? AND o.option_type = ?
+        AND date(s.timestamp) < date('now')
+        ORDER BY s.timestamp DESC LIMIT 1
+    """, (index_name, strike, option_type)).fetchone()
+    return row["oi"] if row else None
+
+
+def load_all_baselines_for_date(conn, date_str, index_name):
+    """Load all baselines for a given date and index into a dict."""
+    rows = conn.execute(
+        "SELECT strike, option_type, baseline_oi FROM daily_oi_baseline WHERE date = ? AND index_name = ?",
+        (date_str, index_name)
+    ).fetchall()
+    return {(row["strike"], row["option_type"]): row["baseline_oi"] for row in rows}

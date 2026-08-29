@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Play, Pause, SkipBack, SkipForward, RefreshCw } from 'lucide-react';
 import { DatePicker } from './DatePicker';
 
 interface ReplayControlsProps {
+  isFetching?: boolean;
   timestamps: string[];
   currentIndex: number;
   isPlaying: boolean;
@@ -30,15 +31,40 @@ export const ReplayControls: React.FC<ReplayControlsProps> = ({
   selectedIndex,
   onIndexChange,
   availableDates,
+  isFetching,
 }) => {
-  const currentTimestamp = timestamps[currentIndex] || '';
-  const timeOnly = currentTimestamp ? currentTimestamp.split(' ')[1] || currentTimestamp : '—';
+  // Local slider position for instant, smooth dragging
+  // currentIndex = committed (data loaded), sliderIndex = visual preview
+  const [sliderIndex, setSliderIndex] = useState(currentIndex);
+  const isDraggingRef = useRef(false);
+
+  // Sync slider when currentIndex changes externally (play button, step buttons, etc.)
+  useEffect(() => {
+    if (!isDraggingRef.current) {
+      setSliderIndex(currentIndex);
+    }
+  }, [currentIndex]);
+
+  // Time display comes from the local slider position (instant feedback)
+  const previewTimestamp = timestamps[sliderIndex] || '';
+  const timeOnly = previewTimestamp
+    ? previewTimestamp.split(' ')[1] || previewTimestamp
+    : '—';
+
   const firstTime = timestamps[0]?.split(' ')[1] || '09:15:00';
   const lastTime = timestamps[timestamps.length - 1]?.split(' ')[1] || '15:30:00';
 
-  const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    onSeek(Number(e.target.value));
-  };
+  // ── Slider handlers: optimistic, no API calls while dragging ──
+  const handleSliderChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const newIndex = Number(e.target.value);
+    setSliderIndex(newIndex);
+    isDraggingRef.current = true;
+  }, []);
+
+  const handleSliderRelease = useCallback(() => {
+    isDraggingRef.current = false;
+    onSeek(sliderIndex);
+  }, [sliderIndex, onSeek]);
 
   const stepBack = () => {
     if (currentIndex > 0) onSeek(currentIndex - 1);
@@ -46,6 +72,15 @@ export const ReplayControls: React.FC<ReplayControlsProps> = ({
 
   const stepForward = () => {
     if (currentIndex < timestamps.length - 1) onSeek(currentIndex + 1);
+  };
+
+  // Helper: format date string as day name + short date (Mon, 29 Aug)
+  const fmtDayPill = (dateStr: string) => {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const dateObj = new Date(y, m - 1, d);
+    const dayName = dateObj.toLocaleDateString('en-US', { weekday: 'short' });
+    const dateLabel = dateObj.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+    return { dayName, dateLabel };
   };
 
   return (
@@ -65,34 +100,39 @@ export const ReplayControls: React.FC<ReplayControlsProps> = ({
 
         <div className="w-px h-6 bg-terminal-border" />
 
-        {/* Custom Date Picker with highlighted dates */}
+        {/* Custom Date Picker */}
         <DatePicker
           selectedDate={selectedDate}
           onDateChange={onDateChange}
           availableDates={availableDates}
         />
 
-        {/* Quick date pills */}
+        {/* Quick date pills — last 5 trading days with day names */}
         {availableDates.length > 0 && (
-          <div className="flex gap-1 flex-wrap max-w-[300px]">
-            {availableDates.slice(0, 5).map((d) => (
-              <button
-                key={d}
-                onClick={() => onDateChange(d)}
-                className={`text-[10px] font-mono px-2 py-0.5 rounded transition-colors ${
-                  d === selectedDate
-                    ? 'bg-terminal-pe/20 text-terminal-pe border border-terminal-pe/30'
-                    : 'bg-terminal-bg text-terminal-muted border border-terminal-border hover:text-terminal-text'
-                }`}
-              >
-                {d.slice(5)}
-              </button>
-            ))}
-            {availableDates.length > 5 && (
-              <span className="text-[10px] font-mono text-terminal-muted self-center">
-                +{availableDates.length - 5}
-              </span>
-            )}
+          <div className="flex gap-1.5 flex-wrap">
+            {availableDates.slice(0, 5).map((d) => {
+              const { dayName, dateLabel } = fmtDayPill(d);
+              const isSelected = d === selectedDate;
+              return (
+                <button
+                  key={d}
+                  onClick={() => onDateChange(d)}
+                  title={`${d} — ${dateLabel}`}
+                  className={`flex flex-col items-center justify-center text-center px-2.5 py-1 rounded transition-colors min-w-[52px] ${
+                    isSelected
+                      ? 'bg-terminal-pe/20 text-terminal-pe border border-terminal-pe/30'
+                      : 'bg-terminal-bg text-terminal-muted border border-terminal-border hover:text-terminal-text'
+                  }`}
+                >
+                  <span className="text-[10px] font-mono font-bold leading-none uppercase tracking-wide">
+                    {dayName}
+                  </span>
+                  <span className="text-[8px] font-mono opacity-60 leading-none mt-0.5">
+                    {dateLabel}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         )}
 
@@ -136,20 +176,27 @@ export const ReplayControls: React.FC<ReplayControlsProps> = ({
 
         <div className="w-px h-6 bg-terminal-border" />
 
-        {/* Time display */}
-        <div className="font-mono text-sm font-bold text-terminal-atm min-w-[80px]">
+        {/* Time display — from local slider position (instant) */}
+        <div className={`font-mono text-sm font-bold min-w-[80px] flex items-center gap-1.5 transition-colors duration-200 ${
+          isFetching ? 'text-terminal-atm/50' : 'text-terminal-atm'
+        }`}>
           {timeOnly}
+          {isFetching && (
+            <span className="w-1 h-1 rounded-full bg-terminal-atm animate-pulse" title="Fetching snapshot..." />
+          )}
         </div>
 
-        {/* Slider */}
+        {/* Slider — optimistic, only seeks on release */}
         <div className="flex-1 flex items-center gap-2 min-w-[200px]">
           <span className="text-[10px] font-mono text-terminal-muted">{firstTime}</span>
           <input
             type="range"
             min={0}
             max={Math.max(timestamps.length - 1, 0)}
-            value={currentIndex}
+            value={sliderIndex}
             onChange={handleSliderChange}
+            onMouseUp={handleSliderRelease}
+            onTouchEnd={handleSliderRelease}
             className="flex-1 h-1.5 bg-terminal-border rounded-lg appearance-none cursor-pointer"
             style={{ accentColor: '#eab308' }}
           />

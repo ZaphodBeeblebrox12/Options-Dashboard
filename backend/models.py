@@ -9,6 +9,7 @@ class OptionData(BaseModel):
     option_type: str
     oi: int
     oi_change: int
+    oi_change_pct: Optional[float] = None   # v2.1: percentage change from day baseline
     volume: int
     ltp: float
     iv: Optional[float] = None
