@@ -115,14 +115,24 @@ app.add_middleware(
 
 
 async def broadcast_loop():
-    """Broadcast live data every 2 seconds to all connected clients."""
+    """Broadcast live data every 5 seconds to all connected clients.
+
+    FIX: CPU-heavy analytics (calculate_analytics -> brentq + Black-Scholes)
+    are offloaded to a background thread via asyncio.to_thread() so the
+    main event loop never blocks. WebSocket pings, HTTP endpoints, and
+    new connections remain responsive.
+    """
     while True:
         try:
             await asyncio.sleep(5)
             if manager.active_connections:
                 for index_name in STREAMING_INDICES:
                     if index_name in streamer_adapter.streamers:
-                        state = streamer_adapter.get_current_state(index_name)
+                        # Offload sync CPU work (Greek calculation) off the event loop
+                        state = await asyncio.to_thread(
+                            streamer_adapter.get_current_state,
+                            index_name
+                        )
                         await manager.broadcast(state)
         except asyncio.CancelledError:
             break
@@ -343,9 +353,14 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         # Send initial state for all indices
+        # FIX: Offload CPU-heavy analytics to a background thread so the
+        # event loop stays free for other connections.
         for index_name in STREAMING_INDICES:
             if index_name in streamer_adapter.streamers:
-                state = streamer_adapter.get_current_state(index_name)
+                state = await asyncio.to_thread(
+                    streamer_adapter.get_current_state,
+                    index_name
+                )
                 await manager.send_personal_message(state, websocket)
 
         # Keep connection alive with timeout on receive

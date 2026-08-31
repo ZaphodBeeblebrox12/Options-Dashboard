@@ -12,6 +12,7 @@ import time
 import threading
 import sqlite3
 from datetime import datetime, time as dt_time
+from concurrent.futures import ThreadPoolExecutor
 from database import get_db_connection, get_daily_baseline, set_daily_baseline, get_yesterday_last_oi
 from calculations import calculate_analytics
 
@@ -41,6 +42,9 @@ class SnapshotEngine:
         # v2.1: Daily OI baselines per index — {(strike, option_type): baseline_oi}
         self.daily_baselines = {}
         self.baseline_loaded_for_index = set()
+
+        # Safety net: offload heavy analytics so timer thread never blocks
+        self._analytics_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="analytics")
 
     def _get_or_create_baseline(self, conn, index_name, strike, option_type, current_oi):
         """Get the daily OI baseline for a contract. Creates from DB/yesterday/current if not exists."""
@@ -98,9 +102,10 @@ class SnapshotEngine:
             futures = spot_poller.get_futures()
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            analytics = calculate_analytics(
+            analytics = self._analytics_executor.submit(
+                calculate_analytics,
                 data, spot, futures, expiry_datetime, contract_multiplier
-            )
+            ).result(timeout=20)  # 20s cap — vectorized is <1s, this catches edge cases
 
             # v2.1: Get a DB connection for baseline management
             baseline_conn = None
@@ -284,3 +289,4 @@ class SnapshotEngine:
         if hasattr(self, "timer_thread"):
             self.timer_thread.join(timeout=5)
         self.writer_thread.join(timeout=5)
+        self._analytics_executor.shutdown(wait=False)

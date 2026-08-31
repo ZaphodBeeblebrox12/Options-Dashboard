@@ -135,7 +135,14 @@ function App() {
     // Fallback: latest snapshot
     setCurrentIndex(timestamps.length - 1);
     hasRestoredRef.current = true;
-  }, [timestamps.length]);
+  }, [timestamps, selectedDate]);
+
+  // ── Auto-advance to latest snapshot in live mode ───────────────
+  useEffect(() => {
+    if (liveMode && timestamps.length > 0 && !isPlaying) {
+      setCurrentIndex(timestamps.length - 1);
+    }
+  }, [timestamps, liveMode, isPlaying]);
 
   // ── Restore scroll position once after timestamp is restored ─────
   useEffect(() => {
