@@ -318,14 +318,14 @@ class MockIndexStreamer:
                 "data": {**self._state_cache["data"], "timestamp": datetime.now().isoformat()}
             }
 
-        from calculations import calculate_analytics
+        from calculations import calculate_mock_analytics
         data = self.data_store.get_data()
         spot = self.spot_poller.get_spot()
         futures = self.spot_poller.get_futures()
         diff, pct, label = self.spot_poller.get_premium_discount() or (None, None, None)
 
         try:
-            analytics = calculate_analytics(
+            analytics = calculate_mock_analytics(
                 data, spot, futures, self.expiry_datetime, self.contract_multiplier
             )
             enriched_options = []
