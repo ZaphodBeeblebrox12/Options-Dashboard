@@ -25,7 +25,7 @@ if os.path.exists(env_path):
     print(f"[ENV] Loaded: {env_path}")
 else:
     print(f"[ENV] Warning: {env_path} not found. Create it from .env.example")
-    print("[ENV] The server will start in MOCK mode with synthetic data.")
+    print("[ENV] The server will start with historical replay only (live streaming unavailable).")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,7 +64,7 @@ async def lifespan(app: FastAPI):
     init_db()
     log_startup_status()
 
-    # Start streamers (real or mock — never crashes the server)
+    # Start streamers (real mode only — safe fallback to unavailable)
     try:
         streamer_adapter.start()
         for index_name in STREAMING_INDICES:
@@ -83,9 +83,10 @@ async def lifespan(app: FastAPI):
     broadcast_task = asyncio.create_task(broadcast_loop())
     print(f"[FastAPI] Server ready at http://localhost:8000")
     print(f"[FastAPI] Mode: {streamer_adapter.mode.upper()}")
-    if streamer_adapter.mode == "mock":
-        print("[FastAPI] NOTE: Running with synthetic data.")
-        print("[FastAPI] For real market data:")
+    if streamer_adapter.mode == "unavailable":
+        print("[FastAPI] WARNING: Live streaming unavailable.")
+        print("[FastAPI] Historical replay from DB is still available.")
+        print("[FastAPI] To enable live data:")
         print("  1. pip install smartapi-python pyotp")
         print("  2. cp .env.example .env")
         print("  3. Edit .env with your Angel One credentials")
@@ -125,6 +126,8 @@ async def broadcast_loop():
     while True:
         try:
             await asyncio.sleep(5)
+            if streamer_adapter.mode != "real":
+                continue
             if manager.active_connections:
                 for index_name in STREAMING_INDICES:
                     if index_name in streamer_adapter.streamers:
@@ -339,7 +342,7 @@ async def get_strikes(
 async def get_market_status():
     return {
         "market_open": is_market_open(),
-        "demo_mode": streamer_adapter.mode == "mock",
+        "live_available": streamer_adapter.mode == "real",
         "timestamp": datetime.now().isoformat(),
     }
 

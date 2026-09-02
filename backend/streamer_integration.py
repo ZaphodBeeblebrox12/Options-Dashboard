@@ -1,17 +1,12 @@
 """Real-time Angel One SmartAPI v2 integration for NIFTY/SENSEX.
 
-FIXES APPLIED (v2.2):
-1. Daily OI baseline tracking — oi_change = current_oi - day_baseline_oi
-   (matches broker: change from market open / previous close)
-2. Removed hardcoded prev_oi = 0 in both Mock and Real streamers
-3. Added oi_change_pct for percentage display
-4. Baselines persist to DB and load on restart (with yesterday fallback)
-5. FIX v2.2: Live streamer now seeds baselines from yesterday's closing OI
-   on startup, so OI Change matches broker even if server starts mid-day.
+PURGED (v3.0):
+- Removed MockIndexStreamer, INDEX_MOCK_CONFIG, FORCE_REAL
+- Removed mock fallback — server starts in "real" or "unavailable" mode only
+- Historical replay from SQLite still works when live is unavailable
 """
 import os
 import copy
-import random
 import threading
 import time
 import logging
@@ -20,16 +15,8 @@ from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-# ── Force real mode ──────────────────────────────────────────
-FORCE_REAL = os.getenv("FORCE_REAL", "false").lower() in ("1", "true", "yes")
-
 # ── Scalable index configuration ─────────────────────────────
 STREAMING_INDICES = ["NIFTY", "SENSEX"]
-
-INDEX_MOCK_CONFIG = {
-    "NIFTY":     {"base_spot": 24500.0, "strike_range": (24000, 25100), "strike_step": 50},
-    "SENSEX":    {"base_spot": 80500.0, "strike_range": (79500, 81500), "strike_step": 100},
-}
 
 # ── Try to import Angel One libs ─────────────────────────────
 ANGEL_ONE_AVAILABLE = False
@@ -42,11 +29,6 @@ try:
     logger.info("[Streamer] smartapi-python detected ✓")
 except ImportError as e:
     logger.warning(f"[Streamer] smartapi-python NOT installed: {e}")
-    if FORCE_REAL:
-        raise RuntimeError(
-            "FORCE_REAL=true but smartapi-python is not installed. "
-            "Run: pip install smartapi-python pyotp"
-        )
 
 
 def is_market_open() -> bool:
@@ -78,8 +60,6 @@ if ANGEL_ONE_AVAILABLE:
 
             if missing:
                 msg = f"Missing Angel One credentials: {', '.join(missing)}. Set them in backend/.env"
-                if FORCE_REAL:
-                    raise ValueError(msg)
                 raise ValueError(msg)
 
             self.smart_api = SmartConnect(self.api_key)
@@ -184,7 +164,7 @@ class LiveDataStore:
             return self.daily_oi_baseline.get((strike, option_type), None)
 
     def set_daily_baseline(self, strike, option_type, oi):
-        """FIX v2.2: Allow external seeding of baselines (e.g. from yesterday's close)."""
+        """Allow external seeding of baselines (e.g. from yesterday's close)."""
         with self.lock:
             self.daily_oi_baseline[(strike, option_type)] = oi
 
@@ -248,154 +228,6 @@ class SpotPricePoller:
 
 
 # =====================================================================
-#  MOCK STREAMER  (v2.1 — fixed OI change)
-# =====================================================================
-class MockIndexStreamer:
-    """Generates realistic synthetic option chain data for UI testing."""
-
-    def __init__(self, index_name: str, base_spot: float, strike_range: tuple, strike_step: int):
-        self.index_name = index_name
-        self.base_spot = base_spot
-        self.strike_range = strike_range
-        self.strike_step = strike_step
-        self.data_store = LiveDataStore()
-        self.spot_poller = SpotPricePoller()
-        self.running = False
-        self.thread = None
-        self._mock_spot = base_spot
-        self._mock_strikes = list(range(strike_range[0], strike_range[1] + 1, strike_step))
-        self._mock_direction = 1
-        self.contract_multiplier = 50 if index_name == "NIFTY" else 10
-        self.expiry_datetime = datetime.now() + __import__("datetime").timedelta(days=7)
-        self.expiry_datetime = self.expiry_datetime.replace(hour=15, minute=30, second=0, microsecond=0)
-        self.expiry_str = self.expiry_datetime.strftime("%d%b%Y").upper()
-        self._state_cache = None
-        self._state_cache_time = 0
-
-    def start(self):
-        self.running = True
-        self.thread = threading.Thread(target=self._mock_stream_loop, daemon=True)
-        self.thread.start()
-        logger.info(f"[{self.index_name}] MOCK streamer started (spot ~{self.base_spot})")
-
-    def _mock_stream_loop(self):
-        import random
-        while self.running:
-            self._mock_spot += random.uniform(-5, 5) * self._mock_direction
-            if self._mock_spot > self.base_spot + 200:
-                self._mock_direction = -1
-            elif self._mock_spot < self.base_spot - 200:
-                self._mock_direction = 1
-
-            self.spot_poller.update_from_ws(self._mock_spot)
-            self.spot_poller.update_futures_from_ws(self._mock_spot + random.uniform(-10, 15))
-
-            for strike in self._mock_strikes:
-                distance = abs(strike - self._mock_spot)
-
-                ce_ltp = max(self._mock_spot - strike + random.uniform(-2, 2), 0.5)
-                ce_oi = int(50000 + random.uniform(-5000, 5000) + max(0, 100000 - distance * 50))
-                ce_vol = int(ce_oi * 0.1 + random.uniform(0, 1000))
-                self.data_store.update(strike, "CE", round(ce_ltp, 2), int(ce_oi), int(ce_vol))
-
-                pe_ltp = max(strike - self._mock_spot + random.uniform(-2, 2), 0.5)
-                pe_oi = int(50000 + random.uniform(-5000, 5000) + max(0, 100000 - distance * 50))
-                pe_vol = int(pe_oi * 0.1 + random.uniform(0, 1000))
-                self.data_store.update(strike, "PE", round(pe_ltp, 2), int(pe_oi), int(pe_vol))
-
-            time.sleep(1)
-
-    def stop(self):
-        self.running = False
-        if self.thread:
-            self.thread.join(timeout=5)
-
-    def get_current_state(self):
-        now = time.time()
-        if self._state_cache is not None and now - self._state_cache_time < 1.0:
-            return {
-                **self._state_cache,
-                "data": {**self._state_cache["data"], "timestamp": datetime.now().isoformat()}
-            }
-
-        from calculations import calculate_mock_analytics
-        data = self.data_store.get_data()
-        spot = self.spot_poller.get_spot()
-        futures = self.spot_poller.get_futures()
-        diff, pct, label = self.spot_poller.get_premium_discount() or (None, None, None)
-
-        try:
-            analytics = calculate_mock_analytics(
-                data, spot, futures, self.expiry_datetime, self.contract_multiplier
-            )
-            enriched_options = []
-            for strike in sorted(data.keys()):
-                for opt_type in ["CE", "PE"]:
-                    opt = data[strike].get(opt_type, {})
-                    analytics_opt = analytics["strikes_data"].get(strike, {}).get(opt_type, {})
-
-                    # FIX v2.1: Use daily baseline instead of hardcoded 0
-                    current_oi = opt.get("oi", 0)
-                    oi_change, oi_change_pct = self.data_store.compute_oi_change(strike, opt_type, current_oi)
-
-                    enriched_options.append({
-                        "strike": strike,
-                        "option_type": opt_type,
-                        "oi": current_oi,
-                        "oi_change": oi_change,
-                        "oi_change_pct": oi_change_pct,
-                        "volume": opt.get("volume", 0),
-                        "ltp": opt.get("ltp", 0),
-                        "iv": analytics_opt.get("iv"),
-                        "delta": analytics_opt.get("delta"),
-                        "gamma": analytics_opt.get("gamma"),
-                        "theta": analytics_opt.get("theta"),
-                        "vega": analytics_opt.get("vega"),
-                        "gex": analytics_opt.get("gex"),
-                    })
-
-            result = {
-                "type": "tick",
-                "data": {
-                    "index_name": self.index_name,
-                    "spot": spot,
-                    "futures": futures,
-                    "futures_spread": analytics.get("futures_spread"),
-                    "futures_spread_pct": round(pct, 3) if pct else None,
-                    "spread_label": label,
-                    "timestamp": datetime.now().isoformat(),
-                    "options": enriched_options,
-                    "net_gex": analytics.get("net_gex"),
-                    "max_gex_strike": analytics.get("max_gex_strike"),
-                    "max_pain": analytics.get("max_pain"),
-                    "gamma_flip": analytics.get("gamma_flip"),
-                    "demo_mode": True,
-                    "market_open": is_market_open(),
-                    "contract_multiplier": self.contract_multiplier,
-                    "expiry": self.expiry_str,
-                }
-            }
-            self._state_cache = result
-            self._state_cache_time = time.time()
-            return result
-        except Exception as e:
-            logger.error(f"[{self.index_name}] Mock analytics error: {e}")
-            return {
-                "type": "tick",
-                "data": {
-                    "index_name": self.index_name,
-                    "spot": spot,
-                    "futures": futures,
-                    "timestamp": datetime.now().isoformat(),
-                    "options": [],
-                    "demo_mode": True,
-                    "market_open": is_market_open(),
-                    "error": str(e),
-                }
-            }
-
-
-# =====================================================================
 #  REAL STREAMER  (v2.2 — fixed OI change + yesterday baseline seed)
 # =====================================================================
 if ANGEL_ONE_AVAILABLE:
@@ -425,7 +257,7 @@ if ANGEL_ONE_AVAILABLE:
 
             self._load_instruments()
             self._load_baselines_from_db()
-            self._load_yesterday_baselines()   # FIX v2.2
+            self._load_yesterday_baselines()
 
         def _load_instruments(self):
             from scrip_master import scrip_master
@@ -455,11 +287,6 @@ if ANGEL_ONE_AVAILABLE:
                     logger.info(f"[{self.index_name}] Loaded {len(self.options_df)} option contracts")
                 else:
                     logger.warning(f"[{self.index_name}] No options found for expiry {expiry_str}")
-                    if FORCE_REAL:
-                        raise RuntimeError(
-                            f"FORCE_REAL=true but no options found for {self.index_name} "
-                            f"expiry {expiry_str}. Check scrip master data."
-                        )
             except Exception as e:
                 logger.error(f"[{self.index_name}] Instrument load failed: {e}")
                 raise
@@ -478,7 +305,6 @@ if ANGEL_ONE_AVAILABLE:
             except Exception as e:
                 logger.warning(f"[{self.index_name}] Could not load baselines from DB: {e}")
 
-        # FIX v2.2: Seed baselines from yesterday's closing OI on startup
         def _load_yesterday_baselines(self):
             """Seed baselines with yesterday's closing OI so OI change matches broker."""
             try:
@@ -527,14 +353,10 @@ if ANGEL_ONE_AVAILABLE:
             try:
                 if not self.auth_manager.login():
                     logger.error(f"[{self.index_name}] Initial login failed")
-                    if FORCE_REAL:
-                        raise RuntimeError(f"FORCE_REAL=true but Angel One login failed for {self.index_name}")
                     return
                 self._init_websocket()
             except Exception as e:
                 logger.error(f"[{self.index_name}] Streamer thread crashed: {e}")
-                if FORCE_REAL:
-                    raise
 
         def _init_websocket(self):
             retry_count = 0
@@ -563,10 +385,6 @@ if ANGEL_ONE_AVAILABLE:
                     retry_count += 1
                     time.sleep(min(2 ** retry_count, 30))
             logger.error(f"[{self.index_name}] Max WebSocket retries reached")
-            if FORCE_REAL:
-                raise RuntimeError(
-                    f"FORCE_REAL=true but WebSocket connection failed after {max_retries} retries"
-                )
 
         def _on_open(self, wsapp):
             try:
@@ -697,7 +515,6 @@ if ANGEL_ONE_AVAILABLE:
                         "futures": futures,
                         "timestamp": datetime.now().isoformat(),
                         "options": [],
-                        "demo_mode": False,
                         "market_open": is_market_open(),
                         "message": "Waiting for market data...",
                     }
@@ -713,7 +530,6 @@ if ANGEL_ONE_AVAILABLE:
                         opt = data[strike].get(opt_type, {})
                         analytics_opt = analytics["strikes_data"].get(strike, {}).get(opt_type, {})
 
-                        # FIX v2.1: Use daily baseline instead of hardcoded 0
                         current_oi = opt.get("oi", 0)
                         oi_change, oi_change_pct = self.data_store.compute_oi_change(strike, opt_type, current_oi)
 
@@ -748,7 +564,6 @@ if ANGEL_ONE_AVAILABLE:
                         "max_gex_strike": analytics.get("max_gex_strike"),
                         "max_pain": analytics.get("max_pain"),
                         "gamma_flip": analytics.get("gamma_flip"),
-                        "demo_mode": False,
                         "market_open": is_market_open(),
                         "contract_multiplier": self.contract_multiplier,
                         "expiry": self.expiry_str,
@@ -767,7 +582,6 @@ if ANGEL_ONE_AVAILABLE:
                         "futures": futures,
                         "timestamp": datetime.now().isoformat(),
                         "options": [],
-                        "demo_mode": False,
                         "market_open": is_market_open(),
                         "error": str(e),
                     }
@@ -778,10 +592,9 @@ if ANGEL_ONE_AVAILABLE:
 #  STREAMER ADAPTER
 # =====================================================================
 class StreamerAdapter:
-    """Manages multiple index streamers. Auto-falls back to mock if real is unavailable."""
+    """Manages multiple index streamers. No mock fallback — real or unavailable."""
 
-    def __init__(self, force_mock: bool = False):
-        self.force_mock = force_mock
+    def __init__(self):
         self.streamers: Dict[str, any] = {}
         self.running = False
         self.mode = "unknown"
@@ -790,78 +603,44 @@ class StreamerAdapter:
     def start(self):
         self.running = True
 
-        if not self.force_mock and ANGEL_ONE_AVAILABLE:
-            try:
-                self.auth_manager = AuthManager()
-                if self.auth_manager.login():
-                    self.mode = "real"
-                    logger.info("[StreamerAdapter] REAL mode activated (Angel One SmartAPI)")
+        if not ANGEL_ONE_AVAILABLE:
+            self.mode = "unavailable"
+            logger.warning("[StreamerAdapter] smartapi-python not installed. Live streaming unavailable.")
+            logger.warning("[StreamerAdapter] Historical replay from DB still works.")
+            return
 
-                    for index_name in STREAMING_INDICES:
-                        try:
-                            streamer = AngelOneIndexStreamer(index_name, self.auth_manager)
-                            streamer.start()
-                            self.streamers[index_name] = streamer
-                            time.sleep(2)
-                        except Exception as e:
-                            logger.error(f"[StreamerAdapter] Failed to start {index_name}: {e}")
-                            if FORCE_REAL:
-                                raise
+        try:
+            self.auth_manager = AuthManager()
+            if self.auth_manager.login():
+                self.mode = "real"
+                logger.info("[StreamerAdapter] REAL mode activated (Angel One SmartAPI)")
 
-                    if self.streamers:
-                        market_status = "OPEN" if is_market_open() else "CLOSED"
-                        indices = ", ".join(self.streamers.keys())
-                        logger.info(f"[StreamerAdapter] Streaming {indices}. Market: {market_status}.")
-                        return
-                    else:
-                        msg = "[StreamerAdapter] No real streamers started"
-                        logger.warning(msg)
-                        if FORCE_REAL:
-                            raise RuntimeError(f"{msg} and FORCE_REAL=true")
-                        logger.warning("[StreamerAdapter] Falling back to mock...")
+                for index_name in STREAMING_INDICES:
+                    try:
+                        streamer = AngelOneIndexStreamer(index_name, self.auth_manager)
+                        streamer.start()
+                        self.streamers[index_name] = streamer
+                        time.sleep(2)
+                    except Exception as e:
+                        logger.error(f"[StreamerAdapter] Failed to start {index_name}: {e}")
+
+                if self.streamers:
+                    market_status = "OPEN" if is_market_open() else "CLOSED"
+                    indices = ", ".join(self.streamers.keys())
+                    logger.info(f"[StreamerAdapter] Streaming {indices}. Market: {market_status}.")
                 else:
-                    msg = "[StreamerAdapter] Angel One login failed"
-                    logger.warning(msg)
-                    if FORCE_REAL:
-                        raise RuntimeError(f"{msg} and FORCE_REAL=true")
-                    logger.warning("[StreamerAdapter] Falling back to mock...")
-            except ValueError as e:
-                logger.warning(f"[StreamerAdapter] {e}")
-                if FORCE_REAL:
-                    raise
-                logger.warning("[StreamerAdapter] Create backend/.env with credentials for real data.")
-            except Exception as e:
-                logger.error(f"[StreamerAdapter] Real mode failed: {e}")
-                if FORCE_REAL:
-                    raise
-        else:
-            if not ANGEL_ONE_AVAILABLE:
-                logger.warning("[StreamerAdapter] smartapi-python not installed.")
-                if FORCE_REAL:
-                    raise RuntimeError("FORCE_REAL=true but smartapi-python not installed")
-            if self.force_mock:
-                logger.info("[StreamerAdapter] Mock mode forced by user.")
-
-        if FORCE_REAL:
-            raise RuntimeError("FORCE_REAL=true but could not start real mode. Check logs above.")
-
-        self.mode = "mock"
-        logger.info("[StreamerAdapter] MOCK mode activated — synthetic data for UI testing")
-
-        for index_name in STREAMING_INDICES:
-            cfg = INDEX_MOCK_CONFIG.get(index_name)
-            if cfg:
-                self.streamers[index_name] = MockIndexStreamer(
-                    index_name,
-                    cfg["base_spot"],
-                    cfg["strike_range"],
-                    cfg["strike_step"]
-                )
-
-        for streamer in self.streamers.values():
-            streamer.start()
-
-        logger.info(f"[StreamerAdapter] Mock streamers running for: {', '.join(self.streamers.keys())}")
+                    logger.error("[StreamerAdapter] No real streamers started")
+                    self.mode = "unavailable"
+            else:
+                logger.error("[StreamerAdapter] Angel One login failed")
+                self.mode = "unavailable"
+        except ValueError as e:
+            logger.warning(f"[StreamerAdapter] {e}")
+            logger.warning("[StreamerAdapter] Create backend/.env with credentials for real data.")
+            self.mode = "unavailable"
+        except Exception as e:
+            logger.error(f"[StreamerAdapter] Real mode failed: {e}")
+            self.mode = "unavailable"
 
     def stop(self):
         self.running = False
@@ -895,4 +674,4 @@ class StreamerAdapter:
 
 
 # Global instance
-streamer_adapter = StreamerAdapter(force_mock=False)
+streamer_adapter = StreamerAdapter()

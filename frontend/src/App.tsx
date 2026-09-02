@@ -48,7 +48,6 @@ function App() {
   const [fullMode, setFullMode] = useState(persisted.fullMode ?? false);
   const [selectedStrike, setSelectedStrike] = useState<number | null>(persisted.selectedStrike ?? null);
   const [liveMode, setLiveMode] = useState(persisted.liveMode ?? true);
-  const [demoMode, setDemoMode] = useState(false);
   const [marketOpen, setMarketOpen] = useState(true);
   const [wsErrorMap, setWsErrorMap] = useState<Record<string, string | null>>({});
   const [showReconnectBanner, setShowReconnectBanner] = useState(false);
@@ -174,9 +173,6 @@ function App() {
     if (lastMessage?.type === 'tick') {
       const idx = lastMessage.data?.index_name || 'NIFTY';
       setLiveDataMap((prev) => ({ ...prev, [idx]: lastMessage.data }));
-      if (lastMessage.data.demo_mode !== undefined) {
-        setDemoMode(lastMessage.data.demo_mode);
-      }
       if (lastMessage.data.market_open !== undefined) {
         setMarketOpen(lastMessage.data.market_open);
       }
@@ -354,15 +350,8 @@ function App() {
         </div>
       )}
 
-      {demoMode && (
-        <div className="bg-amber-900/30 border-b border-amber-700/50 px-4 py-1.5 flex items-center justify-center gap-2">
-          <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
-          <span className="text-xs font-mono text-amber-300">
-            DEMO MODE — Synthetic {selectedIndex} data for UI testing. No real market data.
-          </span>
-        </div>
-      )}
-      {!marketOpen && !demoMode && (
+
+      {!marketOpen && (
         <div className="bg-slate-800/50 border-b border-slate-700/50 px-4 py-1.5 flex items-center justify-center gap-2">
           <Info className="w-3.5 h-3.5 text-slate-400" />
           <span className="text-xs font-mono text-slate-400">
@@ -391,11 +380,7 @@ function App() {
             <span className="sm:hidden">{connected ? 'WS' : '—'}</span>
             <span className="hidden sm:inline">{connected ? 'WS Connected' : 'WS Disconnected'}</span>
           </span>
-          {demoMode && (
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-900/30 text-amber-400 border border-amber-700/30 shrink-0">
-              DEMO
-            </span>
-          )}
+
         </div>
         <div className="flex items-center gap-2">
           <button
