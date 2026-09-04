@@ -63,8 +63,13 @@ export const ReplayControls: React.FC<ReplayControlsProps> = ({
 
   const handleSliderRelease = useCallback(() => {
     isDraggingRef.current = false;
-    onSeek(sliderIndex);
-  }, [sliderIndex, onSeek]);
+    // If user released near the end (within 2 snaps), snap to the actual latest
+    // so they don't get stuck one-behind if a new snapshot arrived mid-drag
+    const target = (sliderIndex >= timestamps.length - 2 && timestamps.length > 0)
+      ? timestamps.length - 1
+      : sliderIndex;
+    onSeek(target);
+  }, [sliderIndex, onSeek, timestamps.length]);
 
   const stepBack = () => {
     if (currentIndex > 0) onSeek(currentIndex - 1);

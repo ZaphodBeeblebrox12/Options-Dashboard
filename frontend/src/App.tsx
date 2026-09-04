@@ -5,11 +5,16 @@ import { ReplayControls } from './components/ReplayControls';
 import { GexChart } from './components/GexChart';
 import { StrikeChart } from './components/StrikeChart';
 import { NetGexChart } from './components/NetGexChart';
+import { AlertSettingsPanel } from './components/AlertSettings';
+import { AlertHistoryPanel } from './components/AlertHistory';
+import { AlertToastContainer } from './components/AlertToast';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useSnapshots, useSnapshot, useGexHistory, useStrikeHistory, useGexByStrike, useAvailableDates } from './hooks/useApi';
-import { Eye, EyeOff, Monitor, AlertTriangle, Info, WifiOff } from 'lucide-react';
+import { useAlertSettings, useAlertNotifications, AlertFiring } from './hooks/useAlerts';
+import { Eye, EyeOff, Monitor, AlertTriangle, Info, WifiOff, Bell, Settings, X } from 'lucide-react';
 
 const STORAGE_KEY = 'option_chain_view_state';
+const HISTORY_LAST_OPENED_KEY = 'history_last_opened_at';
 const SCROLL_KEY = 'option_chain_scroll_y';
 
 interface PersistedState {
@@ -34,6 +39,13 @@ function savePersistedState(state: PersistedState) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch {}
 }
+function getLastOpenedHistory(): string {
+  try { return localStorage.getItem(HISTORY_LAST_OPENED_KEY) || ''; } catch { return ''; }
+}
+function saveLastOpenedHistory(ts: string) {
+  try { localStorage.setItem(HISTORY_LAST_OPENED_KEY, ts); } catch {}
+}
+
 
 function App() {
   const persisted = loadPersistedState();
@@ -51,6 +63,9 @@ function App() {
   const [marketOpen, setMarketOpen] = useState(true);
   const [wsErrorMap, setWsErrorMap] = useState<Record<string, string | null>>({});
   const [showReconnectBanner, setShowReconnectBanner] = useState(false);
+  const [showAlertSettings, setShowAlertSettings] = useState(false);
+  const [showAlertHistory, setShowAlertHistory] = useState(false);
+  const [unseenAlertCount, setUnseenAlertCount] = useState(0);
   const playTimerRef = useRef<ReturnType<typeof setInterval>>();
   const hasRestoredRef = useRef(false);
   const enteringLiveRef = useRef(false);
@@ -68,144 +83,126 @@ function App() {
   const availableDates = useAvailableDates(selectedIndex, liveMode);
 
   const [liveDataMap, setLiveDataMap] = useState<Record<string, any>>({});
+  const { settings: alertSettings } = useAlertSettings();
+  const { toasts, addToast, removeToast, playAlertSound } = useAlertNotifications();
 
-  // ── Ref that always holds the latest saveable state ──────────────
   const saveableStateRef = useRef<PersistedState>({
-    selectedIndex,
-    selectedDate,
-    currentTimestamp: null,
-    liveMode,
-    fullMode,
-    selectedStrike,
+    selectedIndex, selectedDate, currentTimestamp: null,
+    liveMode, fullMode, selectedStrike,
   });
 
   useEffect(() => {
     saveableStateRef.current = {
-      selectedIndex,
-      selectedDate,
+      selectedIndex, selectedDate,
       currentTimestamp: currentIndex >= 0 && currentIndex < timestamps.length ? timestamps[currentIndex] : null,
-      liveMode,
-      fullMode,
-      selectedStrike,
+      liveMode, fullMode, selectedStrike,
     };
   });
 
-  // ── Save state + scroll position before unload / hide ────────────
   useEffect(() => {
     const save = () => {
       savePersistedState(saveableStateRef.current);
-      try {
-        localStorage.setItem(SCROLL_KEY, String(window.scrollY));
-      } catch {}
+      try { localStorage.setItem(SCROLL_KEY, String(window.scrollY)); } catch {}
     };
     window.addEventListener('beforeunload', save);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') save();
     });
-    return () => {
-      window.removeEventListener('beforeunload', save);
-    };
+    return () => { window.removeEventListener('beforeunload', save); };
   }, []);
 
-  // ── Restore timestamp from persisted state ───────────────────────
   useEffect(() => {
     if (hasRestoredRef.current) return;
     if (timestamps.length === 0) return;
-
-    // If user explicitly entered live mode, jump to latest
     if (enteringLiveRef.current) {
       setCurrentIndex(timestamps.length - 1);
       enteringLiveRef.current = false;
       hasRestoredRef.current = true;
       return;
     }
-
-    // Otherwise try to restore the exact saved timestamp
     const savedTs = persisted.currentTimestamp;
     if (savedTs) {
       const idx = timestamps.indexOf(savedTs);
-      if (idx >= 0) {
-        setCurrentIndex(idx);
-        hasRestoredRef.current = true;
-        return;
-      }
+      if (idx >= 0) { setCurrentIndex(idx); hasRestoredRef.current = true; return; }
     }
-
-    // Fallback: latest snapshot
     setCurrentIndex(timestamps.length - 1);
     hasRestoredRef.current = true;
   }, [timestamps, selectedDate]);
 
-  // ── Auto-advance to latest snapshot in live mode ───────────────
   useEffect(() => {
     if (liveMode && timestamps.length > 0 && !isPlaying) {
       setCurrentIndex(timestamps.length - 1);
     }
   }, [timestamps, liveMode, isPlaying]);
 
-  // ── Restore scroll position once after timestamp is restored ─────
   useEffect(() => {
-    if (currentIndex < 0) return; // Not restored yet
+    if (currentIndex < 0) return;
     if (scrollRestoredRef.current) return;
-
     const savedY = localStorage.getItem(SCROLL_KEY);
     if (savedY) {
-      const y = parseInt(savedY, 10);
       requestAnimationFrame(() => {
-        window.scrollTo({ top: y, behavior: 'instant' });
+        window.scrollTo({ top: parseInt(savedY, 10), behavior: 'instant' });
         localStorage.removeItem(SCROLL_KEY);
       });
     }
     scrollRestoredRef.current = true;
   }, [currentIndex]);
 
-  // ── Reconnect banner ─────────────────────────────────────────────
   useEffect(() => {
-    if (!connected) {
-      setShowReconnectBanner(true);
-    } else {
-      const t = setTimeout(() => setShowReconnectBanner(false), 2000);
-      return () => clearTimeout(t);
-    }
+    if (!connected) setShowReconnectBanner(true);
+    else { const t = setTimeout(() => setShowReconnectBanner(false), 2000); return () => clearTimeout(t); }
   }, [connected]);
 
   useEffect(() => {
-    if (lastMessage?.type === 'tick') {
+    if (!lastMessage) return;
+
+    if (lastMessage.type === 'tick') {
       const idx = lastMessage.data?.index_name || 'NIFTY';
       setLiveDataMap((prev) => ({ ...prev, [idx]: lastMessage.data }));
-      if (lastMessage.data.market_open !== undefined) {
-        setMarketOpen(lastMessage.data.market_open);
-      }
-      setWsErrorMap((prev) => ({
-        ...prev,
-        [idx]: lastMessage.data.error || lastMessage.data.message || null,
-      }));
+      if (lastMessage.data.market_open !== undefined) setMarketOpen(lastMessage.data.market_open);
+      setWsErrorMap((prev) => ({ ...prev, [idx]: lastMessage.data.error || lastMessage.data.message || null }));
     }
-  }, [lastMessage]);
+
+    if (lastMessage.type === 'alert') {
+      const alertData: AlertFiring = lastMessage.data;
+      if (!showAlertHistory) {
+        setUnseenAlertCount((c) => c + 1);
+      }
+      if (alertData.index_name === selectedIndex) {
+        addToast(alertData);
+        const ruleConfig = alertSettings?.rules.find((r) => r.rule_type === alertData.rule_type);
+        if (ruleConfig?.sound_enabled && alertSettings?.sound.master_enabled) {
+          const soundId = ruleConfig.custom_sound_id || ruleConfig.sound_choice;
+          const volume = (alertSettings.sound.volume_percent || 80) / 100;
+          playAlertSound(soundId, volume);
+        }
+      }
+    }
+  }, [lastMessage, selectedIndex, alertSettings, addToast, playAlertSound]);
 
   useEffect(() => {
     if (isPlaying) {
       playTimerRef.current = setInterval(() => {
         setCurrentIndex((prev) => {
-          if (prev >= timestamps.length - 1) {
-            setIsPlaying(false);
-            return prev;
-          }
+          if (prev >= timestamps.length - 1) { setIsPlaying(false); return prev; }
           return prev + 1;
         });
       }, 5000);
     }
-    return () => {
-      if (playTimerRef.current) clearInterval(playTimerRef.current);
-    };
+    return () => { if (playTimerRef.current) clearInterval(playTimerRef.current); };
   }, [isPlaying, timestamps.length]);
 
+  // When playback reaches the end, automatically switch to live mode
   useEffect(() => {
-    setCurrentIndex(-1);
-    setIsPlaying(false);
-    setSelectedStrike(null);
-    hasRestoredRef.current = false;
-    scrollRestoredRef.current = false;
+    if (isPlaying && currentIndex >= timestamps.length - 1 && timestamps.length > 0) {
+      setIsPlaying(false);
+      setLiveMode(true);
+    }
+  }, [currentIndex, isPlaying, timestamps.length]);
+
+  useEffect(() => {
+    setCurrentIndex(-1); setIsPlaying(false); setSelectedStrike(null);
+    hasRestoredRef.current = false; scrollRestoredRef.current = false;
   }, [selectedIndex]);
 
   const liveData = liveDataMap[selectedIndex];
@@ -228,119 +225,115 @@ function App() {
     if (Array.isArray(options)) return options;
     const result: any[] = [];
     Object.entries(options).forEach(([strike, data]: [string, any]) => {
-      if (data.CE) {
-        result.push({
-          strike: Number(strike),
-          option_type: 'CE',
-          oi: data.CE.oi ?? 0,
-          oi_change: 0,
-          volume: data.CE.volume ?? 0,
-          ltp: data.CE.ltp ?? 0,
-          iv: data.CE.iv,
-          delta: data.CE.delta,
-          gamma: data.CE.gamma,
-          theta: data.CE.theta,
-          vega: data.CE.vega,
-          gex: data.CE.gex,
-        });
-      }
-      if (data.PE) {
-        result.push({
-          strike: Number(strike),
-          option_type: 'PE',
-          oi: data.PE.oi ?? 0,
-          oi_change: 0,
-          volume: data.PE.volume ?? 0,
-          ltp: data.PE.ltp ?? 0,
-          iv: data.PE.iv,
-          delta: data.PE.delta,
-          gamma: data.PE.gamma,
-          theta: data.PE.theta,
-          vega: data.PE.vega,
-          gex: data.PE.gex,
-        });
-      }
+      if (data.CE) result.push({ strike: Number(strike), option_type: 'CE', oi: data.CE.oi ?? 0, oi_change: 0, volume: data.CE.volume ?? 0, ltp: data.CE.ltp ?? 0, iv: data.CE.iv, delta: data.CE.delta, gamma: data.CE.gamma, theta: data.CE.theta, vega: data.CE.vega, gex: data.CE.gex });
+      if (data.PE) result.push({ strike: Number(strike), option_type: 'PE', oi: data.PE.oi ?? 0, oi_change: 0, volume: data.PE.volume ?? 0, ltp: data.PE.ltp ?? 0, iv: data.PE.iv, delta: data.PE.delta, gamma: data.PE.gamma, theta: data.PE.theta, vega: data.PE.vega, gex: data.PE.gex });
     });
     return result;
   }, [options]);
 
   const handlePlay = useCallback(() => {
-    if (currentIndex >= timestamps.length - 1) {
-      setCurrentIndex(0);
-    }
-    setLiveMode(false);
-    setIsPlaying(true);
+    if (currentIndex >= timestamps.length - 1) setCurrentIndex(0);
+    setLiveMode(false); setIsPlaying(true);
   }, [currentIndex, timestamps.length]);
 
-  const handlePause = useCallback(() => {
-    setIsPlaying(false);
-  }, []);
-
+  const handlePause = useCallback(() => setIsPlaying(false), []);
   const handleSeek = useCallback((index: number) => {
-    setLiveMode(false);
-    setIsPlaying(false);
-    setCurrentIndex(index);
-  }, []);
-
-  const handleRefresh = useCallback(() => {
-    window.location.reload();
-  }, []);
-
-  const handleDateChange = useCallback((date: string) => {
-    setSelectedDate(date);
-    setCurrentIndex(-1);
-    setIsPlaying(false);
-    setLiveMode(false);
-    hasRestoredRef.current = false;
-    scrollRestoredRef.current = false;
-  }, []);
-
-  const handleIndexChange = useCallback((index: string) => {
-    setSelectedIndex(index);
-    setCurrentIndex(-1);
-    setIsPlaying(false);
-    setSelectedStrike(null);
-    setLiveMode(true);
-    enteringLiveRef.current = true;
-    hasRestoredRef.current = false;
-    scrollRestoredRef.current = false;
-  }, []);
-
-  const handleSelectStrike = useCallback((strike: number) => {
-    setSelectedStrike(strike);
-  }, []);
-
-  const toggleFullMode = useCallback(() => {
-    setFullMode((prev) => !prev);
-  }, []);
-
+    const isAtEnd = index >= 0 && timestamps.length > 0 && index === timestamps.length - 1;
+    if (isAtEnd) {
+      setLiveMode(true);
+      setIsPlaying(false);
+      setCurrentIndex(index);
+    } else {
+      setLiveMode(false);
+      setIsPlaying(false);
+      setCurrentIndex(index);
+    }
+  }, [timestamps.length]);
+  const handleRefresh = useCallback(() => window.location.reload(), []);
+  const handleDateChange = useCallback((date: string) => { setSelectedDate(date); setCurrentIndex(-1); setIsPlaying(false); setLiveMode(false); hasRestoredRef.current = false; scrollRestoredRef.current = false; }, []);
+  const handleIndexChange = useCallback((index: string) => { setSelectedIndex(index); setCurrentIndex(-1); setIsPlaying(false); setSelectedStrike(null); setLiveMode(true); enteringLiveRef.current = true; hasRestoredRef.current = false; scrollRestoredRef.current = false; }, []);
+  const handleSelectStrike = useCallback((strike: number) => setSelectedStrike(strike), []);
+  const toggleFullMode = useCallback(() => setFullMode((p) => !p), []);
   const toggleLiveMode = useCallback(() => {
     setLiveMode((prev) => {
       const next = !prev;
-      if (next) {
-        setIsPlaying(false);
-        const today = new Date().toISOString().split('T')[0];
-        setSelectedDate(today);
-        setCurrentIndex(-1);
-        enteringLiveRef.current = true;
-        hasRestoredRef.current = false;
-        scrollRestoredRef.current = false;
-      }
+      if (next) { setIsPlaying(false); setSelectedDate(new Date().toISOString().split('T')[0]); setCurrentIndex(-1); enteringLiveRef.current = true; hasRestoredRef.current = false; scrollRestoredRef.current = false; }
       return next;
     });
   }, []);
 
+  // Keyboard shortcuts: L = toggle live, End = jump to latest
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
+      if (e.key === 'l' || e.key === 'L') {
+        e.preventDefault();
+        toggleLiveMode();
+      }
+      if (e.key === 'End') {
+        e.preventDefault();
+        if (timestamps.length > 0) {
+          handleSeek(timestamps.length - 1);
+        }
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [timestamps.length, toggleLiveMode, handleSeek]);
+
   const atmStrike = React.useMemo(() => {
     if (!spot || normalizedOptions.length === 0) return null;
     const strikes = [...new Set(normalizedOptions.map((o: any) => o.strike))].sort((a: number, b: number) => a - b);
-    return strikes.reduce((closest: number, s: number) =>
-      Math.abs(s - spot) < Math.abs(closest - spot) ? s : closest
-    );
+    return strikes.reduce((closest: number, s: number) => Math.abs(s - spot) < Math.abs(closest - spot) ? s : closest);
   }, [spot, normalizedOptions]);
+
+  const refreshUnseenCount = useCallback(async () => {
+    const today = new Date().toISOString().split('T')[0];
+    const lastOpened = getLastOpenedHistory();
+    try {
+      const res = await fetch(`/api/alerts/history?date=${today}&page_size=200`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const entries = data.entries || [];
+      const lastOpenedDate = lastOpened ? new Date(lastOpened) : null;
+      const unseen = entries.filter((e: any) => {
+        if (!lastOpenedDate) return true;
+        return new Date(e.timestamp) > lastOpenedDate;
+      }).length;
+      setUnseenAlertCount(unseen);
+    } catch {}
+  }, []);
+
+  const handleTestToast = useCallback(() => {
+    addToast({
+      timestamp: new Date().toISOString(),
+      index_name: selectedIndex,
+      rule_type: 'atm_negative_gex_oi_wall',
+      rule_name: 'ATM + Negative GEX + OI Wall',
+      spot: spot ?? 25142.35,
+      atm_strike: atmStrike ?? 25150,
+      max_ce_oi_strike: atmStrike ?? 25150,
+      max_pe_oi_strike: atmStrike ? atmStrike - 150 : 25000,
+      max_negative_gex_strike: atmStrike ?? 25150,
+      net_gex: netGex ?? -1250000,
+      channels_fired: ['toast', 'sound', 'telegram'],
+    });
+  }, [addToast, selectedIndex, spot, atmStrike, netGex]);
+
+  // Fetch unseen alert count on mount and every 60s
+  useEffect(() => {
+    refreshUnseenCount();
+    const interval = setInterval(refreshUnseenCount, 60000);
+    return () => clearInterval(interval);
+  }, [refreshUnseenCount]);
+
+  // ── Pass configurable duration to toast container ──
+  const toastDuration = alertSettings?.toast_duration_ms ?? 6000;
 
   return (
     <div className="min-h-screen bg-terminal-bg">
-      {/* Reconnecting banner */}
+      <AlertToastContainer alerts={toasts} onDismiss={removeToast} duration={toastDuration} />
+
       {showReconnectBanner && (
         <div className="bg-amber-900/40 border-b border-amber-700/50 px-4 py-1.5 flex items-center justify-center gap-2">
           <WifiOff className="w-3.5 h-3.5 text-amber-400" />
@@ -350,25 +343,19 @@ function App() {
         </div>
       )}
 
-
       {!marketOpen && (
         <div className="bg-slate-800/50 border-b border-slate-700/50 px-4 py-1.5 flex items-center justify-center gap-2">
           <Info className="w-3.5 h-3.5 text-slate-400" />
-          <span className="text-xs font-mono text-slate-400">
-            Market Closed (09:15–15:30 IST, Mon–Fri) — Showing last known data. Snapshots resume tomorrow.
-          </span>
+          <span className="text-xs font-mono text-slate-400">Market Closed (09:15–15:30 IST, Mon–Fri) — Showing last known data.</span>
         </div>
       )}
       {wsError && liveMode && (
         <div className="bg-red-900/30 border-b border-red-700/50 px-4 py-1.5 flex items-center justify-center gap-2">
           <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
-          <span className="text-xs font-mono text-red-300">
-            {wsError}
-          </span>
+          <span className="text-xs font-mono text-red-300">{wsError}</span>
         </div>
       )}
 
-      {/* Top bar */}
       <div className="border-b border-terminal-border bg-terminal-panel px-3 sm:px-4 py-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-0">
         <div className="flex items-center gap-2 flex-wrap">
           <Monitor className="w-5 h-5 text-terminal-atm shrink-0" />
@@ -380,87 +367,70 @@ function App() {
             <span className="sm:hidden">{connected ? 'WS' : '—'}</span>
             <span className="hidden sm:inline">{connected ? 'WS Connected' : 'WS Disconnected'}</span>
           </span>
-
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={toggleLiveMode}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono font-semibold transition-colors ${
-              liveMode
-                ? 'bg-terminal-pe/20 text-terminal-pe'
-                : 'bg-terminal-bg text-terminal-muted hover:text-terminal-text'
-            }`}
-          >
-            <span className={`w-1.5 h-1.5 rounded-full ${liveMode ? 'bg-terminal-pe animate-pulse' : 'bg-terminal-muted'}`} />
-            LIVE
+          <button onClick={() => { setShowAlertHistory(true); setUnseenAlertCount(0); saveLastOpenedHistory(new Date().toISOString()); }} className="relative flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono bg-terminal-bg text-terminal-muted hover:text-terminal-text transition-colors">
+            <Bell className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">History</span>
+            {unseenAlertCount > 0 && (
+              <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-1 bg-red-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center border border-terminal-bg">
+                {unseenAlertCount > 99 ? '99+' : unseenAlertCount}
+              </span>
+            )}
           </button>
-          <button
-            onClick={toggleFullMode}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono bg-terminal-bg text-terminal-muted hover:text-terminal-text transition-colors"
-          >
+          <button onClick={() => setShowAlertSettings(true)} className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono bg-terminal-bg text-terminal-muted hover:text-terminal-text transition-colors">
+            <Settings className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Alerts</span>
+          </button>
+          <button onClick={toggleFullMode} className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono bg-terminal-bg text-terminal-muted hover:text-terminal-text transition-colors">
             {fullMode ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
             <span className="hidden sm:inline">{fullMode ? 'Compact' : 'Full'}</span>
+          </button>
+          <button onClick={toggleLiveMode} className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono font-semibold transition-colors ${liveMode ? 'bg-terminal-pe/20 text-terminal-pe' : 'bg-terminal-bg text-terminal-muted hover:text-terminal-text'}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${liveMode ? 'bg-terminal-pe animate-pulse' : 'bg-terminal-muted'}`} />
+            LIVE
           </button>
         </div>
       </div>
 
       <div className="p-2 sm:p-3 space-y-2 sm:space-y-3">
-        <AnalyticsHeader
-          indexName={selectedIndex}
-          isFetching={snapshotLoading}
-          spot={spot}
-          futures={futures}
-          futuresSpread={futuresSpread}
-          spreadLabel={spreadLabel}
-          netGex={netGex}
-          maxGexStrike={maxGexStrike}
-          maxPain={maxPain}
-          gammaFlip={gammaFlip}
-          timestamp={timestamp}
-          isLive={liveMode && connected && marketOpen}
-        />
-
-        <ReplayControls
-          timestamps={timestamps}
-          currentIndex={currentIndex}
-          isFetching={snapshotLoading}
-          isPlaying={isPlaying}
-          onPlay={handlePlay}
-          onPause={handlePause}
-          onSeek={handleSeek}
-          onRefresh={handleRefresh}
-          selectedDate={selectedDate}
-          onDateChange={handleDateChange}
-          selectedIndex={selectedIndex}
-          onIndexChange={handleIndexChange}
-          availableDates={availableDates}
-        />
-
-        <OptionChain
-          options={normalizedOptions}
-          spot={spot}
-          futures={futures}
-          maxPain={maxPain}
-          gammaFlip={gammaFlip}
-          fullMode={fullMode}
-          selectedStrike={selectedStrike}
-          onSelectStrike={handleSelectStrike}
-        />
-
-        <GexChart
-          data={gexByStrike}
-          atmStrike={atmStrike}
-          maxPain={maxPain}
-          gammaFlip={gammaFlip}
-        />
-
-        <StrikeChart
-          data={strikeHistory}
-          strike={selectedStrike ?? 0}
-        />
-
+        <AnalyticsHeader indexName={selectedIndex} isFetching={snapshotLoading} spot={spot} futures={futures} futuresSpread={futuresSpread} spreadLabel={spreadLabel} netGex={netGex} maxGexStrike={maxGexStrike} maxPain={maxPain} gammaFlip={gammaFlip} timestamp={timestamp} isLive={liveMode && connected && marketOpen} />
+        <ReplayControls timestamps={timestamps} currentIndex={currentIndex} isFetching={snapshotLoading} isPlaying={isPlaying} onPlay={handlePlay} onPause={handlePause} onSeek={handleSeek} onRefresh={handleRefresh} selectedDate={selectedDate} onDateChange={handleDateChange} selectedIndex={selectedIndex} onIndexChange={handleIndexChange} availableDates={availableDates} />
+        <OptionChain options={normalizedOptions} spot={spot} futures={futures} maxPain={maxPain} gammaFlip={gammaFlip} fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike} />
+        <GexChart data={gexByStrike} atmStrike={atmStrike} maxPain={maxPain} gammaFlip={gammaFlip} />
+        <StrikeChart data={strikeHistory} strike={selectedStrike ?? 0} />
         <NetGexChart data={gexHistory} />
       </div>
+
+      {showAlertSettings && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center pt-4 sm:pt-8 px-2 sm:px-4">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowAlertSettings(false)} />
+          <div className="relative w-full max-w-2xl max-h-[90vh] overflow-y-auto terminal-panel">
+            <div className="sticky top-0 bg-terminal-panel border-b border-terminal-border px-4 py-2 flex items-center justify-between z-10">
+              <span className="text-sm font-bold">Alert Settings</span>
+              <button onClick={() => setShowAlertSettings(false)} className="p-1 rounded hover:bg-white/10 text-terminal-muted">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <AlertSettingsPanel onTestToast={handleTestToast} />
+          </div>
+        </div>
+      )}
+
+      {showAlertHistory && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center pt-4 sm:pt-8 px-2 sm:px-4">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowAlertHistory(false)} />
+          <div className="relative w-full max-w-3xl max-h-[90vh] overflow-y-auto terminal-panel">
+            <div className="sticky top-0 bg-terminal-panel border-b border-terminal-border px-4 py-2 flex items-center justify-between z-10">
+              <span className="text-sm font-bold">Alert History</span>
+              <button onClick={() => setShowAlertHistory(false)} className="p-1 rounded hover:bg-white/10 text-terminal-muted">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <AlertHistoryPanel indexName={selectedIndex} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
