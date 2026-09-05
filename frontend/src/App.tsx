@@ -13,6 +13,8 @@ import { useSnapshots, useSnapshot, useGexHistory, useStrikeHistory, useGexByStr
 import { useAlertSettings, useAlertNotifications, AlertFiring } from './hooks/useAlerts';
 import { Monitor, AlertTriangle, Info, WifiOff, Bell, Settings, X } from 'lucide-react';
 import { hoursForType, isSessionOpen, fmtSessionRange, InstrumentKind, SessionHours } from './session';
+import { useIsMobile } from "./components/mobile/useIsMobile";
+import MobileApp from "./components/mobile/MobileApp";
 
 const STORAGE_KEY = 'option_chain_view_state';
 const HISTORY_LAST_OPENED_KEY = 'history_last_opened_at';
@@ -78,6 +80,9 @@ function App() {
 
   const wsUrl = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
   const { connected, lastMessage } = useWebSocket(wsUrl);
+
+  // Small screens get the dedicated mobile shell (desktop render below is untouched).
+  const isMobile = useIsMobile();
 
   const timestamps = useSnapshots(selectedDate, selectedIndex, liveMode);
   const currentTimestamp = (currentIndex >= 0 && currentIndex < timestamps.length) ? timestamps[currentIndex] : null;
@@ -385,6 +390,19 @@ function App() {
   }, [refreshUnseenCount]);
 
   const toastDuration = alertSettings?.toast_duration_ms ?? 6000;
+
+  // Mobile: small screens get the dedicated mobile shell; desktop tree below is untouched.
+  if (isMobile) {
+    return (
+      <MobileApp
+        connected={connected}
+        lastMessage={lastMessage}
+        toasts={toasts}
+        removeToast={removeToast}
+        onInstrumentChange={(name) => setSelectedIndex(name)}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-terminal-bg">
