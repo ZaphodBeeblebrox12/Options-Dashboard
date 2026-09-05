@@ -1,12 +1,41 @@
 """Financial calculations: Greeks, GEX, Max Pain, Gamma Flip."""
 import math
+import os
+import time as _time
 from typing import Dict, List, Tuple, Optional
-from scipy.stats import norm
 from scipy.optimize import brentq
+from scipy.special import ndtr
 import numpy as np
 
+
+def _norm_pdf(x):
+    """Standard normal PDF — ~50x faster than the scipy.stats equivalent."""
+    return math.exp(-0.5 * x * x) / math.sqrt(2 * math.pi)
+
 # Constants
-RISK_FREE_RATE = 0.065  # 6.5% for India
+_DEFAULT_RISK_FREE_RATE = 6.5   # PERCENT, as displayed in Settings > Analytics
+_RISK_FREE_RATE = float(os.getenv("RISK_FREE_RATE", _DEFAULT_RISK_FREE_RATE))
+
+
+def set_risk_free_rate(rate_percent: float):
+    """Update the risk-free rate (percent) used by ALL downstream calculations."""
+    global _RISK_FREE_RATE
+    _RISK_FREE_RATE = float(rate_percent)
+
+
+def get_risk_free_rate() -> float:
+    """Risk-free rate as a DECIMAL for Black-Scholes.
+
+    The setting and UI use percent (6.5); BS requires 0.065. This division
+    is the fix — feeding 6.5 as the decimal rate drags d1 ~0.6 sigma upward,
+    redistributing gamma toward higher strikes and corrupting IV/GEX.
+    """
+    return _RISK_FREE_RATE / 100.0
+
+
+# Frozen alias for backward compatibility — preserves the ORIGINAL decimal
+# semantics (0.065). Internal code uses get_risk_free_rate().
+RISK_FREE_RATE = _RISK_FREE_RATE / 100.0
 TICK_SIZE = 0.05        # NSE/BSE minimum tick
 SANITY_TOLERANCE = max(2.0, 2 * TICK_SIZE)  # ₹2 or 2 ticks, whichever is larger
 
@@ -37,9 +66,9 @@ def black_scholes_price(S, K, T, r, sigma, option_type):
     d2 = _d2(S, K, T, r, sigma)
 
     if option_type == "CE":
-        return S * norm.cdf(d1) - K * math.exp(-r * T) * norm.cdf(d2)
+        return S * ndtr(d1) - K * math.exp(-r * T) * ndtr(d2)
     else:
-        return K * math.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+        return K * math.exp(-r * T) * ndtr(-d2) - S * ndtr(-d1)
 
 
 def implied_volatility(S, K, T, r, market_price, option_type):
@@ -90,16 +119,16 @@ def calculate_greeks(S, K, T, r, sigma, option_type):
 
     d1 = _d1(S, K, T, r, sigma)
     d2 = _d2(S, K, T, r, sigma)
-    nd1 = norm.pdf(d1)
+    nd1 = _norm_pdf(d1)
 
     if option_type == "CE":
-        delta = norm.cdf(d1)
+        delta = ndtr(d1)
         theta = (-(S * nd1 * sigma) / (2 * math.sqrt(T)) 
-                 - r * K * math.exp(-r * T) * norm.cdf(d2)) / 365
+                 - r * K * math.exp(-r * T) * ndtr(d2)) / 365
     else:
-        delta = norm.cdf(d1) - 1
+        delta = ndtr(d1) - 1
         theta = (-(S * nd1 * sigma) / (2 * math.sqrt(T)) 
-                 + r * K * math.exp(-r * T) * norm.cdf(-d2)) / 365
+                 + r * K * math.exp(-r * T) * ndtr(-d2)) / 365
 
     gamma = nd1 / (S * sigma * math.sqrt(T))
     vega = S * nd1 * math.sqrt(T) / 100
@@ -240,7 +269,7 @@ def calculate_true_gamma_flip(
             return float("inf")
         total = 0.0
         for strike, opt_type, oi, iv in contracts:
-            greeks = calculate_greeks(S, strike, T, RISK_FREE_RATE, iv, opt_type)
+            greeks = calculate_greeks(S, strike, T, get_risk_free_rate(), iv, opt_type)
             if greeks:
                 gex = calculate_gex(greeks["gamma"], oi, opt_type, contract_multiplier)
                 total += gex
@@ -339,7 +368,7 @@ def calculate_true_gamma_flip_vectorized(
     OI = np.array(ois_arr, dtype=np.float64)
     sigma = np.array(ivs_arr, dtype=np.float64)
     sign = np.array(signs_arr, dtype=np.float64)
-    r = RISK_FREE_RATE
+    r = get_risk_free_rate()
     sqrt_T = math.sqrt(T)
     mult = contract_multiplier
 
@@ -348,7 +377,7 @@ def calculate_true_gamma_flip_vectorized(
         if S <= 0:
             return float("inf")
         d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * sqrt_T)
-        nd1 = norm.pdf(d1)
+        nd1 = np.exp(-0.5 * d1 * d1) / math.sqrt(2 * math.pi)
         gamma = nd1 / (S * sigma * sqrt_T)
         gex = gamma * OI * mult * sign
         return float(np.sum(gex))
@@ -401,13 +430,16 @@ def calculate_true_gamma_flip_vectorized(
     return int(round(min(crossings, key=lambda x: abs(x - spot))))
 
 def calculate_analytics(strikes_data: Dict, spot: float, futures: Optional[float] = None,
-                       expiry_datetime=None, contract_multiplier: int = 50) -> Dict:
+                       expiry_datetime=None, contract_multiplier: int = 50,
+                       instrument: Optional[str] = None) -> Dict:
     """Calculate all analytics for a snapshot with instrument-specific multiplier.
 
     Options that fail IV sanity checks are excluded from GEX calculations
     but still displayed in the chain with their raw OI/volume/LTP.
     """
     from datetime import datetime, timedelta
+
+    _t0 = _time.perf_counter()
 
     if expiry_datetime is None:
         expiry_datetime = datetime.now() + timedelta(days=7)
@@ -445,12 +477,12 @@ def calculate_analytics(strikes_data: Dict, spot: float, futures: Optional[float
             gex = 0.0
 
             if ltp > 0 and spot > 0:
-                iv = implied_volatility(spot, strike, T, RISK_FREE_RATE, ltp, opt_type)
+                iv = implied_volatility(spot, strike, T, get_risk_free_rate(), ltp, opt_type)
                 if iv is not None:
                     # NEW: Cache the IV for gamma flip reuse
                     cached_ivs[(strike, opt_type)] = iv
 
-                    greeks = calculate_greeks(spot, strike, T, RISK_FREE_RATE, iv, opt_type)
+                    greeks = calculate_greeks(spot, strike, T, get_risk_free_rate(), iv, opt_type)
                     if greeks:
                         gex = calculate_gex(greeks["gamma"], oi, opt_type, contract_multiplier)
                         net_gex += gex
@@ -480,6 +512,13 @@ def calculate_analytics(strikes_data: Dict, spot: float, futures: Optional[float
     futures_spread = None
     if futures is not None and spot is not None and spot > 0:
         futures_spread = futures - spot
+
+    if instrument:
+        try:
+            import app_perf
+            app_perf.record_analytics(instrument, _time.perf_counter() - _t0)
+        except Exception:
+            pass
 
     return {
         "net_gex": round(net_gex, 2),

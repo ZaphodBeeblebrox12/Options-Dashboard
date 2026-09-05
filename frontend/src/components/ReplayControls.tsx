@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Play, Pause, SkipBack, SkipForward, RefreshCw } from 'lucide-react';
 import { DatePicker } from './DatePicker';
+import { SessionHours } from '../session';
+import { InstrumentSelect } from './InstrumentSelect';
 
 interface ReplayControlsProps {
   isFetching?: boolean;
@@ -16,6 +18,8 @@ interface ReplayControlsProps {
   selectedIndex: string;
   onIndexChange: (index: string) => void;
   availableDates: string[];
+  /** Selected instrument's session — fallback labels when no snapshots exist. */
+  sessionHours?: SessionHours;
 }
 
 export const ReplayControls: React.FC<ReplayControlsProps> = ({
@@ -32,29 +36,27 @@ export const ReplayControls: React.FC<ReplayControlsProps> = ({
   onIndexChange,
   availableDates,
   isFetching,
+  sessionHours = ['09:15', '15:30'],
 }) => {
-  // Local slider position for instant, smooth dragging
-  // currentIndex = committed (data loaded), sliderIndex = visual preview
   const [sliderIndex, setSliderIndex] = useState(currentIndex);
   const isDraggingRef = useRef(false);
 
-  // Sync slider when currentIndex changes externally (play button, step buttons, etc.)
   useEffect(() => {
     if (!isDraggingRef.current) {
       setSliderIndex(currentIndex);
     }
   }, [currentIndex]);
 
-  // Time display comes from the local slider position (instant feedback)
   const previewTimestamp = timestamps[sliderIndex] || '';
   const timeOnly = previewTimestamp
     ? previewTimestamp.split(' ')[1] || previewTimestamp
     : '—';
 
-  const firstTime = timestamps[0]?.split(' ')[1] || '09:15:00';
-  const lastTime = timestamps[timestamps.length - 1]?.split(' ')[1] || '15:30:00';
+  // Fallback labels follow the SELECTED instrument's session
+  // (equity 09:15–15:30, MCX 09:00–23:30) — only used when there are no timestamps.
+  const firstTime = timestamps[0]?.split(' ')[1] || `${sessionHours[0]}:00`;
+  const lastTime = timestamps[timestamps.length - 1]?.split(' ')[1] || `${sessionHours[1]}:00`;
 
-  // ── Slider handlers: optimistic, no API calls while dragging ──
   const handleSliderChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const newIndex = Number(e.target.value);
     setSliderIndex(newIndex);
@@ -63,8 +65,11 @@ export const ReplayControls: React.FC<ReplayControlsProps> = ({
 
   const handleSliderRelease = useCallback(() => {
     isDraggingRef.current = false;
-    onSeek(sliderIndex);
-  }, [sliderIndex, onSeek]);
+    const target = (sliderIndex >= timestamps.length - 2 && timestamps.length > 0)
+      ? timestamps.length - 1
+      : sliderIndex;
+    onSeek(target);
+  }, [sliderIndex, onSeek, timestamps.length]);
 
   const stepBack = () => {
     if (currentIndex > 0) onSeek(currentIndex - 1);
@@ -74,7 +79,6 @@ export const ReplayControls: React.FC<ReplayControlsProps> = ({
     if (currentIndex < timestamps.length - 1) onSeek(currentIndex + 1);
   };
 
-  // Helper: format date string as day name + short date (Mon, 29 Aug)
   const fmtDayPill = (dateStr: string) => {
     const [y, m, d] = dateStr.split('-').map(Number);
     const dateObj = new Date(y, m - 1, d);
@@ -86,17 +90,8 @@ export const ReplayControls: React.FC<ReplayControlsProps> = ({
   return (
     <div className="terminal-panel">
       <div className="flex items-center gap-4 px-4 py-3 flex-wrap">
-        {/* Index Selector */}
-        <div className="flex items-center gap-2">
-          <select
-            value={selectedIndex}
-            onChange={(e) => onIndexChange(e.target.value)}
-            className="bg-terminal-bg border border-terminal-border rounded px-3 py-1.5 text-xs font-mono font-bold text-terminal-text focus:outline-none focus:border-terminal-atm uppercase tracking-wider"
-          >
-            <option value="NIFTY">NIFTY</option>
-            <option value="SENSEX">SENSEX</option>
-          </select>
-        </div>
+        {/* Searchable Instrument Selector (Tier 1 indices + Tier 2 stocks) */}
+        <InstrumentSelect value={selectedIndex} onChange={onIndexChange} />
 
         <div className="w-px h-6 bg-terminal-border" />
 

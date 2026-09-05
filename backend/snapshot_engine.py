@@ -1,11 +1,18 @@
 """Snapshot engine: captures market state every 30s during market hours and queues for DB write.
 
-FIXES APPLIED (v2.1):
-1. Daily OI baseline tracking — oi_change = current_oi - day_baseline_oi
-   (matches broker: change from market open / previous close)
-2. Removed tick-level prev_oi usage that caused near-zero erratic replay values
-3. Baselines persist to DB and load on restart (with yesterday's last OI fallback)
-4. Added oi_change_pct for percentage display
+v3.1 (settings upgrade):
+- Per-index timer handles: stop_snapshot_timer(index_name) enables live stock removal
+  without restarting the server.
+- contract_multiplier / expiry_datetime may be zero-arg callables, resolved at each
+  capture — required because a stock's lot size and expiry are only known after its
+  option window bootstraps (post-first-spot-tick).
+Everything else identical to v2.1 (daily OI baseline tracking).
+
+Session handling (v3.5 fix):
+- ALL market-open/closed decisions inside this engine go through market_open_for()
+  with the instrument's own market_hours (equity, MCX, or any future provider session).
+  The module-level is_market_open() is a legacy EQUITY-ONLY helper kept for other
+  modules — the generic engine never uses it.
 """
 import queue
 import time
@@ -15,15 +22,46 @@ from datetime import datetime, time as dt_time
 from concurrent.futures import ThreadPoolExecutor
 from database import get_db_connection, get_daily_baseline, set_daily_baseline, get_yesterday_last_oi
 from calculations import calculate_analytics
+import app_settings
 
 
-def is_market_open() -> bool:
-    """Check if Indian equity markets are currently open."""
+def _capture_interval() -> int:
+    """Snapshot timer rearm interval — read live from settings each cycle."""
+    try:
+        return app_settings.get_snapshot_interval()
+    except Exception:
+        return 30
+
+
+def market_open_for(hours) -> bool:
+    """Per-instrument session check: hours = ((start_h, start_m), (end_h, end_m)).
+    Equity 09:15–15:30, MCX commodities ~09:00–23:30 — the caller decides via the
+    market_hours it supplies. This is the ONLY session gate the engine uses."""
     now = datetime.now()
     if now.weekday() > 4:
         return False
-    current_time = now.time()
-    return dt_time(9, 15, 0) <= current_time <= dt_time(15, 30, 0)
+    (h1, m1), (h2, m2) = hours
+    return dt_time(h1, m1, 0) <= now.time() <= dt_time(h2, m2, 0)
+
+
+def is_market_open() -> bool:
+    """LEGACY equity-only check (09:15–15:30 IST).
+
+    Retained for external modules (main.py health endpoints, index streamer
+    bootstrap messages). The SnapshotEngine itself must NEVER call this — every
+    engine decision uses market_open_for() with the instrument-supplied
+    market_hours so non-equity sessions (MCX, future providers) are respected.
+    """
+    return market_open_for(((9, 15), (15, 30)))
+
+
+_DEFAULT_HOURS = ((9, 15), (15, 30))  # fallback only when a caller supplies no session
+
+
+def _fmt_hours(hours) -> str:
+    """'((9, 0), (23, 30))' -> '09:00–23:30' (en dash, per-instrument messages)."""
+    (h1, m1), (h2, m2) = hours
+    return f"{h1:02d}:{m1:02d}–{h2:02d}:{m2:02d}"
 
 
 class SnapshotEngine:
@@ -37,52 +75,69 @@ class SnapshotEngine:
         self.running = True
         self.writer_thread = threading.Thread(target=self._db_writer_loop, daemon=True)
         self.writer_thread.start()
-        self.market_was_open = False
 
-        # v2.1: Daily OI baselines per index — {(strike, option_type): baseline_oi}
+        # v2.1: Daily OI baselines per index
         self.daily_baselines = {}
         self.baseline_loaded_for_index = set()
 
-        # Safety net: offload heavy analytics so timer thread never blocks
-        self._analytics_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="analytics")
+        # v3.1: per-index timer handles for live add/remove of instruments
+        self._timer_events = {}
+        self._timer_threads = {}
+        # v3.5: per-instrument session state (was a single global flag keyed to
+        # equity hours — wrong for mixed equity/MCX fleets)
+        self._instrument_open = {}   # index_name -> bool (session-state logging)
+
+        self._analytics_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="analytics")
+
+    def _resolve(self, value):
+        """Values may be plain or zero-arg callables (resolved fresh each capture)."""
+        return value() if callable(value) else value
+
+    def _resolve_hours(self, market_hours):
+        """Instrument session, resolved fresh (callables supported). Callers that
+        don't supply a session get the equity default — never the other way round."""
+        return self._resolve(market_hours) or _DEFAULT_HOURS
 
     def _get_or_create_baseline(self, conn, index_name, strike, option_type, current_oi):
-        """Get the daily OI baseline for a contract. Creates from DB/yesterday/current if not exists."""
         today_str = datetime.now().strftime("%Y-%m-%d")
         key = (index_name, strike, option_type)
 
         if key in self.daily_baselines:
             return self.daily_baselines[key]
 
-        # 1. Try today's DB baseline
         baseline = get_daily_baseline(conn, today_str, index_name, strike, option_type)
         if baseline is not None:
             self.daily_baselines[key] = baseline
             return baseline
 
-        # 2. Try yesterday's last snapshot OI (most accurate for restarts)
         baseline = get_yesterday_last_oi(conn, index_name, strike, option_type)
         if baseline is not None:
             self.daily_baselines[key] = baseline
             set_daily_baseline(conn, today_str, index_name, strike, option_type, baseline, source="yesterday_close")
             return baseline
 
-        # 3. Fallback: current OI becomes baseline (first-ever sighting)
         baseline = current_oi
         self.daily_baselines[key] = baseline
         set_daily_baseline(conn, today_str, index_name, strike, option_type, baseline, source="first_reading")
         return baseline
 
     def capture_snapshot(self, data_store, spot_poller, index_name="NIFTY",
-                        contract_multiplier=50, expiry_datetime=None):
-        """Create a snapshot from current market state and queue it."""
-        if not is_market_open():
-            if self.market_was_open:
-                print(f"[SnapshotEngine] Market closed at {datetime.now().strftime('%H:%M:%S IST')}. Snapshot capture paused.")
-                self.market_was_open = False
+                        contract_multiplier=50, expiry_datetime=None, market_hours=None):
+        """Create a snapshot from current market state and queue it.
+        market_hours: ((h,m),(h,m)) or callable — per-instrument session (commodities)."""
+        hours = self._resolve_hours(market_hours)
+        if not market_open_for(hours):
+            # Session-transition logging only (per instrument, actual session).
+            if self._instrument_open.get(index_name):
+                print(f"[SnapshotEngine] {index_name}: session closed "
+                      f"({_fmt_hours(hours)}) — capture paused")
+            self._instrument_open[index_name] = False
             return
-
-        self.market_was_open = True
+        if not self._instrument_open.get(index_name, False):
+            print(f"[SnapshotEngine] {index_name}: session open "
+                  f"({_fmt_hours(hours)}) — capture active")
+        self._instrument_open[index_name] = True
+        _cycle_t0 = time.perf_counter()
 
         try:
             data, prev_oi = data_store.get_snapshot()
@@ -102,12 +157,18 @@ class SnapshotEngine:
             futures = spot_poller.get_futures()
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            analytics = self._analytics_executor.submit(
-                calculate_analytics,
-                data, spot, futures, expiry_datetime, contract_multiplier
-            ).result(timeout=20)  # 20s cap — vectorized is <1s, this catches edge cases
+            mult = self._resolve(contract_multiplier)
+            expiry = self._resolve(expiry_datetime)
 
-            # v2.1: Get a DB connection for baseline management
+            try:
+                analytics = self._analytics_executor.submit(
+                    lambda: calculate_analytics(data, spot, futures, expiry, mult, instrument=index_name)
+                ).result(timeout=60)
+            except TimeoutError:
+                print(f"[SnapshotEngine] {index_name}: analytics timed out (>60s) — "
+                      f"snapshot skipped, retries next cycle")
+                return
+
             baseline_conn = None
             try:
                 baseline_conn = get_db_connection()
@@ -132,13 +193,11 @@ class SnapshotEngine:
                     opt = data[strike].get(opt_type, {})
                     current_oi = opt.get("oi", 0)
 
-                    # v2.1 FIX: Use daily baseline instead of tick-level prev_oi
                     if baseline_conn:
                         baseline = self._get_or_create_baseline(
                             baseline_conn, index_name, strike, opt_type, current_oi
                         )
                     else:
-                        # Fallback if DB unavailable
                         key = (index_name, strike, opt_type)
                         if key not in self.daily_baselines:
                             self.daily_baselines[key] = current_oi
@@ -182,6 +241,12 @@ class SnapshotEngine:
                     self.snapshot_queue.put_nowait(snapshot)
                 except queue.Empty:
                     pass
+
+            try:
+                import app_perf
+                app_perf.record_snapshot_cycle(index_name, time.perf_counter() - _cycle_t0)
+            except Exception:
+                pass
 
         except Exception as e:
             print(f"[SnapshotEngine] Error capturing snapshot: {e}")
@@ -265,28 +330,67 @@ class SnapshotEngine:
             return self.latest_timestamps.get(index_name)
 
     def start_snapshot_timer(self, data_store, spot_poller, index_name="NIFTY",
-                            contract_multiplier=50, expiry_datetime=None):
-        def timer_loop():
-            if is_market_open():
-                print(f"[SnapshotEngine] Market is OPEN. {index_name} snapshot capture active.")
-                self.market_was_open = True
-            else:
-                print(f"[SnapshotEngine] Market is CLOSED. {index_name} snapshot capture will resume at 09:15 IST.")
+                            contract_multiplier=50, expiry_datetime=None, market_hours=None):
+        """Start (or restart) the 30s capture timer for one instrument.
+        contract_multiplier / expiry_datetime / market_hours may be plain values
+        or zero-arg callables. market_hours is the instrument's OWN session
+        (equity default only when the caller supplies none)."""
+        self.stop_snapshot_timer(index_name)
+        stop_event = threading.Event()
+        self._timer_events[index_name] = stop_event
 
-            while self.running:
-                self.capture_snapshot(data_store, spot_poller, index_name, contract_multiplier, expiry_datetime)
-                for _ in range(30):
-                    if not self.running:
+        def timer_loop():
+            # De-phase timers: instruments started together would otherwise all
+            # fire at the same :00/:30 mark and flood the analytics pool.
+            stagger = sum(ord(c) for c in index_name) % 6
+            for _ in range(stagger):
+                if not self.running or stop_event.is_set():
+                    return
+                time.sleep(1)
+
+            # v3.5: session verdict from the INSTRUMENT's hours — never the
+            # equity-only is_market_open(). Log uses the actual session.
+            hours = self._resolve_hours(market_hours)
+            if market_open_for(hours):
+                print(f"[SnapshotEngine] {index_name}: session open "
+                      f"({_fmt_hours(hours)}) — capture active")
+                self._instrument_open[index_name] = True
+            else:
+                print(f"[SnapshotEngine] {index_name}: session closed "
+                      f"({_fmt_hours(hours)}) — capture will resume when the session opens")
+
+            while self.running and not stop_event.is_set():
+                self.capture_snapshot(data_store, spot_poller, index_name,
+                                    contract_multiplier, expiry_datetime, market_hours)
+                # Rearm interval is user-configurable (Settings > Analytics) and
+                # re-read every cycle — changes apply without restarting timers.
+                for _ in range(_capture_interval()):
+                    if not self.running or stop_event.is_set():
                         break
                     time.sleep(1)
 
-        self.timer_thread = threading.Thread(target=timer_loop, daemon=True)
-        self.timer_thread.start()
-        print(f"[SnapshotEngine] {index_name} snapshot timer started (30s, market hours only)")
+        t = threading.Thread(target=timer_loop, daemon=True, name=f"snapshot-{index_name}")
+        self._timer_threads[index_name] = t
+        t.start()
+        print(f"[SnapshotEngine] {index_name} snapshot timer started "
+              f"({_fmt_hours(self._resolve_hours(market_hours))} session, market hours only)")
+
+    def stop_snapshot_timer(self, index_name="NIFTY"):
+        """Stop the capture timer for one instrument (live removal of stocks)."""
+        ev = self._timer_events.pop(index_name, None)
+        if ev:
+            ev.set()
+        t = self._timer_threads.pop(index_name, None)
+        if t:
+            t.join(timeout=5)
+            print(f"[SnapshotEngine] {index_name} snapshot timer stopped")
+        self._instrument_open.pop(index_name, None)
 
     def stop(self):
         self.running = False
-        if hasattr(self, "timer_thread"):
-            self.timer_thread.join(timeout=5)
+        for name in list(self._timer_events.keys()):
+            self.stop_snapshot_timer(name)
+        for t in list(self._timer_threads.values()):
+            t.join(timeout=5)
         self.writer_thread.join(timeout=5)
         self._analytics_executor.shutdown(wait=False)

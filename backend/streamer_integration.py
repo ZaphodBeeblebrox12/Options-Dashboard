@@ -1,9 +1,14 @@
-"""Real-time Angel One SmartAPI v2 integration for NIFTY/SENSEX.
+"""Real-time Angel One SmartAPI v2 integration — multi-index + Tier-2 stocks.
 
-PURGED (v3.0):
-- Removed MockIndexStreamer, INDEX_MOCK_CONFIG, FORCE_REAL
-- Removed mock fallback — server starts in "real" or "unavailable" mode only
-- Historical replay from SQLite still works when live is unavailable
+v3.0 changes:
+- Removed SharedWebSocketManager. All WebSocket ownership moved to
+  SubscriptionManager (subscription_manager.py): capacity-aware slots,
+  990 token cap per connection, max 3 connections, tier-first allocation.
+- NIFTY/SENSEX register as Tier-1 atomic groups; stocks are Tier-2 with
+  cash-first bootstrap and dynamic ATM windows (stock_streamer.py).
+- Public interface UNCHANGED: streamer_adapter, STREAMING_INDICES,
+  ANGEL_ONE_AVAILABLE, get_streamer(), get_current_state(), LiveDataStore,
+  SpotPricePoller, is_market_open().
 """
 import os
 import copy
@@ -11,19 +16,32 @@ import threading
 import time
 import logging
 from datetime import datetime, time as dt_time
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Any
+from dataclasses import dataclass
+from enum import Enum
+
+from subscription_manager import Tier, TokenRequirement, TokenGroup, SubscriptionManager
+import app_settings
+from app_settings import init_settings as init_app_settings, get_stocks as settings_get_stocks
 
 logger = logging.getLogger(__name__)
 
-# ── Scalable index configuration ─────────────────────────────
-STREAMING_INDICES = ["NIFTY", "SENSEX"]
+# ── Instrument configuration ─────────────────────────────────
+TIER1_INDICES = ["NIFTY", "SENSEX"]
 
-# ── Try to import Angel One libs ─────────────────────────────
+def _parse_tier2_env() -> List[str]:
+    """Parse TIER2_STOCKS from env. Called at import time AND again at
+    StreamerAdapter.start(), so the value is correct whether or not .env
+    was loaded before this module was imported (main.py ordering fix)."""
+    return [s.strip().upper() for s in os.getenv("TIER2_STOCKS", "").split(",") if s.strip()]
+
+TIER2_STOCKS = _parse_tier2_env()
+STREAMING_INDICES = TIER1_INDICES + TIER2_STOCKS
+
+# ── Angel One libs ───────────────────────────────────────────
 ANGEL_ONE_AVAILABLE = False
-
 try:
     from SmartApi import SmartConnect
-    from SmartApi.smartWebSocketV2 import SmartWebSocketV2
     import pyotp
     ANGEL_ONE_AVAILABLE = True
     logger.info("[Streamer] smartapi-python detected ✓")
@@ -32,7 +50,6 @@ except ImportError as e:
 
 
 def is_market_open() -> bool:
-    """Check if Indian equity markets are currently open."""
     now = datetime.now()
     if now.weekday() > 4:
         return False
@@ -107,15 +124,13 @@ if ANGEL_ONE_AVAILABLE:
 
 
 # =====================================================================
-#  LIVE DATA STORE  (v2.2 — with daily OI baseline)
+#  LIVE DATA STORE  (unchanged — tick-level prev_oi + daily baseline)
 # =====================================================================
 class LiveDataStore:
-    """Thread-safe data store with tick-level prev_oi AND daily baseline tracking."""
-
     def __init__(self):
         self.data = {}
         self.prev_oi = {}
-        self.daily_oi_baseline = {}      # (strike, option_type) -> baseline_oi
+        self.daily_oi_baseline = {}
         self.baseline_loaded_from_db = False
         self.msg_count = 0
         self.last_update = None
@@ -138,7 +153,6 @@ class LiveDataStore:
                 "volume": volume,
                 "last_update": datetime.now().isoformat()
             }
-            # Capture baseline on first sighting of the day
             key = (strike, option_type)
             if key not in self.daily_oi_baseline:
                 self.daily_oi_baseline[key] = oi
@@ -158,28 +172,23 @@ class LiveDataStore:
             pe_count = sum(1 for s in self.data if "PE" in self.data[s] and self.data[s]["PE"])
             return self.msg_count, strikes, ce_count, pe_count
 
-    # ── Daily baseline methods ───────────────────────────────
     def get_daily_baseline(self, strike, option_type):
         with self.lock:
             return self.daily_oi_baseline.get((strike, option_type), None)
 
     def set_daily_baseline(self, strike, option_type, oi):
-        """Allow external seeding of baselines (e.g. from yesterday's close)."""
         with self.lock:
             self.daily_oi_baseline[(strike, option_type)] = oi
 
     def load_baselines_from_dict(self, baselines):
-        """Load baselines from DB dict: {(strike, type): oi}"""
         with self.lock:
             self.daily_oi_baseline.update(baselines)
             self.baseline_loaded_from_db = True
 
     def compute_oi_change(self, strike, option_type, current_oi):
-        """Compute broker-style OI change: current - day baseline."""
         with self.lock:
             baseline = self.daily_oi_baseline.get((strike, option_type))
             if baseline is None:
-                # First time seeing this contract — set baseline now
                 self.daily_oi_baseline[(strike, option_type)] = current_oi
                 baseline = current_oi
             oi_change = current_oi - baseline
@@ -188,7 +197,6 @@ class LiveDataStore:
 
 
 class SpotPricePoller:
-    """Tracks spot and futures prices from WebSocket."""
     def __init__(self):
         self.spot_price = None
         self.spot_source = None
@@ -220,6 +228,13 @@ class SpotPricePoller:
             self.spot_source = "WS"
             self.last_ws_update = time.time()
 
+    def spot_age_sec(self):
+        """Seconds since the last underlying tick (None if never)."""
+        with self.spot_lock:
+            if not self.last_ws_update:
+                return None
+            return round(time.time() - self.last_ws_update)
+
     def update_futures_from_ws(self, ltp):
         with self.spot_lock:
             self.futures_price = ltp
@@ -228,21 +243,15 @@ class SpotPricePoller:
 
 
 # =====================================================================
-#  REAL STREAMER  (v2.2 — fixed OI change + yesterday baseline seed)
+#  INDEX STREAMER (Tier 1) — data consumer, no WebSocket ownership
 # =====================================================================
 if ANGEL_ONE_AVAILABLE:
     class AngelOneIndexStreamer:
-        """Real-time streamer for a single index via Angel One SmartAPI v2."""
-
         def __init__(self, index_name: str, auth_manager):
             self.index_name = index_name
             self.auth_manager = auth_manager
             self.data_store = LiveDataStore()
             self.spot_poller = SpotPricePoller()
-            self.sws = None
-            self.running = False
-            self.ws_connected = False
-            self.thread = None
 
             self.token_map = {}
             self.index_info = None
@@ -254,10 +263,19 @@ if ANGEL_ONE_AVAILABLE:
 
             self._state_cache = None
             self._state_cache_time = 0
+            self._analytics_cache = None
+            self._analytics_cache_key = None
+            self._analytics_cache_time = 0
+
+            self._manager: Optional[SubscriptionManager] = None
 
             self._load_instruments()
             self._load_baselines_from_db()
             self._load_yesterday_baselines()
+
+        @property
+        def ws_connected(self) -> bool:
+            return self._manager.any_open if self._manager else False
 
         def _load_instruments(self):
             from scrip_master import scrip_master
@@ -292,7 +310,6 @@ if ANGEL_ONE_AVAILABLE:
                 raise
 
         def _load_baselines_from_db(self):
-            """Load today's baselines from DB so OI change survives restarts."""
             try:
                 from database import get_db_connection, load_all_baselines_for_date
                 today_str = datetime.now().strftime("%Y-%m-%d")
@@ -306,7 +323,6 @@ if ANGEL_ONE_AVAILABLE:
                 logger.warning(f"[{self.index_name}] Could not load baselines from DB: {e}")
 
         def _load_yesterday_baselines(self):
-            """Seed baselines with yesterday's closing OI so OI change matches broker."""
             try:
                 from database import get_db_connection
                 conn = get_db_connection()
@@ -336,161 +352,87 @@ if ANGEL_ONE_AVAILABLE:
                 logger.warning(f"[{self.index_name}] Could not load yesterday baselines: {e}")
 
         def _build_token_map(self):
+            from stock_streamer import option_type
             self.token_map = {}
             for _, row in self.options_df.iterrows():
                 self.token_map[str(row["token"])] = {
                     "strike": int(row["strike"]),
-                    "type": "CE" if "CE" in str(row["symbol"]) else "PE",
+                    "type": option_type(str(row["symbol"])),
                 }
 
-        def start(self):
-            self.running = True
-            self.thread = threading.Thread(target=self._run, daemon=True)
-            self.thread.start()
-            logger.info(f"[{self.index_name}] Real streamer thread started")
+        def register_with_manager(self, manager: SubscriptionManager):
+            """Register all tokens as a Tier-1 atomic group. No WS ownership here."""
+            self._manager = manager
+            group_tokens: List[TokenRequirement] = []
+            gid = f"{self.index_name}_FULL"
 
-        def _run(self):
+            if self.index_info and self.index_info.get("token"):
+                idx_exch = 3 if self.index_name == "SENSEX" else 1
+                group_tokens.append(TokenRequirement(
+                    token=self.index_info["token"], exchange_type=idx_exch,
+                    instrument_name=self.index_name, tier=Tier.TIER_1,
+                    group_id=gid, mode=1, metadata={"type": "index_spot"},
+                ))
+                manager.bind_handler(self.index_info["token"], self._handle_spot_tick)
+                logger.info(f"[{self.index_name}] Index token {self.index_info['token']} on {'BSE' if idx_exch == 3 else 'NSE'}")
+
+            if self.futures_info and self.futures_info.get("token"):
+                fut_exch = 4 if self.index_name == "SENSEX" else 2
+                group_tokens.append(TokenRequirement(
+                    token=self.futures_info["token"], exchange_type=fut_exch,
+                    instrument_name=self.index_name, tier=Tier.TIER_1,
+                    group_id=gid, mode=1, metadata={"type": "futures"},
+                ))
+                manager.bind_handler(self.futures_info["token"], self._handle_futures_tick)
+                logger.info(f"[{self.index_name}] Futures token {self.futures_info['token']} on {'BFO' if fut_exch == 4 else 'NFO'}")
+
+            if self.options_df is not None and len(self.options_df) > 0:
+                opt_exch = 4 if self.index_name == "SENSEX" else 2
+                for token in self.options_df["token"].tolist():
+                    group_tokens.append(TokenRequirement(
+                        token=str(token), exchange_type=opt_exch,
+                        instrument_name=self.index_name, tier=Tier.TIER_1,
+                        group_id=gid, mode=3, metadata={"type": "option"},
+                    ))
+                    manager.bind_handler(str(token), self._handle_option_tick)
+                logger.info(f"[{self.index_name}] Registered {len(self.options_df)} option tokens on {'BFO' if opt_exch == 4 else 'NFO'}")
+
+            ok = manager.register_group(TokenGroup(
+                group_id=gid, tier=Tier.TIER_1,
+                instrument_name=self.index_name, tokens=set(group_tokens),
+            ))
+            logger.info(f"[{self.index_name}] Tier-1 group registered ({'ACTIVE' if ok else 'PARTIAL'}): "
+                        f"{len(group_tokens)} tokens")
+
+        def _handle_spot_tick(self, message: dict):
             try:
-                if not self.auth_manager.login():
-                    logger.error(f"[{self.index_name}] Initial login failed")
-                    return
-                self._init_websocket()
+                ltp = float(message.get("last_traded_price", 0) or 0) / 100.0
+                self.spot_poller.update_from_ws(ltp)
             except Exception as e:
-                logger.error(f"[{self.index_name}] Streamer thread crashed: {e}")
+                logger.error(f"[{self.index_name}] Spot tick error: {e}")
 
-        def _init_websocket(self):
-            retry_count = 0
-            max_retries = 10
-            while self.running and retry_count < max_retries:
-                try:
-                    jwt = self.auth_manager.get_valid_jwt()
-                    feed = self.auth_manager.get_valid_feed_token()
-
-                    self.sws = SmartWebSocketV2(
-                        auth_token=jwt,
-                        api_key=self.auth_manager.api_key,
-                        client_code=self.auth_manager.client_code,
-                        feed_token=feed
-                    )
-                    self.sws.on_open = self._on_open
-                    self.sws.on_data = self._on_data
-                    self.sws.on_error = self._on_error
-                    self.sws.on_close = self._on_close
-
-                    logger.info(f"[{self.index_name}] Connecting WebSocket...")
-                    self.sws.connect()
-                    return
-                except Exception as e:
-                    logger.error(f"[{self.index_name}] WebSocket init error: {e}")
-                    retry_count += 1
-                    time.sleep(min(2 ** retry_count, 30))
-            logger.error(f"[{self.index_name}] Max WebSocket retries reached")
-
-        def _on_open(self, wsapp):
+        def _handle_futures_tick(self, message: dict):
             try:
-                logger.info(f"[{self.index_name}] WebSocket connected")
-                self.ws_connected = True
-
-                if self.index_info and self.index_info.get("token"):
-                    try:
-                        idx_exch = 3 if self.index_name == "SENSEX" else 1
-                        self.sws.subscribe("index_spot", 1, [{
-                            "exchangeType": idx_exch,
-                            "tokens": [self.index_info["token"]]
-                        }])
-                        logger.info(f"[{self.index_name}] Subscribed index token {self.index_info['token']} on {'BSE' if idx_exch == 3 else 'NSE'} [WS]")
-                    except Exception as e:
-                        logger.error(f"[{self.index_name}] Index subscription error: {e}")
-
-                if self.futures_info and self.futures_info.get("token"):
-                    try:
-                        fut_exch = 4 if self.index_name == "SENSEX" else 2
-                        self.sws.subscribe("futures_ltp", 1, [{
-                            "exchangeType": fut_exch,
-                            "tokens": [self.futures_info["token"]]
-                        }])
-                        logger.info(f"[{self.index_name}] Subscribed futures token {self.futures_info['token']} on {'BFO' if fut_exch == 4 else 'NFO'} [WS]")
-                    except Exception as e:
-                        logger.error(f"[{self.index_name}] Futures subscription error: {e}")
-
-                if self.options_df is not None and len(self.options_df) > 0:
-                    tokens = self.options_df["token"].tolist()
-                    opt_exch = 4 if self.index_name == "SENSEX" else 2
-                    logger.info(f"[{self.index_name}] Subscribing {len(tokens)} option tokens on {'BFO' if opt_exch == 4 else 'NFO'}...")
-                    for i in range(0, len(tokens), 50):
-                        chunk = [{"exchangeType": opt_exch, "tokens": tokens[i:i + 50]}]
-                        try:
-                            self.sws.subscribe(f"oi_stream_{i // 50}", 3, chunk)
-                            logger.debug(f"  Batch {i//50 + 1}: {len(chunk[0]['tokens'])} tokens")
-                        except Exception as e:
-                            logger.error(f"[{self.index_name}] Option subscription error: {e}")
+                ltp = float(message.get("last_traded_price", 0) or 0) / 100.0
+                self.spot_poller.update_futures_from_ws(ltp)
             except Exception as e:
-                logger.error(f"[{self.index_name}] on_open crash: {e}")
+                logger.error(f"[{self.index_name}] Futures tick error: {e}")
 
-        def _on_data(self, wsapp, message):
+        def _handle_option_tick(self, message: dict):
             try:
-                if not isinstance(message, dict):
-                    return
                 token = str(message.get("token", ""))
-
-                if self.index_info and token == self.index_info.get("token"):
-                    ltp_raw = message.get("last_traded_price", 0) or 0
-                    ltp = float(ltp_raw) / 100.0
-                    self.spot_poller.update_from_ws(ltp)
+                info = self.token_map.get(token)
+                if not info:
                     return
-
-                if self.futures_info and token == self.futures_info.get("token"):
-                    ltp_raw = message.get("last_traded_price", 0) or 0
-                    ltp = float(ltp_raw) / 100.0
-                    self.spot_poller.update_futures_from_ws(ltp)
-                    return
-
-                if token not in self.token_map:
-                    return
-
-                info = self.token_map[token]
-                ltp_raw = message.get("last_traded_price", 0) or 0
-                oi = message.get("open_interest", 0) or 0
-                volume = message.get("volume_trade_for_the_day", 0) or 0
-                ltp = float(ltp_raw) / 100.0
-
-                self.data_store.update(info["strike"], info["type"], ltp, int(oi), int(volume))
+                ltp = float(message.get("last_traded_price", 0) or 0) / 100.0
+                oi = int(message.get("open_interest", 0) or 0)
+                volume = int(message.get("volume_trade_for_the_day", 0) or 0)
+                self.data_store.update(info["strike"], info["type"], ltp, oi, volume)
             except Exception as e:
-                logger.error(f"[{self.index_name}] Data handling error: {e}")
-
-        def _on_error(self, wsapp, error):
-            logger.error(f"[{self.index_name}] WebSocket error: {error}")
-            self.ws_connected = False
-            self._reconnect_websocket()
-
-        def _on_close(self, wsapp):
-            logger.info(f"[{self.index_name}] WebSocket closed")
-            self.ws_connected = False
-
-        def _reconnect_websocket(self):
-            logger.info(f"[{self.index_name}] Attempting WebSocket reconnection...")
-            self._stop_websocket()
-            time.sleep(5)
-            try:
-                self.auth_manager.login()
-                self._init_websocket()
-            except Exception as e:
-                logger.error(f"[{self.index_name}] Reconnection failed: {e}")
-
-        def _stop_websocket(self):
-            if self.sws:
-                try:
-                    self.sws.close_connection()
-                except Exception as e:
-                    logger.error(f"[{self.index_name}] WebSocket close error: {e}")
-                self.sws = None
+                logger.error(f"[{self.index_name}] Option tick error: {e}")
 
         def stop(self):
             logger.info(f"[{self.index_name}] Stopping streamer...")
-            self.running = False
-            self._stop_websocket()
-            if self.thread:
-                self.thread.join(timeout=5)
 
         def get_current_state(self):
             now = time.time()
@@ -500,7 +442,6 @@ if ANGEL_ONE_AVAILABLE:
                     "data": {**self._state_cache["data"], "timestamp": datetime.now().isoformat()}
                 }
 
-            from calculations import calculate_analytics
             data = self.data_store.get_data()
             spot = self.spot_poller.get_spot()
             futures = self.spot_poller.get_futures()
@@ -516,37 +457,65 @@ if ANGEL_ONE_AVAILABLE:
                         "timestamp": datetime.now().isoformat(),
                         "options": [],
                         "market_open": is_market_open(),
-                        "message": "Waiting for market data...",
+                        "message": "Waiting for market data..." if is_market_open() else None,
                     }
                 }
 
+            cache_key = (
+                self.data_store.msg_count,
+                round(spot, 2) if spot else None,
+                round(futures, 2) if futures else None,
+            )
+            analytics = None
+            if (self._analytics_cache is not None and
+                    self._analytics_cache_key == cache_key and
+                    now - self._analytics_cache_time < 30.0):
+                analytics = self._analytics_cache
+            else:
+                from calculations import calculate_analytics
+                try:
+                    analytics = calculate_analytics(
+                        data, spot, futures, self.expiry_datetime, self.contract_multiplier,
+                        instrument=self.index_name
+                    )
+                    self._analytics_cache = analytics
+                    self._analytics_cache_key = cache_key
+                    self._analytics_cache_time = now
+                except Exception as e:
+                    logger.error(f"[{self.index_name}] Analytics error: {e}")
+                    return {
+                        "type": "tick",
+                        "data": {
+                            "index_name": self.index_name,
+                            "spot": spot, "futures": futures,
+                            "timestamp": datetime.now().isoformat(),
+                            "options": [], "market_open": is_market_open(),
+                            "error": str(e),
+                        }
+                    }
+
+            _age = self.spot_poller.spot_age_sec()
+            if (_age is not None and _age > 90 and is_market_open()
+                    and now - getattr(self, "_last_stale_warn", 0) > 60):
+                self._last_stale_warn = now
+                logger.warning(f"[{self.index_name}] underlying tick is {_age}s old — "
+                               f"GEX/ATM computed from a stale spot ({spot})")
+
             try:
-                analytics = calculate_analytics(
-                    data, spot, futures, self.expiry_datetime, self.contract_multiplier
-                )
                 enriched_options = []
                 for strike in sorted(data.keys()):
                     for opt_type in ["CE", "PE"]:
                         opt = data[strike].get(opt_type, {})
                         analytics_opt = analytics["strikes_data"].get(strike, {}).get(opt_type, {})
-
                         current_oi = opt.get("oi", 0)
                         oi_change, oi_change_pct = self.data_store.compute_oi_change(strike, opt_type, current_oi)
-
                         enriched_options.append({
-                            "strike": strike,
-                            "option_type": opt_type,
-                            "oi": current_oi,
-                            "oi_change": oi_change,
-                            "oi_change_pct": oi_change_pct,
-                            "volume": opt.get("volume", 0),
-                            "ltp": opt.get("ltp", 0),
-                            "iv": analytics_opt.get("iv"),
-                            "delta": analytics_opt.get("delta"),
-                            "gamma": analytics_opt.get("gamma"),
-                            "theta": analytics_opt.get("theta"),
-                            "vega": analytics_opt.get("vega"),
-                            "gex": analytics_opt.get("gex"),
+                            "strike": strike, "option_type": opt_type,
+                            "oi": current_oi, "oi_change": oi_change, "oi_change_pct": oi_change_pct,
+                            "volume": opt.get("volume", 0), "ltp": opt.get("ltp", 0),
+                            "iv": analytics_opt.get("iv"), "delta": analytics_opt.get("delta"),
+                            "gamma": analytics_opt.get("gamma"), "theta": analytics_opt.get("theta"),
+                            "vega": analytics_opt.get("vega"), "gex": analytics_opt.get("gex"),
                         })
 
                 result = {
@@ -567,38 +536,45 @@ if ANGEL_ONE_AVAILABLE:
                         "market_open": is_market_open(),
                         "contract_multiplier": self.contract_multiplier,
                         "expiry": self.expiry_str,
+                        "instrument_kind": "index",
+                        "tier": 1,
+                        "spot_age_sec": _age,
                     }
                 }
                 self._state_cache = result
                 self._state_cache_time = time.time()
                 return result
             except Exception as e:
-                logger.error(f"[{self.index_name}] Analytics error: {e}")
+                logger.error(f"[{self.index_name}] Enrichment error: {e}")
                 return {
                     "type": "tick",
                     "data": {
                         "index_name": self.index_name,
-                        "spot": spot,
-                        "futures": futures,
+                        "spot": spot, "futures": futures,
                         "timestamp": datetime.now().isoformat(),
-                        "options": [],
-                        "market_open": is_market_open(),
+                        "options": [], "market_open": is_market_open(),
                         "error": str(e),
                     }
                 }
 
 
 # =====================================================================
-#  STREAMER ADAPTER
+#  STREAMER ADAPTER — owns SubscriptionManager + all streamers
 # =====================================================================
 class StreamerAdapter:
-    """Manages multiple index streamers. No mock fallback — real or unavailable."""
-
     def __init__(self):
-        self.streamers: Dict[str, any] = {}
+        self.streamers: Dict[str, Any] = {}
+        self.stock_streamers: Dict[str, Any] = {}
         self.running = False
         self.mode = "unknown"
         self.auth_manager = None
+        self.manager: Optional[SubscriptionManager] = None
+        self._supervisor = None
+        self.configured_stocks: List[str] = list(TIER2_STOCKS)
+        self.on_stock_added = None      # set by main.py -> starts snapshot timer
+        self.on_stock_removed = None    # set by main.py -> stops snapshot timer
+        self.on_tier_changed = None     # set by main.py -> start/stop snapshot timer
+        self.on_scanner_alerts = None   # set by main.py -> dispatch fired alerts
 
     def start(self):
         self.running = True
@@ -610,29 +586,64 @@ class StreamerAdapter:
             return
 
         try:
+            # ScripMaster source is public (no auth needed) — warm the
+            # 143k-row master concurrently with the Angel One login instead
+            # of serializing the parse behind authentication. load() is
+            # idempotent + lock-guarded, so the first instrument's lookup
+            # joins this parse; failures surface independently at first use.
+            from scrip_master import scrip_master as _scrip_master
+            threading.Thread(target=_scrip_master.load, daemon=True,
+                             name="scrip-warm").start()
+
             self.auth_manager = AuthManager()
-            if self.auth_manager.login():
-                self.mode = "real"
-                logger.info("[StreamerAdapter] REAL mode activated (Angel One SmartAPI)")
-
-                for index_name in STREAMING_INDICES:
-                    try:
-                        streamer = AngelOneIndexStreamer(index_name, self.auth_manager)
-                        streamer.start()
-                        self.streamers[index_name] = streamer
-                        time.sleep(2)
-                    except Exception as e:
-                        logger.error(f"[StreamerAdapter] Failed to start {index_name}: {e}")
-
-                if self.streamers:
-                    market_status = "OPEN" if is_market_open() else "CLOSED"
-                    indices = ", ".join(self.streamers.keys())
-                    logger.info(f"[StreamerAdapter] Streaming {indices}. Market: {market_status}.")
-                else:
-                    logger.error("[StreamerAdapter] No real streamers started")
-                    self.mode = "unavailable"
-            else:
+            if not self.auth_manager.login():
                 logger.error("[StreamerAdapter] Angel One login failed")
+                self.mode = "unavailable"
+                return
+
+            self.mode = "real"
+            logger.info("[StreamerAdapter] REAL mode activated (Angel One SmartAPI)")
+
+            # env fallback until app settings load (settings DB is authoritative)
+            self.configured_stocks = _parse_tier2_env()
+
+            self.manager = SubscriptionManager(self.auth_manager)
+            self.manager.start()
+            if not self.manager.wait_until_open(timeout=20):
+                logger.warning("[StreamerAdapter] WebSocket not open after 20s — "
+                               "group registrations will flush when it connects")
+
+            # Tier 1 — indices
+            for index_name in TIER1_INDICES:
+                try:
+                    streamer = AngelOneIndexStreamer(index_name, self.auth_manager)
+                    streamer.register_with_manager(self.manager)
+                    self.streamers[index_name] = streamer
+                    logger.info(f"[StreamerAdapter] {index_name} streamer ready")
+                    time.sleep(1)
+                except Exception as e:
+                    logger.error(f"[StreamerAdapter] Failed to start {index_name}: {e}")
+
+            # Tier 2 — stocks (cash-first bootstrap), seeded from app settings
+            init_app_settings()
+            self.configured_stocks = settings_get_stocks()
+            logger.info(f"[StreamerAdapter] TIER2_STOCKS configured: {self.configured_stocks}")
+            if self.configured_stocks:
+                for symbol in self.configured_stocks:
+                    kind = app_settings.get_instrument_kind(symbol)
+                    tier = app_settings.get_instrument_tier(symbol)
+                    self._start_instrument(symbol, kind=kind, tier=tier, delay=0.3)
+                for sym in self.stock_streamers:
+                    self._wire_streamer_hooks(sym)
+                self._ensure_supervisor()
+
+            if self.streamers:
+                market_status = "OPEN" if is_market_open() else "CLOSED"
+                names = ", ".join(self.streamers.keys())
+                logger.info(f"[StreamerAdapter] Streaming {names}. Market: {market_status}.")
+                logger.info(f"[StreamerAdapter] WS stats: {self.manager.stats()}")
+            else:
+                logger.error("[StreamerAdapter] No streamers started")
                 self.mode = "unavailable"
         except ValueError as e:
             logger.warning(f"[StreamerAdapter] {e}")
@@ -643,15 +654,209 @@ class StreamerAdapter:
             self.mode = "unavailable"
 
     def stop(self):
+        """Orderly shutdown:
+        1. reconnect loops (manager closing state) -> 2. processing workers
+        (supervisor/streamers) -> 3. WebSockets closed + threads joined
+        (inside manager.stop) -> 4. API logout LAST, with full diagnostics."""
+        logger.info("[StreamerAdapter] Stopping: reconnect loops -> workers -> sockets -> logout")
         self.running = False
+
+        # 1. reconnect loops + close sockets + join slot threads
+        if self.manager:
+            self.manager.stop()
+
+        # 2. processing workers
         for streamer in self.streamers.values():
-            streamer.stop()
+            try:
+                streamer.stop()
+            except Exception:
+                pass
+        if self._supervisor:
+            self._supervisor.stop()
+
+        # 3. logout LAST, under the auth lock; the full response is logged and
+        #    failures are NOT suppressed (AG8004 etc. stay visible).
         if self.auth_manager and ANGEL_ONE_AVAILABLE:
             try:
-                self.auth_manager.smart_api.terminateSession(self.auth_manager.client_code)
+                with self.auth_manager.lock:
+                    resp = self.auth_manager.smart_api.terminateSession(self.auth_manager.client_code)
+                logger.info(f"[StreamerAdapter] Logout response: {resp}")
+                if not (isinstance(resp, dict) and resp.get("status")):
+                    logger.error(
+                        "[StreamerAdapter] Logout rejected by Angel One. Verify the API_KEY in "
+                        ".env belongs to the app registered for client code "
+                        f"{self.auth_manager.client_code[:2]}*** and has not been rotated; also "
+                        "check the key was copied without truncation."
+                    )
             except Exception as e:
                 logger.error(f"[StreamerAdapter] Logout error: {e}")
         logger.info("[StreamerAdapter] All streamers stopped")
+
+    # ── Live instrument management (Settings > Instruments) ──
+    def _start_instrument(self, symbol: str, kind: Optional[str] = None,
+                          tier: int = 2, delay: float = 0.0) -> dict:
+        from stock_streamer import InstrumentStreamer
+        try:
+            sym = symbol.strip().upper()
+            if sym in self.stock_streamers:
+                return {"ok": False, "error": f"{sym} already added"}
+            if kind is None:
+                from scrip_master import scrip_master
+                kind = scrip_master.detect_kind(sym)
+                if kind is None:
+                    return {"ok": False, "error": f"{sym} not found in scrip master "
+                                                    f"(index / stock / commodity)"}
+            s = InstrumentStreamer(sym, self.manager, kind=kind, tier=tier)
+            s.start()
+            self.stock_streamers[sym] = s
+            self.streamers[sym] = s
+            if delay:
+                time.sleep(delay)
+            logger.info(f"[StreamerAdapter] {sym} streamer starting "
+                        f"({s.kind}, tier {s.tier}, {s.state})")
+            return {"ok": True, "state": s.state, "kind": s.kind, "tier": s.tier}
+        except Exception as e:
+            logger.error(f"[StreamerAdapter] Failed to start {symbol}: {e}")
+            return {"ok": False, "error": str(e)}
+
+    def _ensure_supervisor(self):
+        if self._supervisor is None:
+            from stock_streamer import Tier2Supervisor
+            self._supervisor = Tier2Supervisor(self.stock_streamers)
+            self._supervisor.start()
+
+    def add_instrument(self, symbol: str, kind: Optional[str] = None,
+                       tier: int = 3) -> dict:
+        """Add an instrument of any kind. Kind auto-detected when omitted.
+        Every new instrument defaults to Tier 3 (lightweight scanner) —
+        promote via /api/instruments/{sym}/tier to 2 (full analytics) or 1."""
+        if self.mode != "real" or self.manager is None:
+            return {"ok": False, "error": "Live streaming unavailable"}
+        sym = symbol.strip().upper()
+        result = self._start_instrument(sym, kind=kind, tier=tier)
+        if result.get("ok"):
+            app_settings.add_instrument(sym, result.get("kind", kind or "STOCK"))
+            app_settings.set_instrument_tier(sym, tier)
+            if sym not in self.configured_stocks:
+                self.configured_stocks.append(sym)   # dropdown reads this list
+            self._wire_streamer_hooks(sym)
+            self._ensure_supervisor()
+            if self.on_stock_added:
+                try:
+                    self.on_stock_added(self.stock_streamers[sym])
+                except Exception as e:
+                    logger.error(f"[StreamerAdapter] on_stock_added hook: {e}")
+        return result
+
+    def _wire_streamer_hooks(self, sym: str):
+        s = self.stock_streamers.get(sym)
+        if not s:
+            return
+        s.on_alerts_fired = lambda fired, a=self: a.on_scanner_alerts and a.on_scanner_alerts(fired)
+        s.on_tier_changed = lambda streamer, a=self: a.on_tier_changed and a.on_tier_changed(streamer)
+
+    def add_stock(self, symbol: str, kind: Optional[str] = None) -> dict:
+        # Backward-compatible entry point (old /api/stocks clients)
+        return self.add_instrument(symbol, kind=kind, tier=2)
+
+    def set_instrument_tier(self, symbol: str, tier: int) -> dict:
+        sym = symbol.strip().upper()
+        s = self.stock_streamers.get(sym)
+        if not s:
+            return {"ok": False, "error": f"{sym} not found"}
+        result = s.set_tier(tier)
+        if result.get("ok"):
+            app_settings.set_instrument_tier(sym, tier)
+            logger.info(f"[StreamerAdapter] {sym} tier -> {tier}")
+        return result
+
+    def remove_stock(self, symbol: str) -> dict:
+        sym = symbol.strip().upper()
+        s = self.stock_streamers.get(sym)
+        if not s:
+            return {"ok": False, "error": f"{sym} not found"}
+        for gid in (f"{sym}_SPOT", f"{sym}_FUTURES", f"{sym}_OPTION_WINDOW", f"{sym}_CASH"):
+            try:
+                self.manager.unregister_group(gid)
+            except Exception as e:
+                logger.debug(f"[StreamerAdapter] Unregister {gid}: {e}")
+        try:
+            s.stop()
+        except Exception:
+            pass
+        self.stock_streamers.pop(sym, None)
+        self.streamers.pop(sym, None)
+        if self._supervisor is not None and not self.stock_streamers:
+            self._supervisor.stop()
+            self._supervisor = None
+        app_settings.remove_instrument(sym)
+        if sym in self.configured_stocks:
+            self.configured_stocks.remove(sym)
+        if self.on_stock_removed:
+            try:
+                self.on_stock_removed(sym)
+            except Exception as e:
+                logger.error(f"[StreamerAdapter] on_stock_removed hook: {e}")
+        logger.info(f"[StreamerAdapter] {sym} removed (snapshots and history kept)")
+        return {"ok": True}
+
+    def pause_stock(self, symbol: str) -> dict:
+        s = self.stock_streamers.get(symbol.strip().upper())
+        if not s:
+            return {"ok": False, "error": "not found"}
+        s.pause()
+        return {"ok": True, "state": s.state}
+
+    def resume_stock(self, symbol: str) -> dict:
+        s = self.stock_streamers.get(symbol.strip().upper())
+        if not s:
+            return {"ok": False, "error": "not found"}
+        s.resume()
+        return {"ok": True, "state": s.state}
+
+    def rebuild_all_windows(self):
+        for s in self.stock_streamers.values():
+            try:
+                s.rebuild_window()
+            except Exception as e:
+                logger.error(f"[StreamerAdapter] Rebuild {s.symbol}: {e}")
+
+    def instruments_status(self) -> list:
+        rows = []
+        for s in self.stock_streamers.values():
+            st = s.status()
+            st["fixed"] = False
+            rows.append(st)
+        # Fixed Tier-1 indices (NIFTY/SENSEX) live outside stock_streamers
+        for name, s in self.streamers.items():
+            if name in self.stock_streamers:
+                continue
+            tokens = 0
+            if self.manager:
+                try:
+                    tokens = self.manager.usage_by_instrument().get(name, 0)
+                except Exception:
+                    pass
+            rows.append({
+                "symbol": name,
+                "kind": "INDEX",
+                "tier": 1,
+                "fixed": True,
+                "state": "WINDOW_ACTIVE" if getattr(s.data_store, "msg_count", 0) > 0 else "IDLE",
+                "paused": False,
+                "spot": s.spot_poller.get_spot(),
+                "futures": s.spot_poller.get_futures(),
+                "atm": None,
+                "expiry": getattr(s, "expiry_str", None),
+                "lot": getattr(s, "contract_multiplier", None),
+                "tokens": tokens,
+                "msg_count": getattr(s.data_store, "msg_count", 0),
+            })
+        return rows
+
+    def stocks_status(self) -> list:
+        # Backward-compatible alias
+        return self.instruments_status()
 
     def get_streamer(self, index_name: str):
         return self.streamers.get(index_name)
@@ -673,5 +878,4 @@ class StreamerAdapter:
         return {name: s.get_current_state() for name, s in self.streamers.items()}
 
 
-# Global instance
 streamer_adapter = StreamerAdapter()

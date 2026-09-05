@@ -6,6 +6,8 @@ import { GexChart } from './components/GexChart';
 import { StrikeChart } from './components/StrikeChart';
 import { NetGexChart } from './components/NetGexChart';
 import { SettingsModal } from './components/SettingsModal';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { fetchInstruments } from './instrumentsCache';
 import { AlertHistoryPanel } from './components/AlertHistory';
 import { AlertToastContainer } from './components/AlertToast';
 import { useWebSocket } from './hooks/useWebSocket';
@@ -13,6 +15,38 @@ import { useSnapshots, useSnapshot, useGexHistory, useStrikeHistory, useGexByStr
 import { useAlertSettings, useAlertNotifications, AlertFiring } from './hooks/useAlerts';
 import { Monitor, AlertTriangle, Info, WifiOff, Bell, Settings, X } from 'lucide-react';
 import { hoursForType, isSessionOpen, fmtSessionRange, InstrumentKind, SessionHours } from './session';
+
+// ── Fatal error overlay ─────────────────────────────────────────
+// Catches errors that unmount the ENTIRE React tree — which otherwise
+// leaves a blank page and silently drops the WebSocket — and renders the
+// real error message + stack on screen, immune to React teardown.
+function showFatalOverlay(message: string, stack?: string) {
+  const esc = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  let el = document.getElementById('fatal-error-overlay');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'fatal-error-overlay';
+    el.style.cssText =
+      'position:fixed;inset:0;z-index:99999;background:rgba(10,10,16,0.97);' +
+      'color:#e7ebf3;padding:28px 20px;overflow:auto;font-family:ui-monospace,Menlo,monospace;';
+    document.body.appendChild(el);
+  }
+  el.innerHTML =
+    '<div style="color:#f87171;font-weight:bold;font-size:15px;margin-bottom:10px;">&#9888; App crashed</div>' +
+    '<div style="font-size:13px;margin-bottom:10px;max-width:720px;word-break:break-word;">' + esc(message) + '</div>' +
+    '<pre style="white-space:pre-wrap;color:#8d97ab;font-size:11px;max-width:900px;">' + esc(stack || '(no stack)') + '</pre>' +
+    '<button onclick="location.reload()" style="margin-top:16px;padding:9px 18px;background:rgba(234,179,8,0.15);' +
+    'color:#eab308;border:1px solid rgba(234,179,8,0.4);border-radius:8px;cursor:pointer;font-family:inherit;">Reload app</button>';
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('error', (e) => {
+    showFatalOverlay(e.message || 'Unknown script error', (e.error as any)?.stack);
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    const r: any = e.reason;
+    showFatalOverlay(String(r?.message || r || 'Unhandled promise rejection'), r?.stack);
+  });
+}
 
 const STORAGE_KEY = 'option_chain_view_state';
 const HISTORY_LAST_OPENED_KEY = 'history_last_opened_at';
@@ -115,7 +149,7 @@ function App() {
   useEffect(() => {
     let alive = true;
     const load = () =>
-      fetch('/api/instruments')
+      fetchInstruments()
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => {
           if (!alive || !d) return;
@@ -379,9 +413,11 @@ function App() {
   }, [addToast, selectedIndex, spot, atmStrike, netGex]);
 
   useEffect(() => {
-    refreshUnseenCount();
+    // Defer the first badge count: it downloads up to 200 alert-history
+    // rows and competes with the startup request burst. Non-critical.
+    const t0 = setTimeout(refreshUnseenCount, 5000);
     const interval = setInterval(refreshUnseenCount, 60000);
-    return () => clearInterval(interval);
+    return () => { clearTimeout(t0); clearInterval(interval); };
   }, [refreshUnseenCount]);
 
   const toastDuration = alertSettings?.toast_duration_ms ?? 6000;
@@ -445,6 +481,7 @@ function App() {
         </div>
       </div>
 
+      <ErrorBoundary label="Dashboard">
       <div className="p-2 sm:p-3 space-y-2 sm:space-y-3">
         <AnalyticsHeader indexName={selectedIndex} isFetching={snapshotLoading} spot={spot} futures={futures} futuresSpread={futuresSpread} spreadLabel={spreadLabel} netGex={netGex} maxGexStrike={maxGexStrike} maxPain={maxPain} gammaFlip={gammaFlip} timestamp={timestamp} isLive={liveMode && connected && marketOpen} />
         <ReplayControls timestamps={timestamps} currentIndex={currentIndex} isFetching={snapshotLoading} isPlaying={isPlaying} onPlay={handlePlay} onPause={handlePause} onSeek={handleSeek} onRefresh={handleRefresh} selectedDate={selectedDate} onDateChange={handleDateChange} selectedIndex={selectedIndex} onIndexChange={handleIndexChange} availableDates={availableDates} sessionHours={sessionHours} />
@@ -453,14 +490,17 @@ function App() {
         <StrikeChart data={strikeHistory} strike={selectedStrike ?? 0} />
         <NetGexChart data={gexHistory} />
       </div>
+      </ErrorBoundary>
 
       {showSettings && (
+        <ErrorBoundary label="Settings">
         <SettingsModal
           onClose={() => setShowSettings(false)}
           fullMode={fullMode}
           onFullModeChange={handleFullModeChange}
           onTestToast={handleTestToast}
         />
+        </ErrorBoundary>
       )}
 
       {showAlertHistory && (
