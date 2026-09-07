@@ -5,6 +5,8 @@ import React, { useEffect, useState } from "react";
  *  /api/app-health endpoints. */
 const GRADE_C: Record<string, string> = { ok: "var(--mup)", warning: "var(--mamber)", degraded: "var(--mdn)", idle: "var(--mfaint)" };
 const GRADE_L: Record<string, string> = { ok: "OK", warning: "Warning", degraded: "Degraded", idle: "Idle" };
+const GK_C: Record<string, string> = { healthy: "var(--mup)", warning: "var(--mamber)", degraded: "var(--mdn)", idle: "var(--mfaint)" };
+const GK_L: Record<string, string> = { healthy: "Healthy", warning: "Warning", degraded: "Degraded", idle: "Idle" };
 
 export default function MobileConnectionsTab() {
   const [usage, setUsage] = useState<any>(null);
@@ -85,6 +87,29 @@ export default function MobileConnectionsTab() {
           {health?.max_spot_age_sec != null && (
             <div className="mc-con-total num">Oldest underlying tick: {health.max_spot_age_sec}s {health?.oldest_feed ? `(${health.oldest_feed})` : ""}</div>
           )}
+          {health?.greeks && (() => {
+            const gk = health.greeks;
+            const c = GK_C[gk.status] ?? "var(--mfaint)";
+            const barPct = gk.oldest_ratio != null ? Math.min(100, gk.oldest_ratio * 50) : 0;
+            return (
+              <div className="mc-con-banner" style={{ marginTop: 10, borderColor: c }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="mc-con-slot-hd num">
+                    <span>Tier-4 Greeks · oldest/cycle</span>
+                    <span style={{ color: c, fontWeight: 700 }}>
+                      {gk.oldest_active_age_sec != null ? `${gk.oldest_active_age_sec}s/${gk.refresh_interval_sec}s` : "no data yet"}
+                    </span>
+                  </div>
+                  <div className="mc-con-bar" style={{ marginTop: 4 }}>
+                    <i style={{ width: `${barPct}%`, background: c }} />
+                  </div>
+                  <div className="mc-con-total num" style={{ marginTop: 6 }}>
+                    {GK_L[gk.status] ?? gk.status} · N {gk.n_active} · cycle {gk.expected_cycle_sec}s (actual {gk.actual_cycle_sec ?? "—"}s) · p95 {gk.latency?.p95_ms ?? "—"}ms · gap {gk.current_gap_sec}s · {gk.request_rate_per_sec}/s · 429s {gk.throttles} · timeouts {gk.timeouts}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>

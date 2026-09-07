@@ -87,6 +87,7 @@ class AlertTriggerPayload(BaseModel):
     futures_spread: Optional[float]
     channels_fired: List[NotificationChannel]
     market_state: Dict  # Full snapshot data for expansion
+    instrument_tier: Optional[int] = None   # 4 = Angel-fed Greeks (T4 label)
 
 
 class AlertHistoryEntry(BaseModel):
@@ -106,6 +107,7 @@ class AlertHistoryEntry(BaseModel):
     channels_fired: str  # JSON array
     market_state: str    # JSON object
     created_at: str
+    instrument_tier: Optional[int] = None
 
 
 class AlertHistoryResponse(BaseModel):

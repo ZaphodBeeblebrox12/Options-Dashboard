@@ -22,6 +22,7 @@ def _tier_of(name: str) -> int:
 
 
 _lock = threading.Lock()
+_iv_stats = {}
 _analytics = defaultdict(lambda: deque(maxlen=300))
 _broadcast = defaultdict(lambda: deque(maxlen=300))
 _snapshot_cycle = defaultdict(lambda: deque(maxlen=300))
@@ -52,6 +53,28 @@ def record_snapshot_cycle(instrument: str, duration: float):
     with _lock:
         _snapshot_cycle[instrument].append(duration)
         _last_snapshot[instrument] = time.time()
+
+
+def record_iv(instrument: str, stats: dict):
+    """Latest IV-cache stats for an instrument (written by calculate_analytics)."""
+    if not instrument:
+        return
+    with _lock:
+        _iv_stats[instrument] = stats
+
+
+def _merge_iv(per_instrument):
+    """Combined outer-window IV-cache counters for non-Tier-1 instruments."""
+    tot = {"hits": 0, "misses": 0, "solves": 0, "fallbacks": 0,
+           "failures": 0, "neg_hits": 0, "solves_per_min": 0}
+    for name, st in per_instrument.items():
+        if _tier_of(name) == 1:
+            continue
+        o = st.get("outer", {})
+        for k in tot:
+            tot[k] += o.get(k, 0)
+    tot["hit_rate"] = round(tot["hits"] / max(1, tot["hits"] + tot["misses"]), 3)
+    return tot
 
 
 def _stats(samples):
@@ -88,11 +111,14 @@ def snapshot():
             "broadcast": dict(_last_broadcast),
             "snapshot": dict(_last_snapshot),
         }
+        iv = {k: v for k, v in _iv_stats.items()}
     return {
         "analytics_tier2": _merge_tier2(a),
         "broadcast_tier2": _merge_tier2(b),
         "snapshot_cycle_tier2": _merge_tier2(c),
         "analytics_tier1": _stats([d for k, v in a.items() if _tier_of(k) == 1 for d in v]),
         "per_instrument_analytics": {k: _stats(v) for k, v in a.items()},
+        "iv": iv,
+        "iv_tier2": _merge_iv(iv),
         "last": last,
     }

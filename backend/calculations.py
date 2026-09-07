@@ -1,7 +1,9 @@
 """Financial calculations: Greeks, GEX, Max Pain, Gamma Flip."""
 import math
 import os
+import threading
 import time as _time
+from collections import deque
 from typing import Dict, List, Tuple, Optional
 from scipy.optimize import brentq
 from scipy.special import ndtr
@@ -18,9 +20,44 @@ _RISK_FREE_RATE = float(os.getenv("RISK_FREE_RATE", _DEFAULT_RISK_FREE_RATE))
 
 
 def set_risk_free_rate(rate_percent: float):
-    """Update the risk-free rate (percent) used by ALL downstream calculations."""
-    global _RISK_FREE_RATE
+    """Update the risk-free rate (percent) used by ALL downstream calculations.
+    Also bumps the RFR generation, voiding every cached IV (they were solved
+    under the old rate) without the caller needing to reach any cache."""
+    global _RISK_FREE_RATE, _RFR_GENERATION
     _RISK_FREE_RATE = float(rate_percent)
+    _RFR_GENERATION += 1
+
+
+# ── IV cache configuration (tunable at runtime via set_iv_cache_params) ──
+# bands: (max moneyness |S-K|/S, price-error tolerance as a fraction of price);
+# the INR floor always applies. vol_shock_pct: relative move of the fresh
+# ATM-IV basket that voids the outer cache for that instrument.
+IV_CFG = {
+    "floor": 0.25,
+    "bands": ((0.005, 0.0025), (0.015, 0.005), (float("inf"), 0.01)),
+    "vol_shock_pct": 0.10,
+    "neg_retry_base_sec": 60.0,
+    "neg_retry_max_sec": 1800.0,
+    "neg_price_trigger": 0.005,
+    "neg_spot_trigger": 0.0025,
+}
+_RFR_GENERATION = 0
+
+
+def set_iv_cache_params(floor=None, bands=None, vol_shock_pct=None):
+    """Runtime tuning of the IV-cache acceptance bands (Settings > Analytics hook)."""
+    if floor is not None:
+        IV_CFG["floor"] = float(floor)
+    if bands is not None:
+        IV_CFG["bands"] = tuple(bands)
+    if vol_shock_pct is not None:
+        IV_CFG["vol_shock_pct"] = float(vol_shock_pct)
+
+
+def get_rfr_generation() -> int:
+    """Generation in effect. Cache entries are stamped with the generation at
+    solve time and void once it changes (risk-free-rate change)."""
+    return _RFR_GENERATION
 
 
 def get_risk_free_rate() -> float:
@@ -107,6 +144,135 @@ def implied_volatility(S, K, T, r, market_price, option_type):
         return iv
     except (ValueError, RuntimeError):
         return None
+
+
+def solve_iv(S, K, T, r, market_price, option_type, seed_iv=None):
+    """Implied-volatility inversion with an optional warm-start bracket.
+
+    seed_iv (a previously solved IV for THIS contract) narrows the Brent
+    bracket to [0.5*sigma, 2*sigma]; it is a search hint only - the returned
+    IV is always solved from current market data. Returns (iv, warm_missed):
+    iv=None on failure (same conditions as implied_volatility); warm_missed
+    True when the narrow bracket did not contain a root and the full bracket
+    was used (or also failed).
+    """
+    if market_price <= 0 or T <= 0:
+        return None, False
+    if option_type == "CE":
+        intrinsic = max(S - K, 0)
+        upper_bound = S
+    else:
+        intrinsic = max(K - S, 0)
+        upper_bound = K
+    if market_price < intrinsic - SANITY_TOLERANCE:
+        return None, False
+    if market_price > upper_bound + SANITY_TOLERANCE:
+        return None, False
+
+    def objective(sigma):
+        return black_scholes_price(S, K, T, r, sigma, option_type) - market_price
+
+    warm_missed = False
+    if seed_iv is not None and 0.001 < seed_iv < 2.0:
+        lo = max(0.001, 0.5 * seed_iv)
+        hi = min(2.0, 2.0 * seed_iv)
+        if lo < hi:
+            try:
+                return brentq(objective, lo, hi, xtol=1e-6, maxiter=100), False
+            except (ValueError, RuntimeError):
+                warm_missed = True   # root outside the warm bracket -> full bracket below
+    try:
+        return brentq(objective, 0.001, 2.0, xtol=1e-6, maxiter=100), warm_missed
+    except (ValueError, RuntimeError):
+        return None, warm_missed
+
+
+class IVCacheStore:
+    """Persistent, thread-safe per-instrument IV cache owned by a LiveDataStore
+    and shared by every analytics path (5s broadcast, 30s snapshot, Tier-3
+    trigger). Keyed by (expiry, strike, option_type)."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._entries: Dict[tuple, dict] = {}
+        self._counters = {w: {"hits": 0, "misses": 0, "solves": 0,
+                              "fallbacks": 0, "failures": 0, "neg_hits": 0}
+                          for w in ("active", "outer")}
+        self._last_atm_iv: Optional[float] = None
+        self._solve_times = deque(maxlen=2000)
+
+    def lookup(self, key):
+        with self._lock:
+            e = self._entries.get(key)
+            if e is None:
+                return None
+            if e.get("gen") != get_rfr_generation():
+                del self._entries[key]          # solved under an old risk-free rate
+                return None
+            return dict(e)
+
+    def store_success(self, key, iv, bucket, price, spot, t):
+        with self._lock:
+            self._entries[key] = {"iv": iv, "bucket": bucket, "price": price,
+                                  "spot": spot, "t": t, "gen": get_rfr_generation(),
+                                  "fails": 0, "last_attempt": None}
+
+    def store_failure(self, key, price, spot, bucket, now):
+        with self._lock:
+            e = self._entries.get(key)
+            fails = ((e or {}).get("fails") or 0) + 1
+            self._entries[key] = {"iv": None, "bucket": bucket,
+                                  "gen": get_rfr_generation(), "fails": fails,
+                                  "last_attempt": now, "last_price": price,
+                                  "last_spot": spot}
+
+    def negative_retry_due(self, entry, price, spot, now) -> bool:
+        if entry.get("gen") != get_rfr_generation():
+            return True
+        lp = entry.get("last_price")
+        if lp and price and abs(price - lp) > max(IV_CFG["floor"], IV_CFG["neg_price_trigger"] * lp):
+            return True
+        ls = entry.get("last_spot")
+        if ls and spot and abs(spot - ls) / spot > IV_CFG["neg_spot_trigger"]:
+            return True
+        fails = entry.get("fails") or 1
+        backoff = min(IV_CFG["neg_retry_base_sec"] * (2 ** min(fails, 5)),
+                      IV_CFG["neg_retry_max_sec"])
+        la = entry.get("last_attempt")
+        return la is None or (now - la) >= backoff
+
+    def check_vol_shock(self, basket_iv: float) -> bool:
+        """Fresh ATM-IV thermometer: a relative move >= vol_shock_pct voids the
+        entire outer cache for this instrument. Active-window strikes never
+        read the cache, so they are unaffected by the clear."""
+        with self._lock:
+            prev = self._last_atm_iv
+            self._last_atm_iv = basket_iv
+            if (prev and basket_iv
+                    and abs(basket_iv - prev) / prev >= IV_CFG["vol_shock_pct"]):
+                self._entries.clear()
+                return True
+            return False
+
+    def bump(self, window: str, counter: str, n: int = 1):
+        with self._lock:
+            self._counters[window][counter] += n
+
+    def note_solve(self):
+        with self._lock:
+            self._solve_times.append(_time.time())
+
+    def stats(self) -> dict:
+        with self._lock:
+            c = {w: dict(v) for w, v in self._counters.items()}
+            recent = sum(1 for t in self._solve_times if _time.time() - t < 60)
+            entries = len(self._entries)
+        o = c["outer"]
+        hit_rate = o["hits"] / max(1, o["hits"] + o["misses"])
+        return {"active": c["active"],
+                "outer": {**o, "hit_rate": round(hit_rate, 3),
+                          "solves_per_min": recent},
+                "entries": entries}
 
 
 def calculate_greeks(S, K, T, r, sigma, option_type):
@@ -431,11 +597,21 @@ def calculate_true_gamma_flip_vectorized(
 
 def calculate_analytics(strikes_data: Dict, spot: float, futures: Optional[float] = None,
                        expiry_datetime=None, contract_multiplier: int = 50,
-                       instrument: Optional[str] = None) -> Dict:
+                       instrument: Optional[str] = None,
+                       iv_store: Optional["IVCacheStore"] = None,
+                       active_window: int = 0, expiry: Optional[str] = None) -> Dict:
     """Calculate all analytics for a snapshot with instrument-specific multiplier.
 
     Options that fail IV sanity checks are excluded from GEX calculations
     but still displayed in the chain with their raw OI/volume/LTP.
+
+    iv_store: persistent per-instrument IV cache (LiveDataStore.iv_cache). None
+      -> legacy behavior (fresh solve for every contract, every call).
+    active_window: strikes ATM±N are solved fresh on EVERY call with no cache
+      reuse (5s broadcast, 30s snapshot and Tier-3 paths alike); a cached IV
+      may seed the Brent bracket (warm start) but never substitutes a solve.
+      0 with a store -> every strike is treated as outer/cached.
+    expiry: expiry string for cache keys (e.g. "11SEP2026").
     """
     from datetime import datetime, timedelta
 
@@ -464,42 +640,171 @@ def calculate_analytics(strikes_data: Dict, spot: float, futures: Optional[float
 
     # NEW: Cache IVs for true gamma flip calculation
     cached_ivs: Dict[Tuple[int, str], float] = {}
+    r = get_risk_free_rate()   # hoisted: reused by the IV engine below
 
-    for strike in strikes_data:
-        for opt_type in ["CE", "PE"]:
-            opt_data = strikes_data[strike].get(opt_type, {})
-            ltp = opt_data.get("ltp", 0)
-            oi = opt_data.get("oi", 0)
+    # ── IV/Greek engine ───────────────────────────────────────────
+    # Active window (ATM ± active_window strikes): NO cache — Brent runs on
+    # every call on every path. Outer strikes: persistent
+    # (expiry, strike, option_type) cache gated by a Black-Scholes
+    # theoretical-price error test; unsolved strikes live in a negative cache
+    # with material-change triggers and exponential backoff. A vol_shock_pct
+    # move in the fresh ATM-IV basket voids the outer cache (shock guard).
+    expiry_key = expiry if expiry is not None else str(expiry_datetime)
+    sorted_strikes = sorted(strikes_data.keys())
+    atm_idx = (min(range(len(sorted_strikes)), key=lambda i: abs(sorted_strikes[i] - spot))
+               if sorted_strikes else None)
+    windowed = active_window > 0 and atm_idx is not None
+    lo_i = (atm_idx - active_window) if windowed else 1
+    hi_i = (atm_idx + active_window) if windowed else 0
+    now_ts = _time.time()
 
-            # ── Calculate IV and Greeks ─────────────────────────────
-            iv = None
-            greeks = None
-            gex = 0.0
+    def _bucket_of(strike: int) -> int:
+        m = abs(spot - strike) / spot
+        for b, (max_m, _pct) in enumerate(IV_CFG["bands"]):
+            if m < max_m:
+                return b
+        return len(IV_CFG["bands"]) - 1
 
-            if ltp > 0 and spot > 0:
-                iv = implied_volatility(spot, strike, T, get_risk_free_rate(), ltp, opt_type)
+    def _tol_of(strike: int, price: float) -> float:
+        m = abs(spot - strike) / spot
+        for max_m, pct in IV_CFG["bands"]:
+            if m < max_m:
+                return max(IV_CFG["floor"], price * pct)
+        return max(IV_CFG["floor"], price * IV_CFG["bands"][-1][1])
+
+    def _accumulate(gex, strike):
+        nonlocal net_gex, max_gex, max_gex_strike
+        net_gex += gex
+        if abs(gex) > abs(max_gex):
+            max_gex = gex
+            max_gex_strike = strike
+
+    def _finish(opt_data, iv, greeks, gex):
+        opt_data.update({
+            "iv": iv,
+            "delta": greeks["delta"] if greeks else None,
+            "gamma": greeks["gamma"] if greeks else None,
+            "theta": greeks["theta"] if greeks else None,
+            "vega": greeks["vega"] if greeks else None,
+            "gex": gex,
+            "quote_valid": iv is not None and greeks is not None,
+        })
+
+    fresh_window_ivs: List[float] = []
+
+    def _active_contract(strike: int, opt_type: str) -> None:
+        """Active window (or legacy no-store mode): always a fresh solve."""
+        opt_data = strikes_data[strike].get(opt_type, {})
+        ltp = opt_data.get("ltp", 0)
+        oi = opt_data.get("oi", 0)
+        iv = None
+        greeks = None
+        gex = 0.0
+        if ltp > 0 and spot > 0:
+            key = (expiry_key, strike, opt_type)
+            seed = None
+            if iv_store is not None:
+                e = iv_store.lookup(key)
+                if e and e.get("iv"):
+                    seed = e["iv"]            # warm-start bracket ONLY
+            iv, warm_missed = solve_iv(spot, strike, T, r, ltp, opt_type, seed_iv=seed)
+            if iv_store is not None:
+                iv_store.bump("active", "solves")
+                iv_store.note_solve()
+                if warm_missed:
+                    iv_store.bump("active", "fallbacks")
+                if iv is None:
+                    iv_store.bump("active", "failures")
+                    iv_store.store_failure(key, ltp, spot, _bucket_of(strike), now_ts)
+                else:
+                    iv_store.store_success(key, iv, _bucket_of(strike), ltp, spot, T)
+                    fresh_window_ivs.append(iv)
+            if iv is not None:
+                cached_ivs[(strike, opt_type)] = iv
+                greeks = calculate_greeks(spot, strike, T, r, iv, opt_type)
+                if greeks:
+                    gex = calculate_gex(greeks["gamma"], oi, opt_type, contract_multiplier)
+                    _accumulate(gex, strike)
+        _finish(opt_data, iv, greeks, gex)
+
+    def _solve_outer(key, strike, opt_type, ltp, seed):
+        iv, warm_missed = solve_iv(spot, strike, T, r, ltp, opt_type, seed_iv=seed)
+        iv_store.bump("outer", "solves")
+        iv_store.note_solve()
+        if warm_missed:
+            iv_store.bump("outer", "fallbacks")
+        if iv is None:
+            iv_store.bump("outer", "failures")
+            iv_store.store_failure(key, ltp, spot, _bucket_of(strike), _time.time())
+        else:
+            iv_store.store_success(key, iv, _bucket_of(strike), ltp, spot, T)
+        return iv
+
+    def _outer_contract(strike: int, opt_type: str) -> None:
+        opt_data = strikes_data[strike].get(opt_type, {})
+        ltp = opt_data.get("ltp", 0)
+        oi = opt_data.get("oi", 0)
+        iv = None
+        greeks = None
+        gex = 0.0
+        if ltp > 0 and spot > 0:
+            key = (expiry_key, strike, opt_type)
+            entry = iv_store.lookup(key)
+            if (entry is not None and entry.get("iv") is not None
+                    and entry.get("bucket") == _bucket_of(strike)):
+                # Time value measured against the European (discounted) floor,
+                # not undiscounted intrinsic — the latter sits ABOVE the fair
+                # price of deep-ITM options by the carry (K*(1-e^-rT)), which
+                # would make this freeze unreachable outside the final hour
+                # of expiry day. Existing sanity checks are untouched.
+                fwd_intrinsic = (max(spot - strike * math.exp(-r * T), 0) if opt_type == "CE"
+                                 else max(strike * math.exp(-r * T) - spot, 0))
+                if ltp - fwd_intrinsic < IV_CFG["floor"]:
+                    iv = entry["iv"]          # deep-ITM freeze — re-tested every call
+                else:
+                    theoretical = black_scholes_price(spot, strike, T, r, entry["iv"], opt_type)
+                    if abs(theoretical - ltp) <= _tol_of(strike, ltp):
+                        iv = entry["iv"]      # price-error test passed
                 if iv is not None:
-                    # NEW: Cache the IV for gamma flip reuse
-                    cached_ivs[(strike, opt_type)] = iv
+                    iv_store.bump("outer", "hits")
+            if iv is None:
+                suppressed = False
+                if entry is not None and entry.get("iv") is None:
+                    if iv_store.negative_retry_due(entry, ltp, spot, now_ts):
+                        entry = None          # retry now
+                    else:
+                        suppressed = True     # negative cache hold
+                        iv_store.bump("outer", "neg_hits")
+                if not suppressed:
+                    iv_store.bump("outer", "misses")
+                    seed = entry.get("iv") if entry else None
+                    iv = _solve_outer(key, strike, opt_type, ltp, seed)
+            if iv is not None:
+                cached_ivs[(strike, opt_type)] = iv
+                greeks = calculate_greeks(spot, strike, T, r, iv, opt_type)
+                if greeks:
+                    gex = calculate_gex(greeks["gamma"], oi, opt_type, contract_multiplier)
+                    _accumulate(gex, strike)
+        _finish(opt_data, iv, greeks, gex)
 
-                    greeks = calculate_greeks(spot, strike, T, get_risk_free_rate(), iv, opt_type)
-                    if greeks:
-                        gex = calculate_gex(greeks["gamma"], oi, opt_type, contract_multiplier)
-                        net_gex += gex
-                        if abs(gex) > abs(max_gex):
-                            max_gex = gex
-                            max_gex_strike = strike
-
-            # Store everything — valid or invalid — with validity flag
-            strikes_data[strike][opt_type].update({
-                "iv": iv,
-                "delta": greeks["delta"] if greeks else None,
-                "gamma": greeks["gamma"] if greeks else None,
-                "theta": greeks["theta"] if greeks else None,
-                "vega": greeks["vega"] if greeks else None,
-                "gex": gex,
-                "quote_valid": iv is not None and greeks is not None,
-            })
+    if iv_store is None:
+        # Legacy mode — identical to pre-cache behavior (fresh solve everywhere).
+        for strike in sorted_strikes:
+            for opt_type in ["CE", "PE"]:
+                _active_contract(strike, opt_type)
+    else:
+        for si, strike in enumerate(sorted_strikes):
+            if windowed and lo_i <= si <= hi_i:
+                for opt_type in ["CE", "PE"]:
+                    _active_contract(strike, opt_type)
+        if windowed and fresh_window_ivs:
+            # Volatility-shock guard: fresh ATM basket vs the previous cycle.
+            basket = sum(fresh_window_ivs) / len(fresh_window_ivs)
+            iv_store.check_vol_shock(basket)
+        for si, strike in enumerate(sorted_strikes):
+            if not (windowed and lo_i <= si <= hi_i):
+                for opt_type in ["CE", "PE"]:
+                    _outer_contract(strike, opt_type)
 
     max_pain = calculate_max_pain(strikes_data, contract_multiplier)
 
@@ -517,6 +822,8 @@ def calculate_analytics(strikes_data: Dict, spot: float, futures: Optional[float
         try:
             import app_perf
             app_perf.record_analytics(instrument, _time.perf_counter() - _t0)
+            if iv_store is not None:
+                app_perf.record_iv(instrument, iv_store.stats())
         except Exception:
             pass
 

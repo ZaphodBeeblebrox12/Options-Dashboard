@@ -32,12 +32,36 @@ export interface CustomSound {
   size_bytes: number;
 }
 
+/** Dedicated Tier-4 alert profile — routing/config is tier-aware while the
+ *  detection/rule engine stays unified. Mirrors backend settings["tier4"]. */
+export interface Tier4TelegramConfig {
+  enabled: boolean;
+  bot_token: string;
+  chat_id: string;
+}
+
+export interface Tier4Profile {
+  enabled: boolean;
+  channels: string[];
+  cooldown_seconds: number;
+  telegram: Tier4TelegramConfig;
+}
+
+export const DEFAULT_TIER4_PROFILE: Tier4Profile = {
+  enabled: true,
+  channels: ['telegram'],
+  cooldown_seconds: 300,
+  telegram: { enabled: false, bot_token: '', chat_id: '' },
+};
+
 export interface AlertSettings {
   rules: AlertRuleConfig[];
   telegram: TelegramConfig;
   sound: SoundSettings;
   custom_sounds: CustomSound[];
   toast_duration_ms: number;  // ← NEW
+  tier4_channels?: string[];  // legacy mirror of tier4.channels (kept in sync backend-side)
+  tier4?: Tier4Profile;       // dedicated Tier-4 alert profile
 }
 
 export interface AlertHistoryEntry {
@@ -56,6 +80,7 @@ export interface AlertHistoryEntry {
   channels_fired: string;
   market_state: string;
   created_at: string;
+  instrument_tier?: number | null;
 }
 
 export interface AlertFiring {
@@ -70,6 +95,7 @@ export interface AlertFiring {
   max_negative_gex_strike: number | null;
   net_gex: number | null;
   channels_fired: string[];
+  instrument_tier?: number | null;
 }
 
 export function useAlertSettings() {
@@ -85,6 +111,10 @@ export function useAlertSettings() {
         const data = await res.json();
         // Ensure default if backend doesn't send it yet
         if (data.toast_duration_ms === undefined) data.toast_duration_ms = 6000;
+        if (data.tier4_channels === undefined) data.tier4_channels = ['telegram'];
+        if (data.tier4 === undefined) {
+          data.tier4 = { ...DEFAULT_TIER4_PROFILE, channels: data.tier4_channels ?? ['telegram'] };
+        }
         setSettings(data);
       }
     } finally {

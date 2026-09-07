@@ -166,7 +166,7 @@ def set_instrument_tier(symbol: str, tier: int):
     sym = symbol.strip().upper()
     tiers = dict(get_all()["instrument_tiers"])
     tier = int(tier)
-    if tier not in (1, 2, 3):
+    if tier not in (1, 2, 3, 4):
         tier = 3
     if tier != 1 and sym in ("NIFTY", "SENSEX"):
         return  # fixed Tier-1 indices are never demoted

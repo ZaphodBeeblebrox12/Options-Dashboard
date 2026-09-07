@@ -75,6 +75,11 @@ const ToastItem: React.FC<{
       <div className="flex items-center justify-between px-2.5 py-1.5">
         <div className="flex items-center gap-1.5 min-w-0">
           <Bell className={`w-3 h-3 ${colors.text} shrink-0`} />
+          {alert.instrument_tier === 4 && (
+            <span className="px-1 py-px rounded text-[8px] font-bold bg-violet-500/25 text-violet-300 border border-violet-500/40 shrink-0">
+              T4
+            </span>
+          )}
           <span className="text-[10px] font-bold text-slate-200 truncate">
             {alert.index_name} Alert
           </span>

@@ -52,18 +52,22 @@ const TIER_GROUPS = [
     bar: 'bg-terminal-pe', badge: 'bg-terminal-pe/20 text-terminal-pe' },
   { tier: 3, title: 'Tier 3', desc: 'Lightweight scanner · walls only · analytics at triggers · configurable window',
     bar: 'bg-cyan-500', badge: 'bg-cyan-500/20 text-cyan-400' },
+  { tier: 4, title: 'Tier 4', desc: 'Angel-fed Greeks · IV/Greeks from Angel One, no local calculation · 30s snapshots',
+    bar: 'bg-violet-500', badge: 'bg-violet-500/20 text-violet-400' },
 ];
 
 const TIER_ACTIVE: Record<number, string> = {
   1: 'bg-terminal-atm/30 text-terminal-atm font-bold',
   2: 'bg-terminal-pe/30 text-terminal-pe font-bold',
   3: 'bg-cyan-500/30 text-cyan-400 font-bold',
+  4: 'bg-violet-500/30 text-violet-400 font-bold',
 };
 
 const TIER_NAMES: Record<number, string> = {
   1: 'Tier 1 — full/high-priority analytics',
   2: 'Tier 2 — full analytics',
   3: 'Tier 3 — lightweight scanner',
+  4: 'Tier 4 — Angel-fed Greeks',
 };
 
 const COLLAPSE_KEY = 'instruments_sections_collapsed';
@@ -86,6 +90,9 @@ export const InstrumentsTab: React.FC = () => {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [batchError, setBatchError] = useState<string | null>(null);
   const [removeTarget, setRemoveTarget] = useState<string | null>(null);
+  const [t4Query, setT4Query] = useState('');
+  const [t4Matches, setT4Matches] = useState<{ symbol: string; kind: string }[]>([]);
+  const t4Timer = useRef<ReturnType<typeof setTimeout>>();
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
   const refresh = useCallback(async () => {
@@ -119,6 +126,20 @@ export const InstrumentsTab: React.FC = () => {
     }, 250);
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [query]);
+
+  // Tier 4 checkbox picker typeahead (same kind-aware endpoint)
+  useEffect(() => {
+    if (t4Timer.current) clearTimeout(t4Timer.current);
+    const q = t4Query.trim();
+    if (!q) { setT4Matches([]); return; }
+    t4Timer.current = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/instruments/search?q=${encodeURIComponent(q)}`);
+        if (r.ok) setT4Matches((await r.json()).matches || []);
+      } catch {}
+    }, 250);
+    return () => { if (t4Timer.current) clearTimeout(t4Timer.current); };
+  }, [t4Query]);
 
   const addInstrument = useCallback(async (symbol: string, kind?: string) => {
     const sym = symbol.trim().toUpperCase();
@@ -154,6 +175,25 @@ export const InstrumentsTab: React.FC = () => {
       refresh();
     } catch {}
   }, [removeTarget, refresh]);
+
+  const toggleT4 = useCallback(async (sym: string, kind: string, on: boolean) => {
+    setError('');
+    try {
+      const cur = instruments.find((i) => i.symbol === sym);
+      const r = await fetch(cur ? `/api/instruments/${encodeURIComponent(sym)}/tier` : '/api/instruments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cur ? { tier: on ? 4 : 3 } : { symbol: sym, kind, tier: 4 }),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        setError(d.detail || 'Tier 4 change failed');
+      }
+      setT4Query('');
+      setT4Matches([]);
+      refresh();
+    } catch { setError('Network error'); }
+  }, [instruments, refresh]);
 
 
 
@@ -301,7 +341,7 @@ export const InstrumentsTab: React.FC = () => {
             <span className="st-pill bg-terminal-border/40 text-terminal-muted">Fixed</span>
           ) : (
             <span className="inline-flex border border-terminal-border rounded overflow-hidden" onClick={(e) => e.stopPropagation()}>
-              {[1, 2, 3].map((t) => (
+              {[1, 2, 3, 4].map((t) => (
                 <button
                   key={t}
                   onClick={() => moveTier(s, t)}
@@ -386,6 +426,50 @@ export const InstrumentsTab: React.FC = () => {
         ))}
       </div>
       {error && <div className="st-helper text-terminal-ce mb-3">{error}</div>}
+
+      {/* Tier 4 — Angel-fed Greeks (checkbox picker) */}
+      <div className="border border-terminal-border rounded-lg p-3 mb-4">
+        <div className="st-card-title mb-1">Angel-fed Greeks · Tier 4</div>
+        <div className="st-helper mb-2">IV/Greeks sourced directly from Angel One — no local Black-Scholes. Checked instruments become Tier 4; uncheck a chip to demote back to Tier 3.</div>
+        <div className="relative max-w-md mb-2">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-terminal-muted" />
+          <input
+            type="text" value={t4Query}
+            onChange={(e) => setT4Query(e.target.value)}
+            placeholder="Search stocks to enable Tier 4…"
+            className="st-input w-full bg-terminal-bg border border-terminal-border rounded-lg pl-8 pr-3 py-2 text-terminal-text placeholder:text-[var(--st-text-3)] focus:outline-none focus:border-terminal-atm"
+          />
+          {t4Matches.length > 0 && (
+            <div className="absolute top-full left-0 right-0 mt-1 bg-terminal-panel border border-terminal-border rounded-lg shadow-xl z-20 overflow-hidden">
+              {t4Matches.slice(0, 12).map((m) => {
+                const cur = instruments.find((i) => i.symbol === m.symbol);
+                const on = (cur?.tier ?? 0) === 4;
+                return (
+                  <label key={`${m.kind}-${m.symbol}`} className="st-input w-full flex items-center gap-2.5 px-3 py-2 hover:bg-white/5 cursor-pointer">
+                    <input type="checkbox" checked={on}
+                      onChange={(e) => toggleT4(m.symbol, m.kind, e.target.checked)}
+                      className="w-4 h-4 accent-terminal-pe" />
+                    <span>{m.symbol}</span>
+                    <span className={`st-pill ${KIND_META[m.kind]?.cls || ''}`}>{KIND_META[m.kind]?.label || m.kind}</span>
+                    {cur && <span className="st-num ml-auto">T{cur.tier}</span>}
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        {instruments.filter((i) => i.tier === 4).length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {instruments.filter((i) => i.tier === 4).map((i) => (
+              <button key={i.symbol} onClick={() => toggleT4(i.symbol, i.kind, false)}
+                title="Demote to Tier 3"
+                className="st-pill bg-violet-500/20 text-violet-400 hover:bg-violet-500/30">
+                {i.symbol} ✕
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* Batch action bar */}
       {selectedInstruments.length > 0 && (

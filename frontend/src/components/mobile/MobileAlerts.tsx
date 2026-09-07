@@ -95,6 +95,9 @@ export default function MobileAlerts({ feed, selected, live }: { feed: AlertFiri
         <div className="mc-altc-hd">
           {r1 && <span className="mc-altc-bolt">⚡</span>}
           <span className="mc-altc-rule">{m.short}</span>
+          {a.instrument_tier === 4 && (
+            <span className="mc-altc-tag" style={{ background: "rgba(139,92,246,.15)", color: "#a78bfa" }}>TIER 4</span>
+          )}
           <span className="mc-altc-inst">{a.index_name}</span>
           <span className="mc-altc-time num">{timeOf(a.timestamp)}</span>
         </div>

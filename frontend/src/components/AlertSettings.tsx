@@ -35,6 +35,8 @@ export const AlertSettingsPanel: React.FC<AlertSettingsPanelProps> = ({ onTestTo
   const [expandedRule, setExpandedRule] = useState<string | null>(null);
   const [telegramTestResult, setTelegramTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [testingTelegram, setTestingTelegram] = useState(false);
+  const [t4TestResult, setT4TestResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [testingT4Telegram, setTestingT4Telegram] = useState(false);
 
   useEffect(() => {
     if (settings) {
@@ -84,6 +86,26 @@ export const AlertSettingsPanel: React.FC<AlertSettingsPanelProps> = ({ onTestTo
   const handleSave = async () => {
     if (!localSettings) return;
     await saveSettings(localSettings);
+  };
+
+  const testTier4Telegram = async () => {
+    const t4tg = localSettings?.tier4?.telegram;
+    if (!t4tg) return;
+    setTestingT4Telegram(true);
+    setT4TestResult(null);
+    try {
+      const res = await fetch('/api/alerts/telegram/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(t4tg),
+      });
+      const data = await res.json();
+      setT4TestResult({ ok: !!data?.success, msg: data?.message ?? 'No response' });
+    } catch {
+      setT4TestResult({ ok: false, msg: 'Request failed' });
+    } finally {
+      setTestingT4Telegram(false);
+    }
   };
 
   const testTelegram = async () => {
@@ -219,6 +241,14 @@ export const AlertSettingsPanel: React.FC<AlertSettingsPanelProps> = ({ onTestTo
             </span>
           </div>
         )}
+      </div>
+
+      {/* Tier 1/2/3 Alert Destinations — the existing shared per-rule config */}
+      <div className="px-4 space-y-2">
+        <div className="text-xs font-semibold text-terminal-muted uppercase tracking-wider">Tier 1/2/3 Alert Destinations</div>
+        <p className="text-[10px] font-mono text-terminal-muted/70 leading-relaxed">
+          Applies to every Tier 1, Tier 2 and Tier 3 instrument via the per-rule channel settings below.
+        </p>
       </div>
 
       {/* Alert Rules */}
@@ -404,6 +434,190 @@ export const AlertSettingsPanel: React.FC<AlertSettingsPanelProps> = ({ onTestTo
             </div>
           );
         })}
+      </div>
+
+      {/* Tier 4 Alerts — dedicated profile: enable/disable, channels,
+          cooldown, and an optional dedicated Telegram destination */}
+      <div className="px-4 space-y-2">
+        <div className="text-xs font-semibold text-terminal-muted uppercase tracking-wider">Tier 4 Alerts</div>
+        <p className="text-[10px] font-mono text-terminal-muted/70 leading-relaxed">
+          Dedicated profile for every Tier-4 instrument (Angel-fed Greeks). Tier 4 never uses
+          Tier 1/2/3 routing — this profile decides delivery. Alerts are labeled &quot;TIER 4 |&quot;
+          and badged T4 in the toast, feed and history.
+        </p>
+
+        {/* master enable/disable */}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() =>
+              setLocalSettings((prev) =>
+                prev?.tier4
+                  ? { ...prev, tier4: { ...prev.tier4, enabled: !prev.tier4.enabled } }
+                  : prev
+              )
+            }
+            className={`relative w-9 h-5 rounded-full transition-colors ${
+              localSettings.tier4?.enabled ? 'bg-violet-500' : 'bg-terminal-border'
+            }`}
+          >
+            <span
+              className={`absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                localSettings.tier4?.enabled ? 'translate-x-4' : 'translate-x-0'
+              }`}
+            />
+          </button>
+          <span className="text-[10px] font-mono text-terminal-muted">
+            {localSettings.tier4?.enabled ? 'Tier 4 alerts enabled' : 'Tier 4 alerts disabled'}
+          </span>
+        </div>
+
+        {localSettings.tier4?.enabled && (
+          <>
+            {/* channels */}
+            <div className="flex gap-2">
+              {(['toast', 'sound', 'telegram'] as const).map((ch) => {
+                const on = (localSettings.tier4?.channels ?? ['telegram']).includes(ch);
+                return (
+                  <button
+                    key={ch}
+                    onClick={() =>
+                      setLocalSettings((prev) => {
+                        if (!prev?.tier4) return prev;
+                        const cur = prev.tier4.channels ?? ['telegram'];
+                        const next = on ? cur.filter((c) => c !== ch) : [...cur, ch];
+                        return { ...prev, tier4: { ...prev.tier4, channels: next } };
+                      })
+                    }
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-mono transition-colors ${
+                      on
+                        ? 'bg-violet-500/20 text-violet-300 border border-violet-500/40'
+                        : 'bg-terminal-bg text-terminal-muted border border-terminal-border'
+                    }`}
+                  >
+                    {on ? <Check className="w-3 h-3" /> : null}
+                    {ch === 'toast' ? 'Toast' : ch === 'sound' ? 'Sound' : 'Telegram'}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* cooldown */}
+            <div className="flex items-center gap-3">
+              <Clock className="w-3.5 h-3.5 text-terminal-muted" />
+              <span className="text-[10px] font-mono text-terminal-muted">Tier 4 cooldown</span>
+              <select
+                value={localSettings.tier4?.cooldown_seconds ?? 300}
+                onChange={(e) =>
+                  setLocalSettings((prev) =>
+                    prev?.tier4
+                      ? { ...prev, tier4: { ...prev.tier4, cooldown_seconds: Number(e.target.value) } }
+                      : prev
+                  )
+                }
+                className="bg-terminal-bg border border-terminal-border rounded px-2 py-1 text-[10px] font-mono"
+              >
+                <option value={60}>1 min</option>
+                <option value={300}>5 min</option>
+                <option value={600}>10 min</option>
+                <option value={900}>15 min</option>
+                <option value={1800}>30 min</option>
+              </select>
+            </div>
+
+            {/* dedicated Telegram destination (falls back to shared) */}
+            <div className="space-y-2 border border-violet-500/20 rounded-lg px-3 py-2.5">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() =>
+                    setLocalSettings((prev) =>
+                      prev?.tier4
+                        ? {
+                            ...prev,
+                            tier4: {
+                              ...prev.tier4,
+                              telegram: { ...prev.tier4.telegram, enabled: !prev.tier4.telegram.enabled },
+                            },
+                          }
+                        : prev
+                    )
+                  }
+                  className={`relative w-8 h-5 rounded-full transition-colors ${
+                    localSettings.tier4?.telegram.enabled ? 'bg-violet-500' : 'bg-terminal-border'
+                  }`}
+                >
+                  <span
+                    className={`absolute left-0.5 top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${
+                      localSettings.tier4?.telegram.enabled ? 'translate-x-3.5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+                <span className="text-[10px] font-mono text-terminal-muted">
+                  Dedicated Tier 4 Telegram destination
+                </span>
+              </div>
+              {localSettings.tier4?.telegram.enabled && (
+                <div className="space-y-2 pl-7">
+                  <input
+                    type="password"
+                    placeholder="Bot token (empty = use shared destination)"
+                    value={localSettings.tier4.telegram.bot_token}
+                    onChange={(e) =>
+                      setLocalSettings((prev) =>
+                        prev?.tier4
+                          ? {
+                              ...prev,
+                              tier4: {
+                                ...prev.tier4,
+                                telegram: { ...prev.tier4.telegram, bot_token: e.target.value },
+                              },
+                            }
+                          : prev
+                      )
+                    }
+                    className="w-full bg-terminal-bg border border-terminal-border rounded px-3 py-1.5 text-[10px] font-mono text-terminal-text placeholder-terminal-muted/50 focus:outline-none focus:border-violet-500"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Chat ID (empty = use shared destination)"
+                    value={localSettings.tier4.telegram.chat_id}
+                    onChange={(e) =>
+                      setLocalSettings((prev) =>
+                        prev?.tier4
+                          ? {
+                              ...prev,
+                              tier4: {
+                                ...prev.tier4,
+                                telegram: { ...prev.tier4.telegram, chat_id: e.target.value },
+                              },
+                            }
+                          : prev
+                      )
+                    }
+                    className="w-full bg-terminal-bg border border-terminal-border rounded px-3 py-1.5 text-[10px] font-mono text-terminal-text placeholder-terminal-muted/50 focus:outline-none focus:border-violet-500"
+                  />
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={testTier4Telegram}
+                      disabled={testingT4Telegram}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[10px] font-mono bg-violet-500/20 text-violet-300 border border-violet-500/30 hover:bg-violet-500/30 transition-colors disabled:opacity-50"
+                    >
+                      <Send className="w-3 h-3" />
+                      {testingT4Telegram ? 'Testing...' : 'Test Tier 4 destination'}
+                    </button>
+                    {t4TestResult && (
+                      <span className={`text-[10px] font-mono ${t4TestResult.ok ? 'text-terminal-pe' : 'text-terminal-ce'}`}>
+                        {t4TestResult.ok ? '✓ ' : '✕ '}{t4TestResult.msg}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[9px] font-mono text-terminal-muted/60">
+                    Leave token/chat empty to fall back to the shared Telegram destination below.
+                  </p>
+                </div>
+              )}
+            </div>
+          </>
+        )}
       </div>
 
       {/* Telegram Config */}

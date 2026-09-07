@@ -122,9 +122,14 @@ class SnapshotEngine:
         return baseline
 
     def capture_snapshot(self, data_store, spot_poller, index_name="NIFTY",
-                        contract_multiplier=50, expiry_datetime=None, market_hours=None):
+                        contract_multiplier=50, expiry_datetime=None, market_hours=None,
+                        expiry_key=None, analytics_fn=None, on_snapshot=None):
         """Create a snapshot from current market state and queue it.
-        market_hours: ((h,m),(h,m)) or callable — per-instrument session (commodities)."""
+        market_hours: ((h,m),(h,m)) or callable — per-instrument session (commodities).
+        expiry_key: cache-key expiry string (e.g. "11SEP2026"), plain or callable.
+        on_snapshot: optional callable(snapshot) invoked EXACTLY ONCE after a
+        SUCCESSFUL capture (alert-evaluation hook). All failure paths — no data,
+        missing spot, analytics timeout/exception — return before this is called."""
         hours = self._resolve_hours(market_hours)
         if not market_open_for(hours):
             # Session-transition logging only (per instrument, actual session).
@@ -159,10 +164,33 @@ class SnapshotEngine:
 
             mult = self._resolve(contract_multiplier)
             expiry = self._resolve(expiry_datetime)
+            ek = self._resolve(expiry_key)
 
             try:
+                # Active window follows the instrument tier (Tier 1 -> ATM±5,
+                # everything else -> ATM±3). The IV store lives on data_store,
+                # so this 30s path and the 5s broadcast path share one
+                # persistent cache per instrument.
+                # analytics_fn (per-streamer provider) overrides the default
+                # local path — Tier 4 passes an Angel-fed provider with NO
+                # local Black-Scholes. Default: unchanged Tier 1/2/3 behavior.
+                # analytics_fn is the provider itself: invoked as
+                # _af(data, spot, futures) below. Do NOT route through
+                # _resolve — that unwraps zero-arg callables and would call a
+                # bound method with no arguments.
+                _af = analytics_fn
+                if _af is None:
+                    try:
+                        _tier = app_settings.get_instrument_tier(index_name)
+                    except Exception:
+                        _tier = 1 if index_name in ("NIFTY", "SENSEX") else 2
+                    _window = 5 if _tier == 1 else 3
+                    _iv_store = getattr(data_store, "iv_cache", None)
+                    _af = lambda d, s, f: calculate_analytics(   # noqa: E731
+                        d, s, f, expiry, mult, instrument=index_name,
+                        iv_store=_iv_store, active_window=_window, expiry=ek)
                 analytics = self._analytics_executor.submit(
-                    lambda: calculate_analytics(data, spot, futures, expiry, mult, instrument=index_name)
+                    lambda: _af(data, spot, futures)
                 ).result(timeout=60)
             except TimeoutError:
                 print(f"[SnapshotEngine] {index_name}: analytics timed out (>60s) — "
@@ -248,6 +276,18 @@ class SnapshotEngine:
             except Exception:
                 pass
 
+            # ── Alert hook: the snapshot→alert-engine integration point. ──
+            # One evaluation pass per successfully captured snapshot, after
+            # queueing. A hook failure must not retroactively mark this
+            # capture as failed, so it gets its own guard. Injected by
+            # main.py (on_snapshot=...) to avoid a snapshot_engine→main
+            # circular import.
+            if on_snapshot is not None:
+                try:
+                    on_snapshot(snapshot)
+                except Exception as e:
+                    print(f"[SnapshotEngine] on_snapshot hook error for {index_name}: {e}")
+
         except Exception as e:
             print(f"[SnapshotEngine] Error capturing snapshot: {e}")
             import traceback
@@ -277,6 +317,19 @@ class SnapshotEngine:
     def _write_snapshot_to_db(self, conn, snapshot):
         print(f"[SnapshotEngine] DB WRITE: {snapshot['index_name']} at {snapshot['timestamp']} — spot={snapshot['spot']}, options={len(snapshot['options'])}")
         cursor = conn.cursor()
+
+        # ── A2 fix: delete the previous row for this (timestamp, index_name)
+        # FIRST, inside the same transaction. INSERT OR REPLACE on `snapshots`
+        # is a DELETE+INSERT that mints a NEW rowid, so the old snapshot row's
+        # option_snapshots (keyed by the OLD snapshot_id) would be orphaned
+        # forever. Removing both up front keeps replacement truly replacing.
+        cursor.execute(
+            """DELETE FROM option_snapshots WHERE snapshot_id IN
+               (SELECT id FROM snapshots WHERE timestamp = ? AND index_name = ?)""",
+            (snapshot["timestamp"], snapshot["index_name"]))
+        cursor.execute(
+            "DELETE FROM snapshots WHERE timestamp = ? AND index_name = ?",
+            (snapshot["timestamp"], snapshot["index_name"]))
 
         cursor.execute("""
             INSERT OR REPLACE INTO snapshots
@@ -330,11 +383,15 @@ class SnapshotEngine:
             return self.latest_timestamps.get(index_name)
 
     def start_snapshot_timer(self, data_store, spot_poller, index_name="NIFTY",
-                            contract_multiplier=50, expiry_datetime=None, market_hours=None):
+                            contract_multiplier=50, expiry_datetime=None, market_hours=None,
+                            expiry_key=None, analytics_fn=None, on_snapshot=None):
         """Start (or restart) the 30s capture timer for one instrument.
         contract_multiplier / expiry_datetime / market_hours may be plain values
         or zero-arg callables. market_hours is the instrument's OWN session
-        (equity default only when the caller supplies none)."""
+        (equity default only when the caller supplies none).
+        on_snapshot: optional per-capture callback (see capture_snapshot) —
+        injected by main.py for alert evaluation; never imported here directly."""
+
         self.stop_snapshot_timer(index_name)
         stop_event = threading.Event()
         self._timer_events[index_name] = stop_event
@@ -361,7 +418,9 @@ class SnapshotEngine:
 
             while self.running and not stop_event.is_set():
                 self.capture_snapshot(data_store, spot_poller, index_name,
-                                    contract_multiplier, expiry_datetime, market_hours)
+                                    contract_multiplier, expiry_datetime, market_hours,
+                                    expiry_key=expiry_key, analytics_fn=analytics_fn,
+                                    on_snapshot=on_snapshot)
                 # Rearm interval is user-configurable (Settings > Analytics) and
                 # re-read every cycle — changes apply without restarting timers.
                 for _ in range(_capture_interval()):

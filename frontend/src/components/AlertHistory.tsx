@@ -162,6 +162,11 @@ export const AlertHistoryPanel: React.FC<AlertHistoryPanelProps> = ({ indexName 
                         <span className={`px-1.5 py-0.5 rounded border text-[10px] ${badgeClass}`}>
                           {RULE_NAMES[entry.rule_type] || entry.rule_type}
                         </span>
+                        {entry.instrument_tier === 4 && (
+                          <span className="ml-1 px-1 py-0.5 rounded border text-[10px] bg-violet-500/20 text-violet-300 border-violet-500/30">
+                            T4
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-2 text-right text-terminal-text">
                         {entry.spot !== null ? entry.spot.toLocaleString('en-IN', { minimumFractionDigits: 2 }) : '—'}

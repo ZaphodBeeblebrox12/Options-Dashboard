@@ -61,6 +61,12 @@ def init_alert_db():
     except sqlite3.OperationalError:
         pass  # column already exists
 
+    # Tier 4 migration: instrument tier on history rows (NULL = legacy)
+    try:
+        conn.execute("ALTER TABLE alert_history ADD COLUMN instrument_tier INTEGER")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
     # Settings storage (JSON blob)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS alert_settings (
@@ -124,20 +130,22 @@ def save_alert_history(
     futures_spread: Optional[float],
     channels_fired: List[str],
     market_state: Dict,
+    instrument_tier: Optional[int] = None,
 ) -> int:
     with get_alert_db() as conn:
         cursor = conn.execute("""
             INSERT INTO alert_history
             (timestamp, index_name, rule_type, rule_name, spot, atm_strike,
              max_ce_oi_strike, max_pe_oi_strike, max_negative_gex_strike,
-             net_gex, futures_spread, channels_fired, market_state)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             net_gex, futures_spread, channels_fired, market_state, instrument_tier)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             timestamp, index_name, rule_type, rule_name, spot, atm_strike,
             max_ce_oi_strike, max_pe_oi_strike, max_negative_gex_strike,
             net_gex, futures_spread,
             json.dumps(channels_fired),
             json.dumps(market_state),
+            instrument_tier,
         ))
         conn.commit()
         return cursor.lastrowid

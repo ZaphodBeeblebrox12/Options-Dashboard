@@ -39,6 +39,14 @@ SCANNER_CONFIRM_SEC = int(os.getenv("WS_TIER3_CONFIRM_SEC", "45"))
 SCANNER_MIN_COVERAGE = float(os.getenv("WS_TIER3_MIN_COVERAGE", "0.6"))
 SCANNER_FALSE_BACKOFF_SEC = int(os.getenv("WS_TIER3_FALSE_BACKOFF_SEC", "300"))
 
+# Tier 4 window: ATM ± TIER4_HALF_WIDTH strikes. This ONE constant governs BOTH
+# the subscription window (_build_window_tokens — what actually gets
+# subscribed/unsubscribed as ATM moves) and the state/snapshot trim
+# (_enrich_tier4), so the streamed window and stored state can never disagree.
+# Angel returns the full chain but wings never enter Tier 4 state, so there is
+# no reason to stream them. Env override: TIER4_HALF_WIDTH (default 15).
+TIER4_HALF_WIDTH = int(os.getenv("TIER4_HALF_WIDTH", "15"))
+
 
 def _scanner_half_width() -> int:
     """Runtime-adjustable Tier-3 scanner window (Settings > Analytics).
@@ -90,7 +98,7 @@ class InstrumentStreamer:
         if self.kind not in ("INDEX", "STOCK", "COMMODITY"):
             raise ValueError(f"Unknown kind '{kind}' for {self.symbol}")
         tier = int(tier)
-        self.tier = tier if tier in (1, 2, 3) else 3
+        self.tier = tier if tier in (1, 2, 3, 4) else 3
         self.manager = manager
         self.data_store = LiveDataStore()
         self.spot_poller = SpotPricePoller()
@@ -305,7 +313,17 @@ class InstrumentStreamer:
             self.state = "ERROR"
 
     def _build_window_tokens(self, center_idx: int) -> Set[TokenRequirement]:
-        hw = _scanner_half_width() if self.tier == 3 else _half_width()
+        # Per-tier half-width: Tier 3 scanner -> its own runtime setting;
+        # Tier 4 -> the dedicated TIER4_HALF_WIDTH cap; Tier 1/2 -> the
+        # full-analytics window setting. Tier 4 must NOT use _half_width():
+        # that is the Tier-2 knob, and tying Tier-4 subscriptions to it let the
+        # streamed window drift away from the ±TIER4_HALF_WIDTH state trim.
+        if self.tier == 3:
+            hw = _scanner_half_width()
+        elif self.tier == 4:
+            hw = TIER4_HALF_WIDTH
+        else:
+            hw = _half_width()
         lo = max(0, center_idx - hw)
         hi = min(len(self.strikes), center_idx + hw + 1)
         selected = set(self.strikes[lo:hi])
@@ -336,11 +354,153 @@ class InstrumentStreamer:
                     + (f" ({result['unplaced']} unplaced — capacity)" if result["unplaced"] else ""))
 
     # ─────────────────────────────────────────────────────────
+    # Tier 4 — Angel-fed Greeks: NO local Black-Scholes, no Brent, no IV cache
+    # ─────────────────────────────────────────────────────────
+    def _tier4_feed(self):
+        from greeks_feed import greeks_feed_manager
+        if not greeks_feed_manager.feed_status(self.symbol):
+            greeks_feed_manager.register(self.symbol, lambda: self.expiry_str, self.market_hours)
+        return greeks_feed_manager
+
+    def _enrich_tier4(self, data, spot):
+        """Merge Angel greeks into a raw data-store snapshot and compute the
+        aggregates with the EXISTING pure arithmetic helpers only —
+        calculate_gex / calculate_max_pain / vectorized gamma flip consume
+        provided Greeks/OI/multiplier and perform no local IV solving.
+        `data` is enriched in place (same contract as calculate_analytics)."""
+        from datetime import datetime as _dt
+        from calculations import (calculate_gex, calculate_max_pain,
+                                  calculate_true_gamma_flip_vectorized)
+        feed = self._tier4_feed()
+        feed_data = feed.get(self.symbol) or {}
+        fstat = feed.feed_status(self.symbol) or {}
+        now = _dt.now()
+        T = max(((self.expiry_datetime or now) - now).total_seconds() / (365.25 * 24 * 3600), 0.0001)
+
+        # ── Tier 4 storage window: ATM ± TIER4_HALF_WIDTH strikes ──
+        # Same ATM rule as the rest of the app (nearest listed strike to
+        # spot). Applied at merge time so far wings from Angel's full chain
+        # never enter Tier 4 state — capture_snapshot iterates this same dict,
+        # so deleted strikes cannot reach option_snapshots either. Both CE and
+        # PE of retained strikes are kept; edges clamp when fewer than
+        # TIER4_HALF_WIDTH strikes exist on a side; the window re-centers on
+        # every call as spot (and thus ATM) moves.
+        if spot and data:
+            _all = sorted(data.keys())
+            _atm = min(_all, key=lambda s: abs(s - spot))
+            _i = _all.index(_atm)
+            _keep = set(_all[max(0, _i - TIER4_HALF_WIDTH): _i + TIER4_HALF_WIDTH + 1])
+            for _s in _all:
+                if _s not in _keep:
+                    del data[_s]
+
+        net_gex = 0.0
+        max_gex = 0.0
+        max_gex_strike = None
+        iv_map = {}
+        missing = 0
+        for strike in sorted(data.keys()):
+            for opt_type in ["CE", "PE"]:
+                opt = data[strike].get(opt_type, {})
+                g = (feed_data.get(int(strike)) or {}).get(opt_type) or {}
+                iv, delta, gamma, theta, vega = (g.get("iv"), g.get("delta"),
+                                                 g.get("gamma"), g.get("theta"), g.get("vega"))
+                if iv is not None:
+                    iv_map[(strike, opt_type)] = iv
+                else:
+                    missing += 1
+                gex = 0.0
+                if gamma is not None:
+                    gex = calculate_gex(gamma, opt.get("oi", 0), opt_type, self.contract_multiplier)
+                    net_gex += gex
+                    if abs(gex) > abs(max_gex):
+                        max_gex, max_gex_strike = gex, strike
+                opt.update({"iv": iv, "delta": delta, "gamma": gamma,
+                            "theta": theta, "vega": vega, "gex": gex,
+                            "quote_valid": iv is not None and gamma is not None})
+        analytics = {"net_gex": round(net_gex, 2), "max_gex_strike": max_gex_strike,
+                     "max_pain": calculate_max_pain(data, self.contract_multiplier),
+                     "gamma_flip": (calculate_true_gamma_flip_vectorized(
+                         data, spot, iv_map, T, self.contract_multiplier) if iv_map else None),
+                     "futures_spread": None}
+        feed_note = None
+        if fstat.get("error"):
+            feed_note = f"Angel greeks: {fstat['error']}"
+        elif fstat.get("stale"):
+            feed_note = f"Angel greeks stale ({fstat.get('age_sec')}s)"
+        elif missing:
+            feed_note = f"Angel greeks missing for {missing} contracts"
+        return analytics, feed_note
+
+    def _tier4_state_payload(self, data, spot):
+        if self.paused:
+            return {"type": "tick", "data": {"index_name": self.symbol, "spot": spot,
+                    "futures": self.spot_poller.get_futures(), "timestamp": datetime.now().isoformat(),
+                    "options": [], "market_open": self._market_open(), "window_state": self.state,
+                    "message": "Streaming paused — resume from Settings"}}
+        if not data or spot is None:
+            return {"type": "tick", "data": {"index_name": self.symbol, "spot": spot,
+                    "futures": self.spot_poller.get_futures(), "timestamp": datetime.now().isoformat(),
+                    "options": [], "market_open": self._market_open(), "window_state": self.state,
+                    "message": (f"Building Tier 4 feed for {self.symbol}..."
+                                if self._market_open() else None)}}
+        analytics, feed_note = self._enrich_tier4(data, spot)
+        enriched = []
+        for strike in sorted(data.keys()):
+            for opt_type in ["CE", "PE"]:
+                opt = data[strike].get(opt_type, {})
+                oi_change, oi_change_pct = self.data_store.compute_oi_change(
+                    strike, opt_type, opt.get("oi", 0))
+                enriched.append({
+                    "strike": strike, "option_type": opt_type,
+                    "oi": opt.get("oi", 0), "oi_change": oi_change, "oi_change_pct": oi_change_pct,
+                    "volume": opt.get("volume", 0), "ltp": opt.get("ltp", 0),
+                    "iv": opt.get("iv"), "delta": opt.get("delta"), "gamma": opt.get("gamma"),
+                    "theta": opt.get("theta"), "vega": opt.get("vega"), "gex": opt.get("gex"),
+                })
+        diff, pct_, label = self.spot_poller.get_premium_discount() or (None, None, None)
+        result = {"type": "tick", "data": {
+            "index_name": self.symbol, "spot": spot,
+            "futures": self.spot_poller.get_futures(),
+            "futures_spread": analytics.get("futures_spread"),
+            "futures_spread_pct": round(pct_, 3) if pct_ else None,
+            "spread_label": label,
+            "timestamp": datetime.now().isoformat(),
+            "options": enriched,
+            "net_gex": analytics.get("net_gex"), "max_gex_strike": analytics.get("max_gex_strike"),
+            "max_pain": analytics.get("max_pain"), "gamma_flip": analytics.get("gamma_flip"),
+            "market_open": self._market_open(),
+            "contract_multiplier": self.contract_multiplier, "expiry": self.expiry_str,
+            "instrument_kind": self.kind.lower(), "tier": 4, "greeks_source": "angel",
+            "window_state": self.state,
+            "window_note": feed_note or f"Angel-fed Greeks (Tier 4) — ±{TIER4_HALF_WIDTH} window, no local calculation",
+        }}
+        self._state_cache = result
+        self._state_cache_time = time.time()
+        return result
+
+    def compute_snapshot_analytics(self, data, spot, futures):
+        """Analytics provider for SnapshotEngine.start_snapshot_timer.
+        Tier 4: Angel-fed enrichment (no local BS). Tier 1/2: identical args
+        to the live path, including the shared persistent IV cache."""
+        if self.tier == 4:
+            analytics, _ = self._enrich_tier4(data, spot)
+            return analytics
+        from calculations import calculate_analytics
+        return calculate_analytics(
+            data, spot, futures, self.expiry_datetime, self.contract_multiplier,
+            instrument=self.symbol,
+            iv_store=self.data_store.iv_cache,
+            active_window=5 if self.tier == 1 else 3,
+            expiry=self.expiry_str,
+        )
+
+    # ─────────────────────────────────────────────────────────
     # Tier promotion (Settings)
     # ─────────────────────────────────────────────────────────
     def set_tier(self, tier: int) -> dict:
         tier = int(tier)
-        if tier not in (1, 2, 3):
+        if tier not in (1, 2, 3, 4):
             tier = 3
         with self.lock:
             if self.tier == tier:
@@ -349,6 +509,9 @@ class InstrumentStreamer:
             self._epoch += 1                      # invalidate any in-flight confirmation
             if self._confirm_stop:
                 self._confirm_stop.set()
+            if tier != 4:                         # leaving Tier 4: drop from the feed registry
+                from greeks_feed import greeks_feed_manager
+                greeks_feed_manager.unregister(self.symbol)
         logger.info(f"[{self.symbol}] Tier changed -> {tier} — re-registering groups")
         if not self.paused:
             self._unregister_groups()
@@ -682,6 +845,9 @@ class InstrumentStreamer:
             data, spot, self.spot_poller.get_futures(),
             self.expiry_datetime, self.contract_multiplier,
             instrument=self.symbol,
+            iv_store=self.data_store.iv_cache,
+            active_window=5 if self.tier == 1 else 3,
+            expiry=self.expiry_str,
         )
         enriched = []
         for strike in sorted(data.keys()):
@@ -860,6 +1026,8 @@ class InstrumentStreamer:
 
         if self.tier == 3:
             return self._scanner_state_payload(data, spot)
+        if self.tier == 4:
+            return self._tier4_state_payload(data, spot)
 
         if self.paused:
             return {"type": "tick", "data": {
@@ -889,7 +1057,10 @@ class InstrumentStreamer:
                 analytics = calculate_analytics(
                     data, spot, self.spot_poller.get_futures(),
                     self.expiry_datetime, self.contract_multiplier,
-                    instrument=self.symbol
+                    instrument=self.symbol,
+                    iv_store=self.data_store.iv_cache,
+                    active_window=5 if self.tier == 1 else 3,   # Tier 2: ATM±3
+                    expiry=self.expiry_str,
                 )
                 self._analytics_cache = analytics
                 self._analytics_cache_key = cache_key
@@ -967,6 +1138,8 @@ class InstrumentStreamer:
         self._epoch += 1
         if self._confirm_stop:
             self._confirm_stop.set()
+        from greeks_feed import greeks_feed_manager
+        greeks_feed_manager.unregister(self.symbol)
         logger.info(f"[{self.symbol}] Stopping streamer...")
 
 

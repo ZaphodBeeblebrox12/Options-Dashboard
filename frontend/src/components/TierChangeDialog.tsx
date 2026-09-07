@@ -30,6 +30,11 @@ const TIER_DESC: Record<number, { title: string; desc: string; bar: string; badg
     desc: 'Walls monitored continuously on a narrow, configurable window · full Greeks/GEX computed only when a wall touch is confirmed.',
     bar: 'bg-cyan-500', badge: 'bg-cyan-500/20 text-cyan-400',
   },
+  4: {
+    title: 'Tier 4 — Angel-fed Greeks',
+    desc: 'IV/Greeks from Angel One (optionGreek API) · no local Black-Scholes · full chain snapshots every 30s · alerts tagged (T4).',
+    bar: 'bg-violet-500', badge: 'bg-violet-500/20 text-violet-400',
+  },
 };
 
 interface TierChangeDialogProps {

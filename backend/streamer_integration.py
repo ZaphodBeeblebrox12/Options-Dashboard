@@ -22,6 +22,7 @@ from enum import Enum
 
 from subscription_manager import Tier, TokenRequirement, TokenGroup, SubscriptionManager
 import app_settings
+from calculations import IVCacheStore
 from app_settings import init_settings as init_app_settings, get_stocks as settings_get_stocks
 
 logger = logging.getLogger(__name__)
@@ -135,6 +136,9 @@ class LiveDataStore:
         self.msg_count = 0
         self.last_update = None
         self.lock = threading.Lock()
+        # Persistent per-instrument IV cache, shared by the 5s broadcast path,
+        # the 30s snapshot path and Tier-3 triggered analytics. Thread-safe.
+        self.iv_cache = IVCacheStore()
 
     def update(self, strike, option_type, ltp, oi, volume):
         with self.lock:
@@ -249,6 +253,10 @@ if ANGEL_ONE_AVAILABLE:
     class AngelOneIndexStreamer:
         def __init__(self, index_name: str, auth_manager):
             self.index_name = index_name
+            # Tier-1 identity as a real attribute: broadcast tier classification
+            # reads .tier (InstrumentStreamer sets it; without this, an implicit
+            # getattr default was deciding the tier for the indices).
+            self.tier = 1
             self.auth_manager = auth_manager
             self.data_store = LiveDataStore()
             self.spot_poller = SpotPricePoller()
@@ -476,7 +484,10 @@ if ANGEL_ONE_AVAILABLE:
                 try:
                     analytics = calculate_analytics(
                         data, spot, futures, self.expiry_datetime, self.contract_multiplier,
-                        instrument=self.index_name
+                        instrument=self.index_name,
+                        iv_store=self.data_store.iv_cache,
+                        active_window=5,          # Tier 1: ATM±5 always fresh
+                        expiry=self.expiry_str,
                     )
                     self._analytics_cache = analytics
                     self._analytics_cache_key = cache_key

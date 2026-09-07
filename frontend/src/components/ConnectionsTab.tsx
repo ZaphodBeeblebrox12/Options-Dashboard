@@ -31,6 +31,12 @@ const OVERALL_META: Record<string, { label: string; cls: string }> = {
   degraded: { label: 'Degraded', cls: 'bg-terminal-ce/20 text-terminal-ce' },
   idle: { label: 'Idle', cls: 'bg-terminal-border/40 text-terminal-muted' },
 };
+const GK_META: Record<string, { label: string; cls: string }> = {
+  healthy: { label: 'Healthy', cls: 'bg-terminal-pe/20 text-terminal-pe' },
+  warning: { label: 'Warning', cls: 'bg-terminal-atm/20 text-terminal-atm' },
+  degraded: { label: 'Degraded', cls: 'bg-terminal-ce/20 text-terminal-ce' },
+  idle: { label: 'Idle', cls: 'bg-terminal-border/40 text-terminal-muted' },
+};
 const dotCls = (g?: string) =>
   g === 'ok' ? 'bg-terminal-pe' : g === 'warning' ? 'bg-terminal-atm' : g === 'degraded' ? 'bg-terminal-ce' : 'bg-terminal-border';
 const fmtMs = (v: number | null) => (v == null ? '—' : `${Math.round(v)} ms`);
@@ -192,6 +198,35 @@ export const ConnectionsTab: React.FC = () => {
             }
           />
           <HealthRow label="Stocks tracked" extra={`${health.stocks_tracked}`} />
+
+          {(() => {
+            const gk = (health as any).greeks;
+            if (!gk) return null;
+            const meta = GK_META[gk.status] ?? GK_META.idle;
+            const freshCls = gk.status === 'healthy' ? 'text-terminal-pe'
+              : gk.status === 'warning' ? 'text-terminal-atm'
+              : gk.status === 'degraded' ? 'text-terminal-ce' : 'text-terminal-muted';
+            return (
+              <div className="mt-3 pt-3 border-t border-terminal-border/60">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="st-label" style={{ fontSize: 12.5 }}>Tier-4 Greeks feed · Angel optionGreek</span>
+                  <span className={`st-pill ${meta.cls}`}>{meta.label}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3 py-1">
+                  <span className="st-label" style={{ fontSize: 12.5 }}>Oldest Greeks age / cycle</span>
+                  <span className={`st-num font-bold ${freshCls}`} style={{ fontSize: 13 }}>
+                    {gk.oldest_active_age_sec != null ? `${gk.oldest_active_age_sec}s / ${gk.refresh_interval_sec}s` : 'no data yet'}
+                    {gk.oldest_ratio != null ? ` (×${gk.oldest_ratio})` : ''}
+                  </span>
+                </div>
+                <HealthRow label="Tier-4 instruments (N)" extra={`${gk.n_active} active · ${gk.n_registered} registered`} />
+                <HealthRow label="Expected / actual full cycle" extra={`${gk.expected_cycle_sec}s / ${gk.actual_cycle_sec != null ? `${gk.actual_cycle_sec}s` : '—'}`} />
+                <HealthRow label="Angel latency p50 / p95" extra={gk.latency && gk.latency.p95_ms != null ? `${gk.latency.p50_ms} / ${gk.latency.p95_ms} ms` : '—'} />
+                <HealthRow label="Timeouts · 429 throttles" extra={`${gk.timeouts} · ${gk.throttles}`} />
+                <HealthRow label="Request gap · effective rate" extra={`${gk.current_gap_sec}s · ${gk.request_rate_per_sec}/s`} />
+              </div>
+            );
+          })()}
         </div>
       )}
 

@@ -42,7 +42,7 @@ from alert_models import (
     AlertSettings, AlertHistoryResponse, BacktestRequest, BacktestResponse,
     AlertStatus, AlertTriggerPayload, NotificationChannel,
 )
-from telegram_notifier import send_telegram_alert, test_telegram_connection
+from telegram_notifier import send_telegram_alert, test_telegram_connection, resolve_telegram_destination
 from sound_manager import (
     get_all_sounds, get_sound_base64, save_uploaded_sound, remove_custom_sound,
     BUILT_IN_SOUNDS,
@@ -53,6 +53,13 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S"
 )
+
+# Console-noise reduction: the uvicorn ACCESS logger only emits per-request
+# "GET /api/... 200 OK" lines (the frontend polling flood). Silencing it does
+# NOT affect application logging — Greeks feed, alerts, WebSocket, startup/
+# shutdown, warnings and errors all flow through other loggers and stay at
+# INFO. (Belt-and-braces for launches that bypass the __main__ block below.)
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
 snapshot_engine = SnapshotEngine()
 alert_broadcast_queue: asyncio.Queue = asyncio.Queue()
@@ -108,7 +115,12 @@ async def lifespan(app: FastAPI):
             s.data_store, s.spot_poller, index_name=name,
             contract_multiplier=lambda: s.contract_multiplier,
             expiry_datetime=lambda: s.expiry_datetime,
-            market_hours=lambda: getattr(s, "market_hours", None)
+            expiry_key=lambda: getattr(s, "expiry_str", None),
+            market_hours=lambda: getattr(s, "market_hours", None),
+            analytics_fn=getattr(s, "compute_snapshot_analytics", None),
+            # T1/T2(/T4) snapshot → alert engine integration: evaluate the
+            # completed snapshot through the existing engine + dispatch path.
+            on_snapshot=lambda snap, inst=name: _evaluate_snapshot_alerts(snap, inst),
         )
 
     try:
@@ -142,6 +154,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[Startup] Streamer error: {e}")
 
+    # Tier 4 Angel Greeks feed + Part 1 validation sampler (isolated; sampler
+    # off unless VALIDATION_ENABLE=1). Both stop with the lifespan below.
+    from greeks_feed import greeks_feed_manager
+    if streamer_adapter.mode == "real" and getattr(streamer_adapter, "auth_manager", None):
+        greeks_feed_manager.configure(streamer_adapter.auth_manager)
+        greeks_feed_manager.start()
+    from greeks_validation import validation_sampler
+    validation_sampler.configure(streamer_adapter)
+    if validation_sampler.enabled:
+        validation_sampler.start()
+
     broadcast_task = asyncio.create_task(broadcast_loop())
     alert_broadcast_task = asyncio.create_task(alert_broadcast_loop())
     print(f"[FastAPI] Server ready at http://localhost:8000")
@@ -162,6 +185,13 @@ async def lifespan(app: FastAPI):
         pass
     print("[FastAPI] Stopping snapshot engine (timers + DB writer)...")
     snapshot_engine.stop()
+    print("[FastAPI] Stopping Tier 4 feed + validation sampler...")
+    for _m in ("greeks_feed", "greeks_validation"):
+        try:
+            _mod = __import__(_m)
+            getattr(_mod, "greeks_feed_manager" if _m == "greeks_feed" else "validation_sampler").stop()
+        except Exception:
+            pass
     print("[FastAPI] Stopping streamer adapter (sockets, threads, logout)...")
     streamer_adapter.stop()
     print("[FastAPI] Server shutting down")
@@ -189,13 +219,19 @@ app.add_middleware(
 
 def _dispatch_fired_alerts(fired) -> None:
     """Shared dispatch for fired alerts — the snapshot pipeline AND Tier 3
-    scanner triggers both land here (WS broadcast for toast/sound, Telegram)."""
+    scanner triggers both land here.
+
+    Routing is tier-aware: Tier-4 alerts use their dedicated Telegram
+    destination when configured (falling back to the shared one). Toast/sound
+    delivery is decided frontend-side from channels_fired, which the engine
+    computes per tier — a Telegram-only Tier-4 alert arrives with toast/sound
+    already filtered out, so it can never produce a normal notification."""
     for alert in fired:
         settings = alert_engine.get_settings()
-        telegram_cfg = settings.get("telegram", {})
 
-        if telegram_cfg.get("enabled", False) and NotificationChannel.TELEGRAM.value in [c.value for c in alert.channels_fired]:
-            if _main_loop is not None and _main_loop.is_running():
+        if NotificationChannel.TELEGRAM.value in [c.value for c in alert.channels_fired]:
+            telegram_cfg = resolve_telegram_destination(settings, alert.instrument_tier)
+            if telegram_cfg.get("enabled", False) and _main_loop is not None and _main_loop.is_running():
                 asyncio.run_coroutine_threadsafe(
                     asyncio.to_thread(
                         send_telegram_alert,
@@ -213,23 +249,24 @@ def _dispatch_fired_alerts(fired) -> None:
             )
 
 
-def on_snapshot_for_alerts(snapshot: dict, index_name: str):
+def _evaluate_snapshot_alerts(snapshot: dict, index_name: str) -> None:
+    """THE live alert-evaluation entry point for snapshot-driven instruments
+    (Tier 1/2, and Tier 4 subject to its existing profile gate).
+
+    One pass per successfully captured snapshot: the existing engine evaluates
+    with live rule state (armed/disarmed, cooldown, rearm debounce, tier
+    resolution from the app-settings registry — all unchanged), and any fired
+    alerts go through the SAME _dispatch_fired_alerts path the Tier-3 scanner
+    uses (Telegram tier-aware routing + alert broadcast queue). No second
+    engine, dispatcher, or state machine. Tier-3 scanners evaluate from their
+    own trigger path and never come through here."""
     try:
-        if not app_settings.get_alerts_armed():
-            return
         fired = alert_engine.evaluate_rules(snapshot, index_name)
-        _dispatch_fired_alerts(fired)
     except Exception as e:
-        logging.error(f"[AlertEngine] Evaluation error: {e}")
-
-
-_original_write = snapshot_engine._write_snapshot_to_db
-
-def _write_snapshot_to_db_with_alerts(conn, snapshot):
-    _original_write(conn, snapshot)
-    on_snapshot_for_alerts(snapshot, snapshot.get("index_name", "NIFTY"))
-
-snapshot_engine._write_snapshot_to_db = _write_snapshot_to_db_with_alerts
+        logging.error(f"[Alerts] Snapshot evaluation failed for {index_name}: {e}")
+        return
+    if fired:
+        _dispatch_fired_alerts(fired)
 
 
 async def alert_broadcast_loop():
@@ -250,16 +287,20 @@ async def alert_broadcast_loop():
 # Broadcast Loop
 # ─────────────────────────────────────────────────────────────
 
-_last_tier2_broadcast = 0.0
-TIER2_BROADCAST_INTERVAL = 30.0   # stocks refresh at 30s cadence; Tier 1 stays at 5s
+# Per-instrument last-broadcast times for the non-Tier-1 throttle. This MUST be
+# per instrument: a single shared timestamp lets the FIRST non-Tier-1 instrument
+# consume the 30s slot and starves every other one (with N stocks, each would
+# broadcast only once per N×30s). Tier 1 is exempt from the throttle entirely
+# and keeps its 5s cadence.
+_last_throttled_broadcast = {}
+TIER2_BROADCAST_INTERVAL = 30.0   # non-Tier-1 instruments refresh at 30s cadence; Tier 1 stays at 5s
 
 
 async def broadcast_loop():
     """Broadcast live data to all connected clients.
     Tier 1 (indices): every 5 seconds.
-    Tier 2 (stocks):  every 30 seconds — Greeks/snapshots for stocks are
-    30s-cadence only; the 5s fast path is reserved for Tier 1."""
-    global _last_tier2_broadcast
+    Tier 2/3/4:       every 30 seconds PER INSTRUMENT — their analytics run on
+    the 30s cadence, so faster broadcasting would only re-send cached state."""
     while True:
         try:
             await asyncio.sleep(5)
@@ -271,9 +312,16 @@ async def broadcast_loop():
                     streamer = streamer_adapter.streamers.get(index_name)
                     if not streamer:
                         continue
-                    is_tier2 = getattr(streamer, "tier", 2) != 1  # tier attr — promotion-aware
-                    if is_tier2 and (now - _last_tier2_broadcast) < TIER2_BROADCAST_INTERVAL:
-                        continue
+                    # Tier classification. InstrumentStreamer carries .tier; the Tier-1
+                    # index streamers don't define it, and NIFTY/SENSEX are always
+                    # Tier 1 — so the getattr default must be 1. (A default of 2
+                    # silently throttled the indices into the Tier-2 bucket and
+                    # broke the intended 5s Tier-1 cadence.)
+                    is_tier1 = getattr(streamer, "tier", 1) == 1
+                    if not is_tier1:
+                        last = _last_throttled_broadcast.get(index_name, 0.0)
+                        if now - last < TIER2_BROADCAST_INTERVAL:
+                            continue
                     _bt0 = time.perf_counter()
                     state = await asyncio.to_thread(
                         streamer_adapter.get_current_state,
@@ -283,8 +331,8 @@ async def broadcast_loop():
                     if state.get("data", {}).get("error"):
                         continue
                     await manager.broadcast(state)
-                    if is_tier2:
-                        _last_tier2_broadcast = now
+                    if not is_tier1:
+                        _last_throttled_broadcast[index_name] = now
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -537,10 +585,17 @@ async def app_health():
         order = {"idle": 0, "ok": 1, "warning": 2, "degraded": 3}
         overall = max([g_analytics, g_broadcast, g_queue, g_fresh], key=lambda g: order[g])
 
+    try:
+        from greeks_feed import greeks_feed_manager
+        greeks_health = greeks_feed_manager.health()
+    except Exception:
+        greeks_health = None
+
     return {
         "overall": overall,
         "grades": {"analytics": g_analytics, "broadcast": g_broadcast,
                    "queue": g_queue, "freshness": g_fresh, "underlying": g_underlying},
+        "greeks": greeks_health,
         "max_spot_age_sec": max_age,
         "oldest_feed": (max(ages)[1] if ages else None),
         "stocks_tracked": stocks_tracked,
@@ -954,4 +1009,7 @@ else:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Native uvicorn switch: suppress per-request access lines only.
+    # Startup/shutdown INFO ("Uvicorn running on...", "Application startup
+    # complete") comes from the uvicorn.error logger and is unaffected.
+    uvicorn.run(app, host="0.0.0.0", port=8000, access_log=False)

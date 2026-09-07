@@ -227,10 +227,19 @@ function App() {
         setUnseenAlertCount((c) => c + 1);
       }
       if (alertScope === 'all' || alertData.index_name === selectedIndex) {
-        addToast(alertData);
-        const ruleConfig = alertSettings?.rules.find((r) => r.rule_type === alertData.rule_type);
-        if (ruleConfig?.sound_enabled && alertSettings?.sound.master_enabled) {
-          const soundId = ruleConfig.custom_sound_id || ruleConfig.sound_choice;
+        // Channel-driven delivery: the engine computes channels_fired per tier,
+        // so a Telegram-only Tier-4 alert never reaches toast/sound.
+        const channels = alertData.channels_fired ?? [];
+        if (channels.includes('toast')) {
+          addToast(alertData);
+        }
+        if (channels.includes('sound') && alertSettings?.sound.master_enabled) {
+          // channels_fired is authoritative: the engine already folded the
+          // rule's sound_enabled in for Tier 1/2/3, and for Tier 4 the
+          // tier4.channels profile alone decides — the shared rule's
+          // sound_enabled must NOT be re-checked here.
+          const ruleConfig = alertSettings?.rules.find((r) => r.rule_type === alertData.rule_type);
+          const soundId = ruleConfig?.custom_sound_id || ruleConfig?.sound_choice || 'alert';
           const volume = (alertSettings.sound.volume_percent || 80) / 100;
           playAlertSound(soundId, volume);
         }
