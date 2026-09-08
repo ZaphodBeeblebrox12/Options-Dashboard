@@ -89,7 +89,8 @@ export default function MobileConnectionsTab() {
           )}
           {health?.greeks && (() => {
             const gk = health.greeks;
-            const c = GK_C[gk.status] ?? "var(--mfaint)";
+            const gkDisabled = gk.enabled === false;
+            const c = gkDisabled ? "var(--mfaint)" : (GK_C[gk.status] ?? "var(--mfaint)");
             const barPct = gk.oldest_ratio != null ? Math.min(100, gk.oldest_ratio * 50) : 0;
             return (
               <div className="mc-con-banner" style={{ marginTop: 10, borderColor: c }}>
@@ -104,7 +105,7 @@ export default function MobileConnectionsTab() {
                     <i style={{ width: `${barPct}%`, background: c }} />
                   </div>
                   <div className="mc-con-total num" style={{ marginTop: 6 }}>
-                    {GK_L[gk.status] ?? gk.status} · N {gk.n_active} · cycle {gk.expected_cycle_sec}s (actual {gk.actual_cycle_sec ?? "—"}s) · p95 {gk.latency?.p95_ms ?? "—"}ms · gap {gk.current_gap_sec}s · {gk.request_rate_per_sec}/s · 429s {gk.throttles} · timeouts {gk.timeouts}
+                    {gkDisabled ? "Disabled" : (GK_L[gk.status] ?? gk.status)} · N {gk.n_active} · cycle {gk.expected_cycle_sec}s (actual {gk.actual_cycle_sec ?? "—"}s) · p95 {gk.latency?.p95_ms ?? "—"}ms · gap {gk.current_gap_sec}s · {gk.request_rate_per_sec}/s · 429s {gk.throttles} · timeouts {gk.timeouts}
                   </div>
                 </div>
               </div>

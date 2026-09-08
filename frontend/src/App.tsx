@@ -493,7 +493,7 @@ function App() {
       {showAlertHistory && (
         <div className="fixed inset-0 z-50 flex items-start justify-center pt-4 sm:pt-8 px-2 sm:px-4">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowAlertHistory(false)} />
-          <div className="relative w-full max-w-3xl max-h-[90vh] overflow-y-auto terminal-panel">
+          <div className="relative w-full max-w-5xl max-h-[90vh] overflow-y-auto terminal-panel">
             <div className="sticky top-0 bg-terminal-panel border-b border-terminal-border px-4 py-2 flex items-center justify-between z-10">
               <span className="text-sm font-bold">Alert History</span>
               <button onClick={() => setShowAlertHistory(false)} className="p-1 rounded hover:bg-white/10 text-terminal-muted">

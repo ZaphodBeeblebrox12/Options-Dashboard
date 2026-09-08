@@ -45,12 +45,21 @@ class ConnectionManager:
         for conn in disconnected:
             self.disconnect(conn)
 
-    async def send_personal_message(self, message: dict, websocket: WebSocket):
-        """Send a message to a specific client."""
+    async def send_personal_message(self, message: dict, websocket: WebSocket) -> bool:
+        """Send a message to a specific client.
+
+        Returns True on success. Returns False when the socket was already
+        dead (client vanished mid-handshake or mid-send) so callers can stop
+        pushing to it instead of serializing state for a corpse. The previous
+        swallow-and-continue behavior made the /ws handler keep building
+        per-instrument state for an orphaned StrictMode/reconnect socket,
+        then die later with a misleading RuntimeError."""
         try:
             await websocket.send_text(json.dumps(message))
+            return True
         except Exception:
             self.disconnect(websocket)
+            return False
 
 
 manager = ConnectionManager()

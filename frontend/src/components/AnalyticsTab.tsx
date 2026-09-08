@@ -8,6 +8,7 @@ export const AnalyticsTab: React.FC<{ onSaved: () => void }> = ({ onSaved }) => 
   const [rate, setRate] = useState('6.5');
   const [win, setWin] = useState(20);
   const [t3win, setT3win] = useState(8);
+  const [t4g, setT4g] = useState(true);
   const [ro, setRo] = useState<StockRo[]>([]);
   const [saving, setSaving] = useState(false);
 
@@ -19,6 +20,7 @@ export const AnalyticsTab: React.FC<{ onSaved: () => void }> = ({ onSaved }) => 
         setRate(String(d.risk_free_rate ?? 6.5));
         setWin(d.window_half_width ?? 20);
         setT3win(d.tier3_window_half_width ?? 8);
+        setT4g(d.tier4_greeks_enabled !== false);
       })
       .catch(() => {});
   }, []);
@@ -40,12 +42,13 @@ export const AnalyticsTab: React.FC<{ onSaved: () => void }> = ({ onSaved }) => 
           risk_free_rate: parseFloat(rate) || 6.5,
           window_half_width: win,
           tier3_window_half_width: t3win,
+          tier4_greeks_enabled: t4g,
         }),
       });
       onSaved();
     } catch {}
     setSaving(false);
-  }, [rate, win, onSaved]);
+  }, [rate, win, t3win, t4g, onSaved]);
 
   return (
     <div>
@@ -63,6 +66,27 @@ export const AnalyticsTab: React.FC<{ onSaved: () => void }> = ({ onSaved }) => 
             className="st-input w-24 bg-terminal-bg border border-terminal-border rounded-lg px-3 py-2 text-terminal-text focus:outline-none focus:border-terminal-atm"
           />
           <span className="st-num">%</span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="st-label w-48">Tier 4 Greeks feed</label>
+          <div className="inline-flex border border-terminal-border rounded-lg overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setT4g(true)}
+              className={`st-seg px-4 py-2 transition-colors ${t4g ? 'bg-white/10 text-terminal-text font-semibold' : 'text-[var(--st-text-2)] hover:bg-white/5'}`}
+            >
+              On
+            </button>
+            <button
+              type="button"
+              onClick={() => setT4g(false)}
+              className={`st-seg px-4 py-2 transition-colors ${!t4g ? 'bg-white/10 text-terminal-text font-semibold' : 'text-[var(--st-text-2)] hover:bg-white/5'}`}
+            >
+              Off
+            </button>
+          </div>
+          <span className="st-helper" style={{ fontSize: 11.5 }}>stops Angel optionGreek polling only — Tier 4 streaming, snapshots &amp; OI data continue</span>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">

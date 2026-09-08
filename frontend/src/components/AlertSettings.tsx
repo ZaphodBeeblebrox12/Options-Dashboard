@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   Bell, Volume2, VolumeX, MessageSquare, Send,
-  Clock, Check, ChevronDown, ChevronUp, Play, Timer,
+  Clock, Check, ChevronDown, ChevronUp, Play, Timer, History,
 } from 'lucide-react';
 import { useAlertSettings, useSounds, AlertRuleConfig, AlertSettings as AlertSettingsType } from '../hooks/useAlerts';
 import { SoundUploader } from './SoundUploader';
@@ -185,6 +185,30 @@ export const AlertSettingsPanel: React.FC<AlertSettingsPanelProps> = ({ onTestTo
         </div>
         <p className="text-[9px] font-mono text-terminal-muted/60 mt-1">
           How long toast notifications stay on screen before auto-dismissing.
+        </p>
+      </div>
+
+      {/* ── Default History Alert ── */}
+      <div className="px-4">
+        <div className="flex items-center gap-2 mb-2">
+          <History className="w-3.5 h-3.5 text-terminal-muted" />
+          <span className="text-xs font-semibold text-terminal-muted uppercase tracking-wider">Default History Alert</span>
+        </div>
+        <select
+          value={localSettings.history_default_rule_type ?? ''}
+          onChange={(e) =>
+            setLocalSettings((prev) =>
+              prev ? { ...prev, history_default_rule_type: e.target.value || null } : prev
+            )
+          }
+          className="w-full bg-terminal-bg border border-terminal-border rounded px-2 py-1.5 text-xs font-mono text-terminal-text"
+        >
+          <option value="">All Alerts</option>
+          <option value="atm_negative_gex_oi_wall">Strong Signal — ATM + Negative GEX + OI Wall</option>
+          <option value="atm_max_ce_pe_wall">Wall Alignment — ATM Maximum CE/PE Wall</option>
+        </select>
+        <p className="text-[9px] font-mono text-terminal-muted/60 mt-1">
+          Alert type the History view selects on open. The History dropdown still lets you switch per session.
         </p>
       </div>
 

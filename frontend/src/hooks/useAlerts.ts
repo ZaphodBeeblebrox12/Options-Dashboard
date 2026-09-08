@@ -60,6 +60,9 @@ export interface AlertSettings {
   sound: SoundSettings;
   custom_sounds: CustomSound[];
   toast_duration_ms: number;  // ← NEW
+  /** Default Alert Type for the History view on open. Absent/undefined/invalid
+   *  = All Alerts. Canonical rule_type strings only. */
+  history_default_rule_type?: string | null;
   tier4_channels?: string[];  // legacy mirror of tier4.channels (kept in sync backend-side)
   tier4?: Tier4Profile;       // dedicated Tier-4 alert profile
 }
@@ -147,7 +150,7 @@ export function useAlertSettings() {
   return { settings, loading, saving, fetchSettings, saveSettings };
 }
 
-export function useAlertHistory(index?: string, date?: string, page: number = 1) {
+export function useAlertHistory(index?: string, date?: string, page: number = 1, ruleType?: string) {
   const [history, setHistory] = useState<AlertHistoryEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -160,6 +163,7 @@ export function useAlertHistory(index?: string, date?: string, page: number = 1)
       params.set('page_size', '50');
       if (index) params.set('index', index);
       if (date) params.set('date', date);
+      if (ruleType) params.set('rule_type', ruleType);   // existing backend param
       const res = await fetch(`${API_BASE}/api/alerts/history?${params}`);
       if (res.ok) {
         const data = await res.json();
@@ -169,7 +173,7 @@ export function useAlertHistory(index?: string, date?: string, page: number = 1)
     } finally {
       setLoading(false);
     }
-  }, [index, date, page]);
+  }, [index, date, page, ruleType]);
 
   useEffect(() => {
     fetchHistory();

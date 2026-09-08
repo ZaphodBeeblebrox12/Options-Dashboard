@@ -24,6 +24,7 @@ DEFAULTS: Dict[str, Any] = {
     "alert_scope": "viewed",           # "viewed" | "all" — notifications for watched symbol only, or every symbol
     "snapshot_interval_seconds": 30,   # snapshot capture cadence (5–300, internal)
     "alert_rearm_seconds": 60,         # debounce AFTER the condition clears, before re-arming (0 = immediate)
+    "tier4_greeks_enabled": True,      # Tier-4 Angel optionGreek REST feed master switch (Settings > Analytics)
     "instrument_kinds": {},            # SYMBOL -> INDEX | STOCK | COMMODITY
     "instrument_tiers": {},            # SYMBOL -> 1 | 2 (Tier 1 = capacity priority + 5s broadcast)
 }
@@ -119,6 +120,15 @@ def get_alert_rearm_seconds() -> int:
     return int(get_all()["alert_rearm_seconds"])
 
 
+def get_tier4_greeks_enabled() -> bool:
+    """Master switch for the Tier-4 Angel optionGreek REST feed
+    (Settings > Analytics). Off -> no optionGreek requests are made and the
+    cached Greeks payload is invalidated so stale values can never merge as
+    fresh data. Tier-4 market-data streaming, snapshots and DB writes are
+    UNAFFECTED; re-enabling resumes the existing feed unchanged."""
+    return bool(get_all().get("tier4_greeks_enabled", True))
+
+
 def get_alert_scope() -> str:
     """'viewed' = notify only for the symbol on screen; 'all' = every symbol."""
     return str(get_all()["alert_scope"])
@@ -204,6 +214,8 @@ def update(patch: Dict[str, Any]) -> Dict[str, Any]:
                 v = max(5, min(300, int(v)))
             elif k == "alert_rearm_seconds":
                 v = max(0, min(3600, int(v)))
+            elif k == "tier4_greeks_enabled":
+                v = bool(v)
             elif k in ("instrument_kinds", "instrument_tiers"):
                 v = dict(v) if isinstance(v, dict) else {}
             _cache[k] = v

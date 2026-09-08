@@ -113,12 +113,14 @@ class SnapshotEngine:
         baseline = get_yesterday_last_oi(conn, index_name, strike, option_type)
         if baseline is not None:
             self.daily_baselines[key] = baseline
-            set_daily_baseline(conn, today_str, index_name, strike, option_type, baseline, source="yesterday_close")
+            set_daily_baseline(conn, today_str, index_name, strike, option_type,
+                               baseline, source="yesterday_close", commit=False)
             return baseline
 
         baseline = current_oi
         self.daily_baselines[key] = baseline
-        set_daily_baseline(conn, today_str, index_name, strike, option_type, baseline, source="first_reading")
+        set_daily_baseline(conn, today_str, index_name, strike, option_type,
+                           baseline, source="first_reading", commit=False)
         return baseline
 
     def capture_snapshot(self, data_store, spot_poller, index_name="NIFTY",
@@ -253,6 +255,12 @@ class SnapshotEngine:
                     snapshot["options"].append(opt_snapshot)
 
             if baseline_conn:
+                try:
+                    # ONE commit for the whole capture's baseline upserts
+                    # (was: one commit per row — the lock-contention source).
+                    baseline_conn.commit()
+                except Exception as e:
+                    print(f"[SnapshotEngine] Baseline commit failed for {index_name}: {e}")
                 baseline_conn.close()
 
             with self.lock:

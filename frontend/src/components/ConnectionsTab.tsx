@@ -62,9 +62,22 @@ const statusPill = (st: string) => {
   return <span className="st-pill bg-terminal-ce/20 text-terminal-ce">{st}</span>;
 };
 
+// Stream-status state machine. `unavailable` may ONLY be shown when the
+// backend RESPONSE explicitly says so (ws === null -> manager missing ->
+// not real mode) — never merely because local state is null. Transient
+// fetch failures while we hold a last-good snapshot render as 'stale'
+// (last known state, flagged); before any good snapshot we stay 'checking'.
+type StreamState = 'checking' | 'ok' | 'stale' | 'unavailable';
+
+// Last-good cache outside the component: SettingsModal remounts this tab on
+// every tab switch, and a remount must not throw away known-good state.
+let lastGoodWs: WsData | null = null;
+let lastGoodUsage: Usage = {};
+
 export const ConnectionsTab: React.FC = () => {
-  const [ws, setWs] = useState<WsData | null>(null);
-  const [usage, setUsage] = useState<Usage>({});
+  const [ws, setWs] = useState<WsData | null>(lastGoodWs);
+  const [usage, setUsage] = useState<Usage>(lastGoodUsage);
+  const [stream, setStream] = useState<StreamState>(lastGoodWs ? 'ok' : 'checking');
   const [health, setHealth] = useState<AppHealth | null>(null);
   const [tick, setTick] = useState('');
 
@@ -73,20 +86,36 @@ export const ConnectionsTab: React.FC = () => {
     const load = async () => {
       try {
         const [r, rh] = await Promise.all([fetch('/api/ws/usage'), fetch('/api/app-health')]);
-        if (!r.ok || !alive) return;
+        if (!alive) return;
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const d = await r.json();
-        setWs(d.ws);
-        setUsage(d.usage_by_instrument || {});
+        if (!alive) return;
+        if (d.ws) {
+          lastGoodWs = d.ws; lastGoodUsage = d.usage_by_instrument || {};
+          setWs(lastGoodWs);
+          setUsage(lastGoodUsage);
+          setStream('ok');
+        } else {
+          // Backend answered and explicitly reports no manager -> not real mode.
+          setStream('unavailable');
+        }
         if (rh.ok) setHealth(await rh.json());
         setTick(new Date().toLocaleTimeString('en-IN'));
-      } catch {}
+      } catch {
+        // Backend not currently responding — keep last-good state, never
+        // fabricate "unavailable" from a local null.
+        if (alive) setStream(lastGoodWs ? 'stale' : 'checking');
+      }
     };
     load();
     const t = setInterval(load, 3000);
     return () => { alive = false; clearInterval(t); };
   }, []);
 
-  if (!ws) {
+  if (stream === 'checking' || !ws) {
+    return <div className="st-helper py-8 text-center">Checking live stream status…</div>;
+  }
+  if (stream === 'unavailable') {
     return <div className="st-helper py-8 text-center">Live streaming unavailable — nothing to monitor.</div>;
   }
 
@@ -106,6 +135,11 @@ export const ConnectionsTab: React.FC = () => {
       <p className="st-helper mb-5">
         Per-socket capacity is an Angel One plan limit and stays in .env (read-only).
       </p>
+      {stream === 'stale' && (
+        <p className="st-helper mb-4 px-3 py-2 rounded bg-terminal-atm/10 text-terminal-atm">
+          Backend temporarily unreachable — showing last known state ({tick || '—'}).
+        </p>
+      )}
 
       {/* Total */}
       <div className="mb-6">
@@ -202,7 +236,9 @@ export const ConnectionsTab: React.FC = () => {
           {(() => {
             const gk = (health as any).greeks;
             if (!gk) return null;
-            const meta = GK_META[gk.status] ?? GK_META.idle;
+            const meta = gk.enabled === false
+              ? { label: 'Disabled', cls: 'bg-terminal-border/40 text-terminal-muted' }
+              : (GK_META[gk.status] ?? GK_META.idle);
             const freshCls = gk.status === 'healthy' ? 'text-terminal-pe'
               : gk.status === 'warning' ? 'text-terminal-atm'
               : gk.status === 'degraded' ? 'text-terminal-ce' : 'text-terminal-muted';

@@ -405,7 +405,8 @@ async def get_settings():
 async def put_settings(body: dict):
     allowed = {}
     for k in ("risk_free_rate", "window_half_width", "alerts_armed",
-              "alert_scope", "snapshot_interval_seconds", "alert_rearm_seconds"):
+              "alert_scope", "snapshot_interval_seconds", "alert_rearm_seconds",
+              "tier4_greeks_enabled"):
         if k in body:
             allowed[k] = body[k]
     if "tier3_window_half_width" in body:
@@ -436,7 +437,7 @@ async def add_stock(body: dict):
     if not symbol:
         raise HTTPException(status_code=400, detail="symbol is required")
     kind = (body.get("kind") or "").strip().upper() or None
-    result = streamer_adapter.add_stock(symbol, kind=kind)
+    result = await asyncio.to_thread(streamer_adapter.add_stock, symbol, kind=kind)
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error", "failed to add stock"))
     return result
@@ -444,7 +445,7 @@ async def add_stock(body: dict):
 
 @app.delete("/api/stocks/{symbol}")
 async def remove_stock(symbol: str):
-    result = streamer_adapter.remove_stock(symbol)
+    result = await asyncio.to_thread(streamer_adapter.remove_stock, symbol)
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error", "not found"))
     return result
@@ -452,7 +453,7 @@ async def remove_stock(symbol: str):
 
 @app.post("/api/stocks/{symbol}/pause")
 async def pause_stock(symbol: str):
-    result = streamer_adapter.pause_stock(symbol)
+    result = await asyncio.to_thread(streamer_adapter.pause_stock, symbol)
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error", "not found"))
     return result
@@ -460,7 +461,7 @@ async def pause_stock(symbol: str):
 
 @app.post("/api/stocks/{symbol}/resume")
 async def resume_stock(symbol: str):
-    result = streamer_adapter.resume_stock(symbol)
+    result = await asyncio.to_thread(streamer_adapter.resume_stock, symbol)
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error", "not found"))
     return result
@@ -497,7 +498,7 @@ async def add_instrument(body: dict):
         raise HTTPException(status_code=400, detail="symbol is required")
     kind = (body.get("kind") or "").strip().upper() or None
     tier = body.get("tier", 2)
-    result = streamer_adapter.add_instrument(symbol, kind=kind, tier=tier)
+    result = await asyncio.to_thread(streamer_adapter.add_instrument, symbol, kind=kind, tier=tier)
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error", "failed to add instrument"))
     return result
@@ -507,7 +508,7 @@ async def add_instrument(body: dict):
 async def set_instrument_tier(symbol: str, body: dict):
     """Promote (tier=1) or demote (tier=2) a tracked instrument."""
     tier = body.get("tier", 2)
-    result = streamer_adapter.set_instrument_tier(symbol, tier)
+    result = await asyncio.to_thread(streamer_adapter.set_instrument_tier, symbol, tier)
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error", "not found"))
     return result
@@ -945,12 +946,122 @@ async def health_check():
 
 
 # ─────────────────────────────────────────────────────────────
+# DIAGNOSTIC: AG8004 REST-auth triage (read-only, session-safe)
+# ─────────────────────────────────────────────────────────────
+
+def _diagnose_angel_rest() -> dict:
+    """Classify the AG8004 failure using the RUNNING session — deliberately
+    NO fresh login here: a new generateSession would invalidate the live
+    feed's JWT. Two read-only probes:
+      1. ordinary REST market data (LTP) via the SDK
+      2. the optionGreek endpoint, byte-identical to the Tier-4 feed's call
+    Verdicts:
+      CASE_C both ok        -> earlier failure was request-specific; feed recovers alone
+      CASE_A LTP ok         -> optionGreek-SPECIFIC authorization/entitlement issue
+      CASE_B LTP also AG8004-> ALL REST market-data unauthorized for this app
+                               (portal migration / IP-binding / entitlement),
+                               NOT the key string — check the app's registered
+                               static IP + permissions on the Angel portal.
+    Never returns the JWT or API key."""
+    import requests
+    out = {"mode": streamer_adapter.mode, "tests": {}}
+    auth = getattr(streamer_adapter, "auth_manager", None)
+    if streamer_adapter.mode != "real" or auth is None:
+        out["error"] = "live streaming unavailable — diagnostic needs real mode"
+        return out
+    try:
+        jwt = auth.get_valid_jwt()
+    except Exception as e:
+        out["error"] = f"jwt unavailable: {e}"
+        return out
+
+    ltp = {"attempted": True}
+    try:
+        fn = getattr(auth.smart_api, "getLtpData", None) or getattr(auth.smart_api, "ltpData", None)
+        if fn is None:
+            ltp = {"attempted": False, "reason": "SDK has no LTP method"}
+        else:
+            r = fn("NSE", "RELIANCE-EQ", "2885")
+            ltp["ok"] = bool(isinstance(r, dict) and r.get("status"))
+            ltp["message"] = (str(r.get("message", ""))[:200] if isinstance(r, dict) else str(r)[:200])
+            ltp["errorcode"] = (str(r.get("errorcode", "")) if isinstance(r, dict) else "")
+    except Exception as e:
+        ltp["ok"] = False
+        ltp["message"] = f"exception: {e}"
+    out["tests"]["ltp"] = ltp
+
+    grk = {"attempted": True}
+    try:
+        st = streamer_adapter.streamers.get("NIFTY")
+        expiry = getattr(st, "expiry_str", None) if st else None
+        if not expiry:
+            grk = {"attempted": False, "reason": "NIFTY streamer/expiry unavailable"}
+        else:
+            headers = {
+                "Content-Type": "application/json", "Accept": "application/json",
+                "X-SourceID": "WEB",
+                "X-ClientLocalIP": os.getenv("CLIENT_LOCAL_IP", "192.168.1.1"),
+                "X-MACAddress": os.getenv("CLIENT_MAC", "aa:bb:cc:dd:ee:ff"),
+                "X-UserType": "USER",
+                "Authorization": jwt,
+                "X-PrivateKey": auth.api_key,
+            }
+            resp = requests.post(
+                "https://apiconnect.angelone.in/rest/secure/angelbroking/marketData/v1/optionGreek",
+                headers=headers,
+                data=json.dumps({"name": "NIFTY", "expirydate": expiry}),
+                timeout=15)
+            try:
+                data = resp.json()
+            except Exception:
+                data = {}
+            grk["http_status"] = resp.status_code
+            grk["ok"] = bool(data.get("status"))
+            grk["message"] = str(data.get("message", ""))[:200]
+            grk["errorcode"] = str(data.get("errorcode", ""))
+            grk["rows"] = len(data.get("data") or []) if data.get("status") else 0
+    except Exception as e:
+        grk["ok"] = False
+        grk["message"] = f"exception: {e}"
+    out["tests"]["option_greek"] = grk
+
+    lo, go = out["tests"].get("ltp", {}), out["tests"].get("option_greek", {})
+    if lo.get("ok") and go.get("ok"):
+        out["verdict"] = ("CASE_C: both REST probes work — the AG8004 was request-specific; "
+                          "the Tier-4 feed should recover on its own next probe")
+    elif lo.get("ok") and not go.get("ok"):
+        out["verdict"] = ("CASE_A: ordinary REST market data WORKS but optionGreek is rejected "
+                          "(AG8004) — optionGreek-SPECIFIC authorization/entitlement. Check the "
+                          "app's service permissions on the Angel portal / raise with Angel support.")
+    elif not lo.get("ok"):
+        out["verdict"] = ("CASE_B: ALL REST market data rejected (AG8004) while login+WS work — "
+                          "app-level REST authorization issue (portal migration / static-IP binding "
+                          "/ app entitlement), NOT the API-key string. Check the app's registered "
+                          "static IP and permissions on the Angel portal.")
+    return out
+
+
+@app.post("/api/diagnose/angel-rest")
+async def diagnose_angel_rest():
+    """DIAGNOSTIC ONLY: AG8004 triage using the live session. Read-only; no secrets."""
+    return await asyncio.to_thread(_diagnose_angel_rest)
+
+
+# ─────────────────────────────────────────────────────────────
 # WebSocket Endpoint
 # ─────────────────────────────────────────────────────────────
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
+    peer = f"{websocket.client.host}:{websocket.client.port}" if websocket.client else "?"
+    try:
+        await manager.connect(websocket)
+    except RuntimeError:
+        # Client vanished mid-handshake (dev-mode StrictMode orphan or
+        # reconnect race) — nothing is un-accepted on our side; the socket
+        # simply no longer exists. Not an error; close quietly.
+        logging.info(f"[WS] {peer} vanished before accept completed — closing quietly")
+        return
     try:
         for index_name in list(streamer_adapter.streamers.keys()):
             if index_name in streamer_adapter.streamers:
@@ -958,7 +1069,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     streamer_adapter.get_current_state,
                     index_name
                 )
-                await manager.send_personal_message(state, websocket)
+                if not await manager.send_personal_message(state, websocket):
+                    # Socket died during the initial push — stop building
+                    # state for it; the receive loop below would only blow up.
+                    break
 
         while True:
             try:
@@ -970,13 +1084,19 @@ async def websocket_endpoint(websocket: WebSocket):
                 except json.JSONDecodeError:
                     pass
             except asyncio.TimeoutError:
-                logging.info("[WS] Client silent for 60s, closing connection")
+                logging.info(f"[WS] {peer} silent for 60s, closing connection")
                 break
 
     except WebSocketDisconnect:
-        logging.info("[WS] Client disconnected")
+        logging.info(f"[WS] {peer} disconnected")
+    except RuntimeError as e:
+        # Starlette raises RuntimeError('WebSocket is not connected. Need to
+        # call "accept" first.') when a dead StrictMode/reconnect-race socket
+        # is used post-close. For a server-side data push this is a normal
+        # client-gone event, not a handler bug — log at INFO with the peer.
+        logging.info(f"[WS] {peer} closed mid-session ({e}) — cleaned up")
     except Exception as e:
-        logging.error(f"[WS] Handler error: {e}")
+        logging.error(f"[WS] Handler error [{peer}]: {e}")
     finally:
         manager.disconnect(websocket)
 

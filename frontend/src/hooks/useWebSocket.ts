@@ -33,7 +33,15 @@ export function useWebSocket(url: string, onError?: (msg: string) => void) {
 
     const connect = () => {
       if (!shouldReconnect) return;
-      if (ws?.readyState === WebSocket.OPEN) return;
+      // Duplicate-socket guard: block while a socket is OPEN *or CONNECTING*.
+      // The previous OPEN-only check let a second connect() through during
+      // the CONNECTING window (StrictMode effect overlap / reconnect race),
+      // overwriting the `ws` reference and orphaning the first socket — the
+      // server then saw two long-lived /ws connections from one client and
+      // died on the corpse with RuntimeError('...need to call accept first').
+      // Reconnect paths only run from onclose (readyState CLOSED), and
+      // cleanup nulls `ws` before re-connects, so this never blocks legit flow.
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
 
       console.log('[WS] Connecting...');
       ws = new WebSocket(url);

@@ -47,6 +47,7 @@ export default function MobileAnalyticsTab() {
           snapshot_interval_seconds: Number(s.snapshot_interval_seconds),
           alert_rearm_seconds: Number(s.alert_rearm_seconds),
           alert_scope: s.alert_scope,
+          tier4_greeks_enabled: s.tier4_greeks_enabled !== false,
           alerts_armed: !!s.alerts_armed,
         }),
       });
@@ -68,6 +69,12 @@ export default function MobileAnalyticsTab() {
               onChange={e => patch("risk_free_rate", e.target.value)} />
             <span>%</span>
           </div>
+        </Row>
+        <Row label="Tier 4 Greeks feed" hint="Angel optionGreek polling — off stops Greeks only; streaming, snapshots & OI continue">
+          <button type="button" className={"mc-anl-toggle" + (s.tier4_greeks_enabled !== false ? " on" : "")}
+            onClick={() => patch("tier4_greeks_enabled", s.tier4_greeks_enabled === false)}>
+            <span className="knob" />{s.tier4_greeks_enabled !== false ? "On" : "Off"}
+          </button>
         </Row>
       </div>
       <div className="mc-card">

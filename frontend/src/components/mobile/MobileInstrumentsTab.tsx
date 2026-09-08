@@ -41,7 +41,7 @@ export default function MobileInstrumentsTab() {
     fetch("/api/instruments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbol: sym, kind, tier: 3 }) })
       .then(() => { setQ(""); setMatches([]); }));
   const cycleTier = (r: any) => act("tier" + r.symbol, () =>
-    fetch(`/api/instruments/${encodeURIComponent(r.symbol)}/tier`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tier: r.tier === 2 ? 3 : 2 }) }));
+    fetch(`/api/instruments/${encodeURIComponent(r.symbol)}/tier`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tier: r.tier === 2 ? 3 : r.tier === 3 ? 4 : 2 }) }));
   const togglePause = (r: any) => act("pause" + r.symbol, () =>
     fetch(`/api/stocks/${encodeURIComponent(r.symbol)}/${r.paused ? "resume" : "pause"}`, { method: "POST" }));
   const remove = (r: any) => {
@@ -63,7 +63,7 @@ export default function MobileInstrumentsTab() {
             {r.paused ? "▶ Resume" : "❚❚ Pause"}
           </button>
           <button className="mc-iv-btn" disabled={busy === "tier" + r.symbol} onClick={() => cycleTier(r)}>
-            {r.tier === 2 ? "To scanner" : "To Tier 2"}
+            {r.tier === 2 ? "To scanner" : r.tier === 3 ? "To Angel T4" : "To Tier 2"}
           </button>
           <button className="mc-iv-btn rm" disabled={busy === "rm" + r.symbol} onClick={() => remove(r)}>Remove</button>
         </div>

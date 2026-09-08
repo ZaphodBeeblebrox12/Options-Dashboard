@@ -42,6 +42,7 @@ import random
 import threading
 import logging
 import requests
+import app_settings
 from collections import deque
 from datetime import datetime, time as dt_time
 from typing import Dict, Optional, Callable
@@ -239,6 +240,7 @@ class AngelGreeksFeedManager:
         self._unserved = None                    # symbols not yet served this sweep
         self._last_full_sweep = None             # seconds; last completed all-active sweep
         self._sweep_count = 0
+        self._gate_off_logged = False            # one-shot log for the Settings OFF gate
         self._auth_error: Optional[str] = None   # circuit breaker: message while tripped
         self._auth_error_until: float = 0.0      # monotonic; probe may retest after this
 
@@ -321,6 +323,10 @@ class AngelGreeksFeedManager:
         Only SESSION-OPEN instruments count. Distinguishes: Angel slow (latency
         up), our scheduler (sweep/age up, latency normal), rate limit (gap up).
         """
+        try:
+            t4_greeks_enabled = app_settings.get_tier4_greeks_enabled()
+        except Exception:
+            t4_greeks_enabled = True
         F = self.refresh_interval()
         with self._lock:
             entries = list(self._entries.values())
@@ -355,6 +361,7 @@ class AngelGreeksFeedManager:
         p50_s = (self._latency_stats()["p50_ms"] or 0) / 1000.0
         return {
             "status": status,
+            "enabled": t4_greeks_enabled,
             "auth_error": self._auth_error,
             "n_active": n,
             "n_registered": len(entries),
@@ -377,6 +384,10 @@ class AngelGreeksFeedManager:
         }
 
     def stats(self) -> dict:
+        try:
+            t4_greeks_enabled = app_settings.get_tier4_greeks_enabled()
+        except Exception:
+            t4_greeks_enabled = True
         with self._lock:
             entries = list(self._entries.values())
         n_active = sum(1 for e in entries if self._open(e))
@@ -386,7 +397,8 @@ class AngelGreeksFeedManager:
         now_s = time.time()
         fetched_actives = [e for e in entries if self._open(e) and e.fetched_at > 0]
         oldest = round(max(now_s - e.fetched_at for e in fetched_actives)) if fetched_actives else None
-        return {"n_registered": len(entries), "n_active": n_active,
+        return {"enabled": t4_greeks_enabled,
+                "n_registered": len(entries), "n_active": n_active,
                 "refresh_interval_sec": F, "predicted_cycle_sec": round(cycle),
                 "current_gap_sec": round(optiongreek_limiter.current_gap, 2),
                 "rate_target_req_s": round(RATE_TARGET, 2),
@@ -445,6 +457,35 @@ class AngelGreeksFeedManager:
             self._stop.wait(2)
 
     def _cycle(self):
+        # Tier-4 Greeks master switch (Settings > Analytics): when OFF, no
+        # optionGreek REST requests are made and the cached Greeks payload is
+        # invalidated so stale values can never merge as fresh data. The
+        # registry, scheduling cadence, rate limiter, backoff and ALL Tier-4
+        # market-data state (OI/LTP/volume -> snapshots -> DB) are untouched;
+        # re-enabling resumes the existing behavior on the next cycle.
+        try:
+            t4_greeks_enabled = app_settings.get_tier4_greeks_enabled()
+        except Exception:
+            t4_greeks_enabled = True   # settings unavailable -> fail open
+        if not t4_greeks_enabled:
+            with self._lock:
+                for e in self._entries.values():
+                    if e.data:
+                        e.data = {}                    # invalidate cached Greeks ONLY
+                    if e.error != "disabled (Settings)":
+                        e.error = "disabled (Settings)"
+            # Visible state logging: a silent OFF gate is indistinguishable
+            # from a broken feed in the logs (registrations keep appearing
+            # while zero fetches occur). Log the transition once per change.
+            if not self._gate_off_logged:
+                logger.info("[GreeksFeed] tier4_greeks_enabled=OFF — optionGreek "
+                            "polling suspended (%d registered; Tier-4 streaming, "
+                            "snapshots & DB writes unaffected)", len(self._entries))
+                self._gate_off_logged = True
+            return
+        if self._gate_off_logged:
+            logger.info("[GreeksFeed] tier4_greeks_enabled=ON — optionGreek polling resumed")
+            self._gate_off_logged = False
         F = self.refresh_interval()
         now = time.monotonic()
         with self._lock:

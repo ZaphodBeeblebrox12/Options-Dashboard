@@ -20,6 +20,9 @@ import time
 import threading
 import logging
 from datetime import datetime, time as dt_time
+from typing import Union
+import calculations as _calc
+from candle_builder import candle_builder as candle_feed
 from typing import Dict, List, Optional, Set
 
 from subscription_manager import Tier, TokenRequirement, TokenGroup, SubscriptionManager
@@ -38,6 +41,14 @@ SCANNER_RECHECK_SEC = int(os.getenv("WS_TIER3_RECHECK_SEC", "60"))
 SCANNER_CONFIRM_SEC = int(os.getenv("WS_TIER3_CONFIRM_SEC", "45"))
 SCANNER_MIN_COVERAGE = float(os.getenv("WS_TIER3_MIN_COVERAGE", "0.6"))
 SCANNER_FALSE_BACKOFF_SEC = int(os.getenv("WS_TIER3_FALSE_BACKOFF_SEC", "300"))
+# Local 3-strike net-GEX pre-filter: cheap ONE-SIDED rejection before Stage 2.
+# Fail -> reject before widening. Pass -> existing full-chain Stage 2 unchanged.
+# Inconclusive (missing/stale data) -> fall through to Stage 2 (never reject).
+WS_TIER3_PREFILTER = os.getenv("WS_TIER3_PREFILTER", "1") == "1"
+# Max tick age accepted by the local pre-filter. Older ticks are INCONCLUSIVE
+# (fall through to Stage 2), never used for a local verdict. 90s matches the
+# codebase's existing stale-underlying warning convention.
+SCANNER_PREFILTER_FRESH_SEC = int(os.getenv("WS_TIER3_PREFRESH_SEC", "90"))
 
 # Tier 4 window: ATM ± TIER4_HALF_WIDTH strikes. This ONE constant governs BOTH
 # the subscription window (_build_window_tokens — what actually gets
@@ -148,6 +159,9 @@ class InstrumentStreamer:
         self._false_trigger_atm: Dict[int, datetime] = {}
         self._epoch = 0                # bumped on pause/resume/tier/remove — invalidates in-flight confirmations
         self._confirm_epoch = 0
+        # Pre-filter observability (surfaced in status() for Tier 3):
+        self._pf = {"calls": 0, "reject": 0, "pass": 0, "inconclusive": 0,
+                    "oow": 0, "ms": 0.0}
         self.on_alerts_fired = None   # set by the adapter -> dispatch (toast/sound/telegram)
         self.on_tier_changed = None   # set by the adapter -> start/stop snapshot timer
 
@@ -232,6 +246,10 @@ class InstrumentStreamer:
                 self.spot_poller.update_futures_from_ws(ltp)
             else:
                 self.spot_poller.update_from_ws(ltp)
+            if self.kind == "STOCK":
+                # 1m CASH candle feed (STOCK kind only). Fire-and-forget:
+                # O(1) in-memory update, never blocks, never raises.
+                candle_feed.on_tick(self.symbol, message)
 
             with self.lock:
                 need_bootstrap = (self.option_meta
@@ -337,6 +355,26 @@ class InstrumentStreamer:
     # ─────────────────────────────────────────────────────────
     # Phase 5 — underlying moved -> delta update
     # ─────────────────────────────────────────────────────────
+    def _recenter_threshold(self) -> int:
+        """Minimum center drift (in strikes) before the option window re-centers.
+
+        Hysteresis against ATM flapping: stocks pinned near the midpoint of two
+        strikes flip their nearest strike every few seconds, which used to
+        churn unsubscribe/subscribe frames onto nearly-full WS slots and wipe
+        the analytics cache on every flap (production log: ITC 262<->265 ten
+        times in 3 minutes). The window spans ±half_width strikes, so letting
+        the center lag true ATM by up to threshold-1 strikes changes coverage
+        by nothing. Threshold scales with the tier's window: ±20 -> 5,
+        ±15 -> 3, ±8 -> 2 (never below 1, so behavior is unchanged for
+        hypothetical narrow windows)."""
+        if self.tier == 3:
+            hw = _scanner_half_width()
+        elif self.tier == 4:
+            hw = TIER4_HALF_WIDTH
+        else:
+            hw = _half_width()
+        return max(1, hw // 4)
+
     def _maybe_move_window(self):
         spot = self.spot_poller.get_spot()
         if spot is None or not self.strikes:
@@ -344,6 +382,12 @@ class InstrumentStreamer:
         new_idx = min(range(len(self.strikes)), key=lambda i: abs(self.strikes[i] - spot))
         if new_idx == self.atm_index:
             return
+        if self.atm_index is not None:
+            # Hysteresis: ignore 1-strike (and sub-threshold) flapping around a
+            # strike midpoint; re-center only on a genuine drift. No hysteresis
+            # when atm_index is None (bootstrap path handles that separately).
+            if abs(new_idx - self.atm_index) < self._recenter_threshold():
+                return
         new_tokens = self._build_window_tokens(new_idx)
         result = self.manager.update_group_tokens(self.window_group_id, new_tokens)
         old_atm = self.strikes[self.atm_index] if self.atm_index is not None else None
@@ -561,6 +605,7 @@ class InstrumentStreamer:
             self.state = "PAUSED"
             self._analytics_cache = None
             self._state_cache = None
+            candle_feed.flush_symbol(self.symbol)
             logger.info(f"[{self.symbol}] Paused — all tokens freed, config kept")
 
     def resume(self):
@@ -676,6 +721,14 @@ class InstrumentStreamer:
             blocked = self._false_trigger_atm.get(atm)
             if blocked and (now - blocked).total_seconds() < SCANNER_FALSE_BACKOFF_SEC:
                 return
+            if WS_TIER3_PREFILTER and not self._local_gex_prefilter(atm):
+                # Definite local failure: same consequence as a failed Stage-2
+                # confirmation — backoff the strike + stamp last_trigger (which
+                # suppresses re-trigger inside SCANNER_RECHECK_SEC too).
+                self._false_trigger_atm[atm] = now
+                self._last_trigger = now
+                self._last_trigger_atm = atm
+                return                          # no Stage-2 widening
             self._start_confirmation(atm)
         elif not at_wall and st.get("state") == "disarmed":
             # Condition cleared — debounce with the same rearm setting, then re-arm.
@@ -705,6 +758,135 @@ class InstrumentStreamer:
                              group_id=self.window_group_id, mode=3, metadata=meta)
             for tok, meta in self.option_meta.items()
         }
+
+    def _local_gex_prefilter(self, atm: int) -> bool:
+        """Local 3-strike net-GEX dominance pre-filter (ONE-SIDED rejection).
+
+        Rule-1 semantics: net GEX per strike = CE GEX + PE GEX (CE positive,
+        PE negative). The wall/ATM must be MORE NEGATIVE than both immediately
+        adjacent listed strikes. Per-contract primitives only
+        (solve_iv -> calculate_greeks -> calculate_gex) — calculate_analytics()
+        is NEVER used here (it always computes the full chain).
+
+        Returns:
+          False -> definite local failure (or not-strictly-dominant):
+                   REJECT before Stage 2 (no widening, no full-chain calc).
+                   Same consequence as a failed confirmation: false-trigger
+                   backoff + last_trigger stamps (consumed by _scanner_eval).
+          True  -> local dominance OR INCONCLUSIVE (missing/stale/invalid
+                   data, no listed neighbors, zero/None GEX):
+                   fall through to the EXISTING Stage 2, which performs the
+                   final chain-wide confirmation. This function NEVER fires an
+                   alert and never widens the full chain itself.
+        """
+        from datetime import datetime as _dt
+        from calculations import solve_iv, calculate_greeks, calculate_gex
+
+        import time as _time
+        _t0 = _time.perf_counter()
+        self._pf["calls"] += 1
+        verdict = self._prefilter_verdict(atm)
+        self._pf["ms"] += (_time.perf_counter() - _t0) * 1000.0
+        if verdict == "reject":
+            self._pf["reject"] += 1
+            return False
+        self._pf[verdict] += 1        # "pass" or "inconclusive"
+        return True
+
+    def _prefilter_verdict(self, atm: int) -> str:
+        """Returns "reject" | "pass" | "inconclusive". NEVER raises: any
+        unexpected condition is inconclusive (fail-safe, never a false negative).
+        """
+        from datetime import datetime as _dt
+        from calculations import solve_iv, calculate_greeks, calculate_gex
+
+        try:
+            if not (self.strikes and self.expiry_datetime):
+                return "inconclusive"       # chain metadata absent
+            sorted_strikes = sorted(self.strikes)
+            try:
+                i = sorted_strikes.index(atm)
+            except ValueError:
+                return "inconclusive"       # atm not a listed strike
+            lo = sorted_strikes[i - 1] if i > 0 else None
+            hi = sorted_strikes[i + 1] if i < len(sorted_strikes) - 1 else None
+            if lo is None or hi is None:
+                return "inconclusive"       # no listed neighbors
+            if not self._market_open():
+                return "inconclusive"       # scanner gates this anyway
+
+            # Edge-of-window: neighbors outside the current ±window subscription.
+            # No fresh ticks can exist for tokens subscribed milliseconds ago,
+            # so a verdict is impossible THIS evaluation — and subscribing here
+            # would hold token budget (lingering until an unrelated ATM move).
+            # Correct handling: INCONCLUSIVE -> existing Stage 2 decides, with
+            # zero subscription side-effects. Never reject on a boundary.
+            window = (self._build_window_tokens(self.atm_index)
+                      if self.atm_index is not None else set())
+            win_strikes = set()
+            for r in window:
+                meta = self.option_meta.get(r.token)
+                if meta:
+                    win_strikes.add(meta["strike"])
+            if {atm, lo, hi} - win_strikes:
+                self._pf["oow"] += 1
+                logger.info(f"[{self.symbol}] pre-filter OOW at {atm:,} "
+                            f"(neighbors outside ±window) — Stage 2 decides")
+                return "inconclusive"
+
+            data = self.data_store.get_data()          # one snapshot, not per-strike
+            rfr = _calc.get_risk_free_rate()
+            now = _dt.now()
+            spot = self.spot_poller.get_spot()
+            if spot is None or spot <= 0:
+                return "inconclusive"
+
+            def _net_gex(strike: int):
+                """Net GEX of one strike from FRESH per-contract data only.
+                None -> inconclusive (missing/stale tick, bad LTP, unsolvable)."""
+                T = max(((self.expiry_datetime - now).total_seconds()
+                         / (365.25 * 24 * 3600)), 0.0001)
+                total = 0.0
+                for opt_type in ("CE", "PE"):
+                    opt = (data.get(strike) or {}).get(opt_type) or {}
+                    lu, ltp = opt.get("last_update"), opt.get("ltp", 0)
+                    if not lu or ltp is None or ltp <= 0:
+                        return None
+                    try:
+                        ts = _dt.fromisoformat(lu)
+                    except Exception:
+                        return None
+                    age = (now - ts).total_seconds()
+                    # fresh: within the age ceiling AND not an absurd future stamp
+                    if age < 0 and abs(age) > 300:
+                        return None
+                    if age > SCANNER_PREFILTER_FRESH_SEC:
+                        return None
+                    iv, _ = solve_iv(spot, strike, T, rfr, ltp, opt_type)
+                    if iv is None:
+                        return None
+                    greeks = calculate_greeks(spot, strike, T, rfr, iv, opt_type)
+                    if not greeks:
+                        return None
+                    total += calculate_gex(greeks["gamma"], opt.get("oi", 0),
+                                           opt_type, self.contract_multiplier)
+                return total
+
+            g_wall, g_lo, g_hi = _net_gex(atm), _net_gex(lo), _net_gex(hi)
+            if g_wall is None or g_lo is None or g_hi is None:
+                return "inconclusive"       # INCONCLUSIVE -> Stage 2, never reject
+            if g_wall == 0.0:
+                return "inconclusive"       # zero GEX is not dominance evidence
+            if g_wall < g_lo and g_wall < g_hi:
+                logger.info(f"[{self.symbol}] pre-filter PASS at {atm:,} "
+                            f"(net GEX {g_wall:+.2f} < {g_lo:+.2f}/{g_hi:+.2f}) — Stage 2")
+                return "pass"
+            logger.info(f"[{self.symbol}] pre-filter REJECT at {atm:,} "
+                        f"(net GEX {g_wall:+.2f} not < both {g_lo:+.2f}/{g_hi:+.2f}) — no Stage 2")
+            return "reject"
+        except Exception as e:
+            logger.error(f"[{self.symbol}] pre-filter error (treated as inconclusive): {e}")
+            return "inconclusive"
 
     def _start_confirmation(self, atm: int):
         if not self.option_meta:
@@ -930,6 +1112,7 @@ class InstrumentStreamer:
                     "at_wall": walls.get("at_wall"),
                 })
             out["confirming"] = self._confirming
+            out["prefilter"] = dict(self._pf)
         return out
 
     def retry_pending(self):
@@ -1140,6 +1323,7 @@ class InstrumentStreamer:
             self._confirm_stop.set()
         from greeks_feed import greeks_feed_manager
         greeks_feed_manager.unregister(self.symbol)
+        candle_feed.flush_symbol(self.symbol)
         logger.info(f"[{self.symbol}] Stopping streamer...")
 
 

@@ -46,7 +46,10 @@ export const InstrumentSelect: React.FC<InstrumentSelectProps> = ({ value, onCha
             typeof x === 'string' ? { name: x, tier: 2, kind: 'stock' } : { name: x.name, tier: 2, kind: x.kind ?? 'stock' });
           list = [...t1, ...t2];
         }
-        if (list.length > 0) setItems(list);
+        // Alphabetical order — the API returns instruments in configuration
+        // order (env list + add-order), which reads as random once the list
+        // grows. Nothing else about eligibility/filtering changes here.
+        if (list.length > 0) setItems([...list].sort((a, b) => a.name.localeCompare(b.name)));
       })
       .catch(() => {});
     return () => { cancelled = true; };

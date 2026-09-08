@@ -481,14 +481,15 @@ export const InstrumentsTab: React.FC = () => {
             ({selectedInstruments.map(i => `T${i.tier}`).sort().join(' · ')})
           </span>
           <span className="text-[11px] font-mono text-terminal-muted ml-1">Move to:</span>
-          {[1, 2, 3].map((t) => (
+          {[1, 2, 3, 4].map((t) => (
             <button
               key={t}
               onClick={() => startBatchMove(t)}
               disabled={selectedInstruments.every((i) => i.tier === t)}
               className={`px-2.5 py-1.5 min-h-[36px] rounded text-[11px] font-mono font-semibold transition-colors disabled:opacity-30 border ${
-                [1, 2, 3].includes(t) && t === 1 ? 'bg-terminal-atm/20 text-terminal-atm border-terminal-atm/40 hover:bg-terminal-atm/30'
+                t === 1 ? 'bg-terminal-atm/20 text-terminal-atm border-terminal-atm/40 hover:bg-terminal-atm/30'
                 : t === 2 ? 'bg-terminal-pe/20 text-terminal-pe border-terminal-pe/40 hover:bg-terminal-pe/30'
+                : t === 4 ? 'bg-violet-500/20 text-violet-300 border-violet-500/40 hover:bg-violet-500/30'
                 : 'bg-cyan-500/20 text-cyan-400 border-cyan-500/40 hover:bg-cyan-500/30'
               }`}
             >

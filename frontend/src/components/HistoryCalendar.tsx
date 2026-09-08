@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, X } from 'lucide-react';
 
 /**
@@ -44,11 +45,15 @@ export const HistoryCalendar: React.FC<HistoryCalendarProps> = ({
     return new Date(base.getFullYear(), base.getMonth(), 1);
   });
   const ref = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
 
   useEffect(() => {
     if (!open) return;
     const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (ref.current && !ref.current.contains(t) && !(menuRef.current && menuRef.current.contains(t))) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
     document.addEventListener('mousedown', onDoc);
@@ -90,7 +95,15 @@ export const HistoryCalendar: React.FC<HistoryCalendarProps> = ({
   return (
     <div className="relative" ref={ref}>
       <button
-        onClick={() => setOpen(o => !o)}
+        ref={btnRef}
+        onClick={() => {
+          const next = !open;
+          if (next && btnRef.current) {
+            const r = btnRef.current.getBoundingClientRect();
+            setPos({ top: r.bottom + 4, right: window.innerWidth - r.right });
+          }
+          setOpen(next);
+        }}
         className={`flex items-center gap-2 bg-terminal-bg border rounded px-3 py-1.5 text-xs font-mono transition-colors min-h-[36px] ${
           selectedDate ? 'border-terminal-pe/50 text-terminal-pe' : 'border-terminal-border text-terminal-text'
         }`}
@@ -114,8 +127,12 @@ export const HistoryCalendar: React.FC<HistoryCalendarProps> = ({
         )}
       </button>
 
-      {open && (
-        <div className="absolute right-0 sm:left-auto left-0 top-full mt-1 z-50 bg-terminal-panel border border-terminal-border rounded-lg shadow-2xl p-3 w-[300px] sm:w-[312px]">
+      {open && pos && createPortal(
+        <div
+          ref={menuRef}
+          style={{ position: 'fixed', top: pos.top, right: pos.right, zIndex: 9999 }}
+          className="bg-terminal-panel border border-terminal-border rounded-lg shadow-2xl p-3 w-[312px] max-h-[70vh] overflow-y-auto"
+        >
           {/* Month nav + Latest */}
           <div className="flex items-center justify-between mb-2">
             <button
@@ -202,7 +219,8 @@ export const HistoryCalendar: React.FC<HistoryCalendarProps> = ({
               <span className="text-terminal-muted">No alert history recorded yet</span>
             )}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

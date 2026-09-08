@@ -26,8 +26,6 @@ export default function MobileAlertsSettingsTab() {
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [flash, setFlash] = useState<"idle" | "saving" | "saved">("idle");
   const [tgTest, setTgTest] = useState<{ ok: boolean; msg: string } | null>(null);
-  const [t4TgTest, setT4TgTest] = useState<{ ok: boolean; msg: string } | null>(null);
-  const [t4TgBusy, setT4TgBusy] = useState(false);
   const [tgBusy, setTgBusy] = useState(false);
 
   useEffect(() => {
@@ -37,17 +35,7 @@ export default function MobileAlertsSettingsTab() {
       fetch("/api/alerts/sounds").then(r => r.ok ? r.json() : null),
     ]).then(([st, so]) => {
       if (!alive) return;
-      if (st) {
-        if (!st.tier4) {
-          st.tier4 = {
-            enabled: true,
-            channels: st.tier4_channels ?? ["telegram"],
-            cooldown_seconds: 300,
-            telegram: { enabled: false, bot_token: "", chat_id: "" },
-          };
-        }
-        setS(st); setStatus("ready");
-      } else setStatus("error");
+      if (st) { setS(st); setStatus("ready"); } else setStatus("error");
       setSounds(so?.sounds ?? []);
     }).catch(() => { if (alive) setStatus("error"); });
     return () => { alive = false; };
@@ -55,8 +43,6 @@ export default function MobileAlertsSettingsTab() {
 
   const upd = (fn: (p: any) => any) => setS((p: any) => fn(p));
   const updRule = (rt: string, patch: any) => upd(p => ({ ...p, rules: p.rules.map((r: any) => r.rule_type === rt ? { ...r, ...patch } : r) }));
-  const DEFAULT_T4 = { enabled: true, channels: ["telegram"], cooldown_seconds: 300, telegram: { enabled: false, bot_token: "", chat_id: "" } };
-  const updT4 = (patch: any) => upd((p: any) => ({ ...p, tier4: { ...(p.tier4 ?? DEFAULT_T4), ...patch } }));
   const toggleChannel = (rt: string, ch: string) => updRule(rt, {
     channels: (s.rules.find((r: any) => r.rule_type === rt)?.channels ?? []).includes(ch)
       ? s.rules.find((r: any) => r.rule_type === rt).channels.filter((c: string) => c !== ch)
@@ -69,16 +55,6 @@ export default function MobileAlertsSettingsTab() {
       const r = await fetch("/api/alerts/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(s) });
       if (r.ok) { setFlash("saved"); setTimeout(() => setFlash("idle"), 2000); } else setFlash("idle");
     } catch { setFlash("idle"); }
-  };
-
-  const testTier4Telegram = async () => {
-    setT4TgBusy(true); setT4TgTest(null);
-    try {
-      const r = await fetch("/api/alerts/telegram/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(s.tier4?.telegram ?? {}) });
-      const d = await r.json();
-      setT4TgTest({ ok: !!d?.success, msg: d?.message ?? "No response" });
-    } catch { setT4TgTest({ ok: false, msg: "Request failed" }); }
-    setT4TgBusy(false);
   };
 
   const testTelegram = async () => {
@@ -175,60 +151,21 @@ export default function MobileAlertsSettingsTab() {
         );
       })}
 
-      <div className="mc-sech" style={{ marginTop: 12 }}>Tier 4 alerts</div>
+      <div className="mc-sech" style={{ marginTop: 12 }}>Tier 4 destinations</div>
       <div className="mc-card">
         <div className="mc-rule-tx">
-          <div className="mc-rule-nm">Dedicated Tier-4 profile</div>
-          <div className="mc-rule-ds">Angel-fed Greeks alerts never use Tier 1/2/3 routing — this profile decides delivery. Badged T4 in feed and history.</div>
+          <div className="mc-rule-nm">Tier 4 alert destinations</div>
+          <div className="mc-rule-ds">One shared profile for every Tier 4 instrument — no per-stock routing. Alerts labeled "TIER 4 |".</div>
         </div>
-        <div className="mc-anl-row" style={{ paddingTop: 10 }}>
-          <div className="mc-anl-lab">Tier 4 alerts</div>
-          <Switch on={!!s.tier4?.enabled} onChange={v => updT4({ enabled: v })} label={s.tier4?.enabled ? "Enabled" : "Disabled"} />
+        <div className="mc-anl-seg" style={{ marginTop: 8 }}>
+          {CHANNELS.map(c => (
+            <button key={c} className={(((s.tier4_channels ?? ["telegram"]).includes(c)) ? "on" : "")}
+              onClick={() => {
+                const cur: string[] = s.tier4_channels ?? ["telegram"];
+                upd(p => ({ ...p, tier4_channels: cur.includes(c) ? cur.filter((x: string) => x !== c) : [...cur, c] }));
+              }}>{c[0].toUpperCase() + c.slice(1)}</button>
+          ))}
         </div>
-        {s.tier4?.enabled && (
-          <>
-            <div className="mc-anl-lab" style={{ fontSize: 12, marginTop: 6 }}>Channels</div>
-            <div className="mc-anl-seg">
-              {CHANNELS.map(c => (
-                <button key={c} className={(((s.tier4?.channels ?? ["telegram"]).includes(c)) ? "on" : "")}
-                  onClick={() => {
-                    const cur: string[] = s.tier4?.channels ?? ["telegram"];
-                    updT4({ channels: cur.includes(c) ? cur.filter((x: string) => x !== c) : [...cur, c] });
-                  }}>{c[0].toUpperCase() + c.slice(1)}</button>
-              ))}
-            </div>
-            <div className="mc-anl-lab" style={{ fontSize: 12, marginTop: 10 }}>Cooldown</div>
-            <div className="mc-anl-seg num">
-              {COOLDOWNS.map(c => (
-                <button key={c} className={(s.tier4?.cooldown_seconds ?? 300) === c ? "on" : ""}
-                  onClick={() => updT4({ cooldown_seconds: c })}>{cdFmt(c)}</button>
-              ))}
-            </div>
-            <div className="mc-anl-lab" style={{ fontSize: 12, marginTop: 10 }}>Dedicated Telegram destination</div>
-            <div style={{ marginTop: 6 }}>
-              <Switch on={!!s.tier4?.telegram?.enabled} onChange={v => updT4({ telegram: { ...(s.tier4?.telegram ?? { bot_token: "", chat_id: "" }), enabled: v } })}
-                label={s.tier4?.telegram?.enabled ? "Dedicated dest. on" : "Use shared destination"} />
-            </div>
-            {s.tier4?.telegram?.enabled && (
-              <>
-                <div style={{ marginTop: 8 }}>
-                  <input className="mc-txt num" type="text" value={s.tier4.telegram.bot_token ?? ""} placeholder="Bot token (empty = shared)"
-                    onChange={e => updT4({ telegram: { ...(s.tier4?.telegram ?? { enabled: true, chat_id: "" }), bot_token: e.target.value } })} />
-                </div>
-                <div style={{ marginTop: 8 }}>
-                  <input className="mc-txt num" type="text" value={s.tier4.telegram.chat_id ?? ""} placeholder="Chat ID (empty = shared)"
-                    onChange={e => updT4({ telegram: { ...(s.tier4?.telegram ?? { enabled: true, bot_token: "" }), chat_id: e.target.value } })} />
-                </div>
-                <button className="mc-iv-btn" style={{ width: "100%", marginTop: 8 }} disabled={t4TgBusy} onClick={testTier4Telegram}>
-                  {t4TgBusy ? "Testing…" : "Test Tier 4 destination"}
-                </button>
-                {t4TgTest && (
-                  <div className="mc-tg-res" style={{ color: t4TgTest.ok ? "var(--mup)" : "var(--mdn)" }}>{t4TgTest.ok ? "✓ " : "✕ "}{t4TgTest.msg}</div>
-                )}
-              </>
-            )}
-          </>
-        )}
       </div>
 
       <div className="mc-sech" style={{ marginTop: 12 }}>Telegram</div>

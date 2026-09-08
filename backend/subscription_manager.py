@@ -346,16 +346,27 @@ class SubscriptionManager:
                     time.sleep(self.flush_batch_delay)
 
     def _flush_unsubscribe(self, slot: _ConnectionSlot, tokens: List[TokenRequirement]):
+        """Batched + paced exactly like _flush_subscribe. Previously this sent
+        ONE frame PER TOKEN — removing a Tier-2 window (~80 tokens) bursted
+        ~80 frames in milliseconds onto the socket, the very pattern that gets
+        connections dropped (SSLEOF). Now: <=batch_size tokens per frame,
+        flush_batch_delay between batches."""
         by_key: Dict[Tuple[int, int], List[TokenRequirement]] = {}
         for t in tokens:
             by_key.setdefault((t.exchange_type, t.mode), []).append(t)
         for (exchange_type, mode), reqs in by_key.items():
-            for t in reqs:
+            tok_list = [r.token for r in reqs]
+            for i in range(0, len(tok_list), self.batch_size):
+                batch = tok_list[i:i + self.batch_size]
                 try:
-                    slot.ws.unsubscribe(f"u{slot.slot_id}_{t.token}", mode,
-                                        [{"exchangeType": exchange_type, "tokens": [t.token]}])
+                    slot.ws.unsubscribe(f"u{slot.slot_id}_{exchange_type}_{mode}_{i // self.batch_size}", mode,
+                                        [{"exchangeType": exchange_type, "tokens": batch}])
+                    logger.debug(f"[SubMgr] Slot {slot.slot_id}: unsubscribed {len(batch)} tokens (exch={exchange_type}, mode={mode})")
                 except Exception as e:
-                    logger.debug(f"[SubMgr] Slot {slot.slot_id} unsubscribe error for {t.token}: {e}")
+                    logger.debug(f"[SubMgr] Slot {slot.slot_id} unsubscribe error ({len(batch)} tokens, exch={exchange_type}, mode={mode}): {e}")
+                # Pace the burst — same WS_FLUSH_BATCH_DELAY pacing as subscribe
+                if self.flush_batch_delay > 0:
+                    time.sleep(self.flush_batch_delay)
 
     # ─────────────────────────────────────────────────────────
     # Connection slot threads — connect, reconnect, restore

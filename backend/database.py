@@ -127,16 +127,56 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_baseline_lookup ON daily_oi_baseline(date, index_name, strike, option_type)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_baseline_date_index ON daily_oi_baseline(date, index_name)")
 
+    # v3.7: 1-minute CASH candles (built from CASH ticks by candle_builder.py).
+    # Idempotent: CREATE IF NOT EXISTS; UNIQUE(symbol, ts_minute) makes
+    # candle writes INSERT-OR-REPLACE safe.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS candles_1m (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            ts_minute TEXT NOT NULL,
+            open REAL NOT NULL,
+            high REAL NOT NULL,
+            low REAL NOT NULL,
+            close REAL NOT NULL,
+            volume INTEGER,
+            tick_count INTEGER DEFAULT 0,
+            finalized_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(symbol, ts_minute)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_c1m_symbol_ts ON candles_1m(symbol, ts_minute)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_c1m_date ON candles_1m(date(ts_minute))")
+
     conn.commit()
     conn.close()
     print(f"[DB] Initialized at {DB_PATH} with WAL mode (multi-index support + OI baseline)")
 
 
+def _configure_conn(conn):
+    """Uniform pragmas for EVERY connection to the main store.
+
+    busy_timeout (30s): convert lock contention into a wait instead of the
+    'database is locked' OperationalError — dozens of per-instrument capture
+    threads, the snapshot writer thread, and the candle writer all write to
+    this file; without this, a busy writer (>5s default timeout) hard-failed
+    entire snapshots (production log: repeated OperationalError in
+    set_daily_baseline, snapshots silently lost every cycle).
+
+    synchronous=NORMAL: fsync once per checkpoint, not per commit. Previously
+    set only on init_db's throwaway connection (the pragma is per-connection),
+    so every real connection ran FULL synchronous — on Windows each commit was
+    a full fsync, stretching write-lock holds and worsening contention."""
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+
+
 @contextmanager
 def get_db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    _configure_conn(conn)
     try:
         yield conn
     finally:
@@ -145,8 +185,7 @@ def get_db():
 
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    _configure_conn(conn)
     return conn
 
 
@@ -163,13 +202,19 @@ def get_daily_baseline(conn, date_str, index_name, strike, option_type):
     return row["baseline_oi"] if row else None
 
 
-def set_daily_baseline(conn, date_str, index_name, strike, option_type, baseline_oi, source="first_reading"):
-    """Set the daily OI baseline for a specific contract."""
+def set_daily_baseline(conn, date_str, index_name, strike, option_type, baseline_oi,
+                       source="first_reading", commit=True):
+    """Set the daily OI baseline for a specific contract.
+
+    commit=False lets the snapshot engine batch ~50-60 of these per capture
+    into ONE commit (see capture_snapshot) instead of one fsync per row —
+    the per-row commits were the main source of writer contention."""
     conn.execute("""
         INSERT OR REPLACE INTO daily_oi_baseline (date, index_name, strike, option_type, baseline_oi, source)
         VALUES (?, ?, ?, ?, ?, ?)
     """, (date_str, index_name, strike, option_type, baseline_oi, source))
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def get_yesterday_last_oi(conn, index_name, strike, option_type):
