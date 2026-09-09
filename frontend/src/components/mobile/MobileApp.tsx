@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AlertToastContainer } from "../AlertToast";
+import { WallChart } from "../WallChart";
 import type { AlertFiring } from "../../hooks/useAlerts";
 import { fetchInstruments } from "../../instrumentsCache";
 import MobileChain from "./MobileChain";
@@ -32,9 +33,9 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { err
   }
 }
 
-type Tab = "watch" | "scan" | "map" | "alerts" | "more";
+type Tab = "watch" | "scan" | "map" | "walls" | "alerts" | "more";
 interface ReplayState { date: string; ts: string[]; idx: number; playing: boolean }
-const SUBTITLES: Record<Exclude<Tab, "watch">, string> = { scan: "Scanner", map: "Map", alerts: "Alerts", more: "Settings" };
+const SUBTITLES: Record<Exclude<Tab, "watch">, string> = { scan: "Scanner", map: "Map", walls: "Walls", alerts: "Alerts", more: "Settings" };
 
 export default function MobileApp({ connected, lastMessage, toasts, removeToast, onInstrumentChange }: {
   connected: boolean;
@@ -177,7 +178,17 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
   const kind: string = data?.instrument_kind ?? meta?.kind ?? "index";
   const tier: number = data?.tier ?? meta?.tier ?? 1;
   const isScanner = !!data?.scanner || tier === 3;
-  const viewData = replay ? replaySnap : data; // replay overrides live on Watch
+  const baseData = replay ? replaySnap : data; // replay overrides live on Watch
+  // wall chips for the Walls tab: max-OI strikes from the visible chain
+  const wallChips = useMemo(() => {
+    let cew: number | null = null, pew: number | null = null, ceo = -1, peo = -1;
+    for (const o of ((baseData as any)?.options ?? []) as any[]) {
+      if (o?.option_type === "CE" && (o.oi ?? 0) > ceo) { ceo = o.oi; cew = o.strike; }
+      if (o?.option_type === "PE" && (o.oi ?? 0) > peo) { peo = o.oi; pew = o.strike; }
+    }
+    return { ce_wall: cew, pe_wall: pew };
+  }, [baseData]);
+  const viewData: any = baseData ? { ...baseData, ...wallChips } : null;
 
   useEffect(() => { if (isScanner && tab === "watch") setTab("scan"); }, [isScanner, tab]);
 
@@ -331,6 +342,14 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
             onPromoteEnd={(n) => setPromoted(p => { const c = { ...p }; delete c[n]; return c; })} />
         )}
         {tab === "map" && <MobileMap data={replay ? viewData : data} isScanner={isScanner} />}
+        {tab === "walls" && (viewData ? (
+          <WallChart symbol={selected} tier={(viewData as any)?.tier ?? 1}
+                     atm={(viewData as any)?.spot != null ? Math.round((viewData as any).spot) : null}
+                     ceWall={(viewData as any)?.ce_wall ?? null}
+                     peWall={(viewData as any)?.pe_wall ?? null}
+                     negGex={(viewData as any)?.max_negative_gex_strike ?? (viewData as any)?.max_gex_strike ?? null}
+                     replayDate={replay?.date ?? null} />
+        ) : <div className="mc-card"><h4>No data yet</h4></div>)}
         {tab === "alerts" && <MobileAlerts feed={alertFeed} selected={selected} live={connected} />}
         {tab === "more" && <MobileSettings />}
       </ErrorBoundary></main>
@@ -354,6 +373,7 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
           Scan<span className={"mc-navdot" + (scanAttention ? " on" : "")}>{scanAttention || ""}</span><i />
         </button>
         <button className={tab === "map" ? "on" : ""} onClick={() => setTab("map")}>Map<i /></button>
+        <button className={tab === "walls" ? "on" : ""} onClick={() => setTab("walls")}>Walls<i /></button>
         <button className={tab === "alerts" ? "on" : ""} onClick={() => { setTab("alerts"); setUnseen(0); }}>
           Alerts<span className={"mc-belldot" + (unseen ? " on" : "")} /><i />
         </button>

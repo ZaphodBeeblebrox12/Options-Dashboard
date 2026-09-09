@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from subscription_manager import Tier, TokenRequirement, TokenGroup, SubscriptionManager
+from candle_builder import candle_builder as candle_feed
 import app_settings
 from calculations import IVCacheStore
 from app_settings import init_settings as init_app_settings, get_stocks as settings_get_stocks
@@ -416,6 +417,9 @@ if ANGEL_ONE_AVAILABLE:
             try:
                 ltp = float(message.get("last_traded_price", 0) or 0) / 100.0
                 self.spot_poller.update_from_ws(ltp)
+                # 1m spot candles for NIFTY/SENSEX — same singleton builder as
+                # stocks (Drop 1 §4). Session-gated inside the builder.
+                candle_feed.on_tick(self.index_name, message)
             except Exception as e:
                 logger.error(f"[{self.index_name}] Spot tick error: {e}")
 

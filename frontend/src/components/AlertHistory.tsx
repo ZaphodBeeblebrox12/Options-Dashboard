@@ -8,6 +8,7 @@ const RULE_OPTIONS: { value: string; label: string }[] = [
   { value: '', label: 'All Alerts' },
   { value: 'atm_negative_gex_oi_wall', label: 'Strong Signal — ATM + Negative GEX + OI Wall' },
   { value: 'atm_max_ce_pe_wall', label: 'Wall Alignment — ATM Maximum CE/PE Wall' },
+  { value: 'wall_reversal', label: 'Wall Reversal — Evening/Morning Star' },
 ];
 import { HistoryCalendar } from './HistoryCalendar';
 

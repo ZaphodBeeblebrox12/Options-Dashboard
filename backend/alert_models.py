@@ -8,6 +8,7 @@ from enum import Enum
 class AlertRuleType(str, Enum):
     RULE_1 = "atm_negative_gex_oi_wall"      # ATM == Max Neg GEX AND (ATM == Max CE OI OR ATM == Max PE OI)
     RULE_2 = "atm_max_ce_pe_wall"            # ATM == Max CE OI OR ATM == Max PE OI
+    WALL_REVERSAL = "wall_reversal"          # Evening Star (CE Wall) / Morning Star (PE Wall) on 15m/30m/1H
 
 
 class NotificationChannel(str, Enum):

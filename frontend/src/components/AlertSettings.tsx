@@ -1,3 +1,4 @@
+// wall-reversal-v1
 import React, { useState, useEffect } from 'react';
 import {
   Bell, Volume2, VolumeX, MessageSquare, Send,
@@ -13,11 +14,13 @@ interface AlertSettingsPanelProps {
 const RULE_NAMES: Record<string, string> = {
   'atm_negative_gex_oi_wall': 'ATM + Negative GEX + OI Wall',
   'atm_max_ce_pe_wall': 'ATM Maximum CE/PE Wall',
+  'wall_reversal': 'Wall Reversal',
 };
 
 const RULE_DESCRIPTIONS: Record<string, string> = {
   'atm_negative_gex_oi_wall': 'ATM is the max negative GEX wall AND ATM is either max CE or max PE OI wall',
   'atm_max_ce_pe_wall': 'ATM is either the maximum CE OI wall or maximum PE OI wall',
+  'wall_reversal': 'Detects Evening Star-style CE Wall bearish reversals and Morning Star-style PE Wall bullish reversals on 15m, 30m and 1H.',
 };
 
 const BUILT_IN_SOUNDS = [
@@ -302,7 +305,7 @@ export const AlertSettingsPanel: React.FC<AlertSettingsPanelProps> = ({ onTestTo
                       e.stopPropagation();
                       updateRule(rule.rule_type, { enabled: !rule.enabled });
                     }}
-                    className={`relative w-8 h-5 rounded-full transition-colors ${
+                    className={`relative w-9 h-5 rounded-full transition-colors ${
                       rule.enabled ? 'bg-terminal-pe' : 'bg-terminal-border'
                     }`}
                   >

@@ -123,6 +123,33 @@ class SnapshotEngine:
                            baseline, source="first_reading", commit=False)
         return baseline
 
+    def _get_or_create_baseline_readonly(self, index_name, strike, option_type, current_oi):
+        """Determine the baseline value WITHOUT a DB connection.
+        Mirrors _get_or_create_baseline logic but returns the value only;
+        the caller queues it for the writer thread to persist."""
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        key = (index_name, strike, option_type)
+        if key in self.daily_baselines:
+            return self.daily_baselines[key]
+        # check yesterday's close ONCE per contract, cache in memory
+        if not hasattr(self, '_baseline_cache'):
+            self._baseline_cache = {}
+        ck = (index_name, strike, option_type)
+        if ck in self._baseline_cache:
+            return self._baseline_cache[ck]
+        try:
+            from database import get_db_connection, get_yesterday_last_oi
+            conn = get_db_connection()
+            baseline = get_yesterday_last_oi(conn, index_name, strike, option_type)
+            conn.close()
+            if baseline is not None:
+                self._baseline_cache[ck] = baseline
+                return baseline
+        except Exception:
+            pass
+        self._baseline_cache[ck] = current_oi
+        return current_oi
+
     def capture_snapshot(self, data_store, spot_poller, index_name="NIFTY",
                         contract_multiplier=50, expiry_datetime=None, market_hours=None,
                         expiry_key=None, analytics_fn=None, on_snapshot=None):
@@ -199,11 +226,11 @@ class SnapshotEngine:
                       f"snapshot skipped, retries next cycle")
                 return
 
-            baseline_conn = None
-            try:
-                baseline_conn = get_db_connection()
-            except Exception as e:
-                print(f"[SnapshotEngine] Baseline DB connection failed: {e}")
+            # v3.9: collect baselines for the writer thread — do NOT open a
+            # per-capture connection here. The writer thread owns ALL writes,
+            # eliminating the per-capture connections that caused the lock
+            # storms (36 instruments × 30s all hitting the same file).
+            baselines_to_write = []
 
             snapshot = {
                 "timestamp": timestamp,
@@ -223,15 +250,15 @@ class SnapshotEngine:
                     opt = data[strike].get(opt_type, {})
                     current_oi = opt.get("oi", 0)
 
-                    if baseline_conn:
-                        baseline = self._get_or_create_baseline(
-                            baseline_conn, index_name, strike, opt_type, current_oi
-                        )
-                    else:
-                        key = (index_name, strike, opt_type)
-                        if key not in self.daily_baselines:
-                            self.daily_baselines[key] = current_oi
+                    key = (index_name, strike, opt_type)
+                    if key in self.daily_baselines:
                         baseline = self.daily_baselines[key]
+                    else:
+                        baseline = self._get_or_create_baseline_readonly(
+                            index_name, strike, opt_type, current_oi)
+                        self.daily_baselines[key] = baseline
+                        baselines_to_write.append(
+                            (today_str, index_name, strike, opt_type, baseline))
 
                     oi_change = current_oi - baseline
                     oi_change_pct = round((oi_change / baseline) * 100, 2) if baseline > 0 else 0.0
@@ -254,14 +281,7 @@ class SnapshotEngine:
                     }
                     snapshot["options"].append(opt_snapshot)
 
-            if baseline_conn:
-                try:
-                    # ONE commit for the whole capture's baseline upserts
-                    # (was: one commit per row — the lock-contention source).
-                    baseline_conn.commit()
-                except Exception as e:
-                    print(f"[SnapshotEngine] Baseline commit failed for {index_name}: {e}")
-                baseline_conn.close()
+            snapshot["_baselines"] = baselines_to_write
 
             with self.lock:
                 self.latest_snapshots[index_name] = snapshot
@@ -325,6 +345,14 @@ class SnapshotEngine:
     def _write_snapshot_to_db(self, conn, snapshot):
         print(f"[SnapshotEngine] DB WRITE: {snapshot['index_name']} at {snapshot['timestamp']} — spot={snapshot['spot']}, options={len(snapshot['options'])}")
         cursor = conn.cursor()
+        # v3.9: persist queued baselines in the SAME transaction as the
+        # snapshot — single write path, no per-capture connections.
+        for (date_s, idx, strike, opt_type, oi) in snapshot.get("_baselines", []):
+            cursor.execute(
+                "INSERT OR REPLACE INTO daily_oi_baseline"
+                " (date, index_name, strike, option_type, baseline_oi, source)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (date_s, idx, strike, opt_type, oi, "first_reading"))
 
         # ── A2 fix: delete the previous row for this (timestamp, index_name)
         # FIRST, inside the same transaction. INSERT OR REPLACE on `snapshots`

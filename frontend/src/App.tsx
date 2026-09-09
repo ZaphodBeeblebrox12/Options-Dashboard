@@ -5,6 +5,7 @@ import { ReplayControls } from './components/ReplayControls';
 import { GexChart } from './components/GexChart';
 import { StrikeChart } from './components/StrikeChart';
 import { NetGexChart } from './components/NetGexChart';
+import { WallChart } from './components/WallChart';
 import { SettingsModal } from './components/SettingsModal';
 import { AlertHistoryPanel } from './components/AlertHistory';
 import { AlertToastContainer } from './components/AlertToast';
@@ -286,6 +287,17 @@ function App() {
   const gammaFlip = displayData?.gamma_flip ?? null;
   const timestamp = displayData?.timestamp ?? new Date().toISOString();
   const options = displayData?.options ?? [];
+  // Wall levels for the WallChart (max-OI strikes from the visible chain; §41/42)
+  const { ceWall, peWall } = React.useMemo(() => {
+    let cew: number | null = null, pew: number | null = null, ceo = -1, peo = -1;
+    for (const o of (options as any[])) {
+      if (o?.option_type === 'CE' && (o.oi ?? 0) > ceo) { ceo = o.oi; cew = o.strike; }
+      if (o?.option_type === 'PE' && (o.oi ?? 0) > peo) { peo = o.oi; pew = o.strike; }
+    }
+    return { ceWall: cew, peWall: pew };
+  }, [options]);
+  const instrumentTier = (displayData as any)?.tier ?? (selectedIndex === 'NIFTY' || selectedIndex === 'SENSEX' ? 1 : 2);
+
 
   const normalizedOptions = React.useMemo(() => {
     if (!options) return [];
@@ -476,9 +488,18 @@ function App() {
         <AnalyticsHeader indexName={selectedIndex} isFetching={snapshotLoading} spot={spot} futures={futures} futuresSpread={futuresSpread} spreadLabel={spreadLabel} netGex={netGex} maxGexStrike={maxGexStrike} maxPain={maxPain} gammaFlip={gammaFlip} timestamp={timestamp} isLive={liveMode && connected && marketOpen} />
         <ReplayControls timestamps={timestamps} currentIndex={currentIndex} isFetching={snapshotLoading} isPlaying={isPlaying} onPlay={handlePlay} onPause={handlePause} onSeek={handleSeek} onRefresh={handleRefresh} selectedDate={selectedDate} onDateChange={handleDateChange} selectedIndex={selectedIndex} onIndexChange={handleIndexChange} availableDates={availableDates} sessionHours={sessionHours} />
         <OptionChain options={normalizedOptions} spot={spot} futures={futures} maxPain={maxPain} gammaFlip={gammaFlip} fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike} />
-        <GexChart data={gexByStrike} atmStrike={atmStrike} maxPain={maxPain} gammaFlip={gammaFlip} />
-        <StrikeChart data={strikeHistory} strike={selectedStrike ?? 0} />
-        <NetGexChart data={gexHistory} />
+        {/* §45: GEX bar + Net GEX charts are Tier-1-only */}
+          {instrumentTier === 1 && (
+            <GexChart data={gexByStrike} atmStrike={atmStrike} maxPain={maxPain} gammaFlip={gammaFlip} />
+          )}
+          <StrikeChart data={strikeHistory} strike={selectedStrike ?? 0} />
+          <WallChart symbol={selectedIndex} tier={instrumentTier} atm={atmStrike}
+                     ceWall={ceWall} peWall={peWall}
+                     negGex={(displayData as any)?.max_negative_gex_strike ?? (displayData as any)?.max_gex_strike ?? null}
+                     replayDate={liveMode ? null : selectedDate} />
+          {instrumentTier === 1 && (
+            <NetGexChart data={gexHistory} />
+          )}
       </div>
 
       {showSettings && (

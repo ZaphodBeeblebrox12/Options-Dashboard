@@ -70,6 +70,16 @@ class AlertEngine:
                     "custom_sound_id": None,
                     "telegram_enabled": False,
                 },
+                {
+                    "rule_type": AlertRuleType.WALL_REVERSAL.value,
+                    "enabled": True,
+                    "cooldown_seconds": 300,
+                    "channels": [NotificationChannel.TOAST.value],
+                    "sound_enabled": False,
+                    "sound_choice": "alert",
+                    "custom_sound_id": None,
+                    "telegram_enabled": False,
+                },
             ]
             changed = True
         if "telegram" not in settings:
@@ -105,6 +115,39 @@ class AlertEngine:
                 _t4.setdefault("channels", list(settings.get("tier4_channels") or ["telegram"]))
                 _t4.setdefault("cooldown_seconds", 300)
                 _t4.setdefault("telegram", {"enabled": False, "bot_token": "", "chat_id": ""})
+        # v3.8 BACKFILL: ensure every registered AlertRuleType has a config,
+        # even on EXISTING installs where settings["rules"] was already seeded
+        # without newer rule types (e.g. wall_reversal). Without this, the
+        # Settings UI never shows the new rule for users who had settings before.
+        _defaults = {
+            AlertRuleType.RULE_1.value: {
+                "rule_type": AlertRuleType.RULE_1.value, "enabled": True,
+                "cooldown_seconds": 300,
+                "channels": [NotificationChannel.TOAST.value],
+                "sound_enabled": False, "sound_choice": "alert",
+                "custom_sound_id": None, "telegram_enabled": False,
+            },
+            AlertRuleType.RULE_2.value: {
+                "rule_type": AlertRuleType.RULE_2.value, "enabled": True,
+                "cooldown_seconds": 300,
+                "channels": [NotificationChannel.TOAST.value],
+                "sound_enabled": False, "sound_choice": "bell",
+                "custom_sound_id": None, "telegram_enabled": False,
+            },
+            AlertRuleType.WALL_REVERSAL.value: {
+                "rule_type": AlertRuleType.WALL_REVERSAL.value, "enabled": True,
+                "cooldown_seconds": 300,
+                "channels": [NotificationChannel.TOAST.value],
+                "sound_enabled": False, "sound_choice": "alert",
+                "custom_sound_id": None, "telegram_enabled": False,
+            },
+        }
+        _existing = {r.get("rule_type") for r in settings.get("rules", [])}
+        for _rt, _cfg in _defaults.items():
+            if _rt not in _existing:
+                settings["rules"].append(_cfg)
+                changed = True
+                print(f"[AlertEngine] backfilled missing rule config: {_rt}")
         if changed:
             save_settings(settings)
 

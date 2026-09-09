@@ -116,8 +116,37 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
     const el = listRef.current?.querySelector('.mc-row.atm') as HTMLElement | null;
     if (!el || !listRef.current) return;
     lastUserScroll.current = 0; // program scroll must not count as user scroll
-    listRef.current.scrollTop = el.offsetTop - listRef.current.clientHeight / 2 + el.offsetHeight / 2;
-  }, []);
+    const target = el.offsetTop - listRef.current.clientHeight / 2 + el.offsetHeight / 2;
+    listRef.current.scrollTo({ top: target, behavior: "smooth" });
+  }, [rows, atmStrike]);
+
+  // Auto-center on first data load (rows + atmStrike available).
+  // Previously the chain rendered at scrollTop=0 (top of chain) on mount,
+  // leaving ATM far off-screen until the user manually scrolled or tapped
+  // the floating pill. Now it centers as soon as data arrives.
+  const didInitScroll = useRef(false);
+  useEffect(() => {
+    if (didInitScroll.current || rows.length === 0 || atmStrike == null) return;
+    // retry up to 5 times (200ms apart) — the .mc-row.atm element may not be
+    // in the DOM yet on first render, so a single timeout often missed it.
+    let attempts = 0;
+    const tryScroll = () => {
+      attempts++;
+      const el = listRef.current?.querySelector('.mc-row.atm') as HTMLElement | null;
+      if (el) {
+        didInitScroll.current = true;
+        console.log("[MobileChain] auto-centered to ATM on load, attempt", attempts);
+        scrollToATM();
+      } else if (attempts < 5) {
+        setTimeout(tryScroll, 200);
+      } else {
+        didInitScroll.current = true;
+        console.log("[MobileChain] auto-center gave up after", attempts, "attempts");
+      }
+    };
+    const t = setTimeout(tryScroll, 100);
+    return () => clearTimeout(t);
+  }, [rows.length, atmStrike, scrollToATM]);
 
   // External recenter requests (walls-strip ATM chip).
   useEffect(() => { if (recenterTick > 0) scrollToATM(); }, [recenterTick, scrollToATM]);
@@ -193,12 +222,12 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
             gL={r.ce?.gex ?? 0} gR={r.pe?.gex ?? 0} gMax={gMax}
             onSelect={onSelect} />
         ))}
+        {floating && atmStrike != null && (
+          <button id="mcAtmPill" className={pillOn ? "on num" : "num"} onClick={scrollToATM}>
+            ⌖ ATM {atmStrike != null ? atmStrike.toLocaleString("en-IN") : ""}
+          </button>
+        )}
       </div>
-      {floating && (
-        <button id="mcAtmPill" className={pillOn ? "on num" : "num"} onClick={scrollToATM}>
-          ⌖ ATM {atmStrike != null ? atmStrike.toLocaleString("en-IN") : ""}
-        </button>
-      )}
     </>
   );
 }

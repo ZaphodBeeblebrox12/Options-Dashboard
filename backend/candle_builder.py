@@ -98,37 +98,6 @@ def _parse_tick_ts(message: dict) -> float:
     return ts
 
 
-def aggregate_15m(candles_1m: list) -> dict:
-    """Derive one 15m candle from a chronological list of 1m candles.
-
-    Pure function — the SAME code path serves the live event and historical
-    rebuilds, so a restart reload from DB always reproduces the same 15m
-    result. Missing 1m minutes are simply absent (never fabricated); open is
-    the first 1m open, close the last 1m close, high/low extremes, volume
-    summed (NULL-safe)."""
-    if not candles_1m:
-        return None
-    first, last = candles_1m[0], candles_1m[-1]
-    vols = [c["volume"] for c in candles_1m if c.get("volume") is not None]
-    return {
-        "symbol": first["symbol"],
-        "ts_minute": first["ts_minute"],
-        "open": first["open"],
-        "high": max(c["high"] for c in candles_1m),
-        "low": min(c["low"] for c in candles_1m),
-        "close": last["close"],
-        "volume": sum(vols) if vols else None,
-        "tick_count": sum(c.get("tick_count", 0) for c in candles_1m),
-        "minutes_present": len(candles_1m),
-    }
-
-
-def _bucket15(ts_minute: str) -> str:
-    """ts_minute label -> its 15m bucket label ('...HH:MM:00' floored to :00/:15/:30/:45)."""
-    dt = datetime.strptime(ts_minute, "%Y-%m-%d %H:%M:%S")
-    return dt.replace(minute=(dt.minute // 15) * 15).strftime("%Y-%m-%d %H:%M:%S")
-
-
 class CandleBuilder:
     """Build, finalize, persist, and publish 1m CASH candles.
 
@@ -149,12 +118,8 @@ class CandleBuilder:
         self._sweeper: threading.Thread | None = None
         self._writer: threading.Thread | None = None
         self._started = False
-        # 15m derivation: last finalized 1m per symbol + fired-bucket guard
-        self._recent_1m = {}             # symbol -> deque-like list (max 15)
-        self._fired_15m = {}             # symbol -> last fired 15m bucket label
         # event subscribers (called from the WRITER thread after DB write)
         self._subs_1m = []
-        self._subs_15m = []
 
     # ── lifecycle ────────────────────────────────────────────
     def start(self):
@@ -187,8 +152,20 @@ class CandleBuilder:
         logger.info("[Candles] builder stopped")
 
     # ── tick path (must stay O(1) and never block) ───────────
+    def _session_open(self) -> bool:
+        """Equity/index session gate (09:15–15:30 IST, Mon–Fri). Pre-open ticks
+        (09:00–09:08) must never form candles (Drop 1 §3); commodities are not
+        hooked at all."""
+        now = datetime.now()
+        if now.weekday() > 4:
+            return False
+        from datetime import time as _dt_time
+        return _dt_time(9, 15) <= now.time() <= _dt_time(15, 30)
+
     def on_tick(self, symbol: str, message: dict):
         try:
+            if not self._session_open():
+                return
             raw = message.get("last_traded_price", 0) or 0
             ltp = float(raw) / 100.0
         except (TypeError, ValueError):
@@ -347,42 +324,8 @@ class CandleBuilder:
                 fn(candle)
             except Exception as e:
                 logger.error("[Candles] 1m subscriber error: %s", e)
-        self._update_15m(candle)
 
     # ── 15m derivation (live) ────────────────────────────────
-    def _update_15m(self, candle: dict):
-        symbol = candle["symbol"]
-        bucket = _bucket15(candle["ts_minute"])
-        recent = self._recent_1m.setdefault(symbol, [])
-        recent.append(candle)
-        # Headroom: a bucket close needs up to 15 members PLUS the next
-        # bucket's opener candle (which is what triggers the close). A 15-cap
-        # evicted the bucket's first minute and corrupted the 15m open.
-        if len(recent) > 32:
-            recent.pop(0)
-        # A 15m bucket is considered complete when the FIRST candle of the
-        # NEXT bucket finalizes (gap-tolerant: missing minutes never complete
-        # a bucket early, and a silent bucket 14 simply never fires — honest).
-        dt = datetime.strptime(candle["ts_minute"], "%Y-%m-%d %H:%M:%S")
-        if dt.minute % 15 != 0:
-            return
-        from datetime import timedelta
-        prev_bucket = _bucket15((dt - timedelta(minutes=15)).strftime("%Y-%m-%d %H:%M:%S"))
-        if self._fired_15m.get(symbol) == prev_bucket:
-            return
-        members = [c for c in recent if _bucket15(c["ts_minute"]) == prev_bucket]
-        if not members:
-            return
-        agg = aggregate_15m(members)
-        if agg is None:
-            return
-        self._fired_15m[symbol] = prev_bucket
-        for fn in list(self._subs_15m):
-            try:
-                fn(agg)
-            except Exception as e:
-                logger.error("[Candles] 15m subscriber error: %s", e)
-
     # ── DB ───────────────────────────────────────────────────
     def _init_db(self):
         conn = self._connect()
@@ -445,8 +388,6 @@ class CandleBuilder:
     def subscribe_1m(self, fn):
         self._subs_1m.append(fn)
 
-    def subscribe_15m(self, fn):
-        self._subs_15m.append(fn)
 
 
 candle_builder = CandleBuilder()

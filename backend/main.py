@@ -30,6 +30,8 @@ from database import init_db, get_db
 from models import CurrentState, TimestampList
 from snapshot_engine import SnapshotEngine, is_market_open
 from streamer_integration import streamer_adapter, ANGEL_ONE_AVAILABLE, STREAMING_INDICES, TIER1_INDICES, TIER2_STOCKS
+from candle_builder import candle_builder
+from wall_scanner import wall_scanner
 import app_settings
 import app_perf
 from calculations import set_risk_free_rate
@@ -98,6 +100,7 @@ async def lifespan(app: FastAPI):
     init_alert_db()
     app_settings.init_settings()
     set_risk_free_rate(app_settings.get_risk_free_rate())
+    candle_builder.start()   # 1m CASH candles: own sweeper+writer threads
     log_startup_status()
 
     def _streamer_name(s) -> str:
@@ -123,13 +126,86 @@ async def lifespan(app: FastAPI):
             on_snapshot=lambda snap, inst=name: _evaluate_snapshot_alerts(snap, inst),
         )
 
+    def _register_scanner_streamer(sym, s):
+        """Wall-scanner provider per streamer (spec sections 16/18/30)."""
+        kind = getattr(s, "kind", "INDEX")
+        tier = getattr(s, "tier", 1)
+        def get_data():
+            return s.data_store.get_data()
+        if hasattr(s, "index_name"):      # AngelOneIndexStreamer
+            def get_strikes():
+                return sorted({int(v["strike"]) for v in s.token_map.values()})
+        else:                              # InstrumentStreamer
+            def get_strikes():
+                return list(s.strikes)
+        def get_spot():
+            return s.spot_poller.get_spot()
+        def get_neggex():
+            a = getattr(s, "_analytics_cache", None)
+            if not a:
+                return None
+            best = None; bestv = 0.0
+            for stk, d in (a.get("strikes_data") or {}).items():
+                g = (d.get("CE", {}).get("gex") or 0) + (d.get("PE", {}).get("gex") or 0)
+                if g < bestv:
+                    bestv, best = g, stk
+            return best
+        wall_scanner.register(sym, kind, tier, get_data, get_strikes,
+                              get_spot, get_neggex)
+
+    def _dispatch_scanner_alert(meta):
+        """Route scanner alerts through the EXISTING channel infrastructure.
+        meta["channels_fired"] was set by wall_scanner from the shared rule
+        config (registered as AlertRuleType.WALL_REVERSAL). Sound and Telegram
+        reuse the exact same paths as Rule 1 / Rule 2 alerts."""
+        if _main_loop is None or not _main_loop.is_running():
+            return
+        channels = meta.get("channels_fired", ["toast"])
+
+        # Sound — existing SoundManager path
+        if "sound" in channels:
+            try:
+                from sound_manager import get_sound_base64
+                cfg = alert_engine.get_settings()
+                rule_cfg = next((r for r in cfg.get("rules", [])
+                                 if r.get("rule_type") == "wall_reversal"), {})
+                sound_id = rule_cfg.get("custom_sound_id") or rule_cfg.get("sound_choice", "alert")
+                data = get_sound_base64(sound_id)
+                if data:
+                    asyncio.run_coroutine_threadsafe(
+                        manager.broadcast({"type": "alert_sound", "base64": data}),
+                        _main_loop)
+            except Exception as e:
+                logging.error(f"[Scanner] sound dispatch: {e}")
+
+        # Telegram — existing notifier (shared + Tier-4 destination resolution)
+        if "telegram" in channels:
+            try:
+                tg = resolve_telegram_destination(alert_engine.get_settings(),
+                                                  meta.get("instrument_tier"))
+                if tg.get("enabled"):
+                    asyncio.run_coroutine_threadsafe(
+                        asyncio.to_thread(send_telegram_alert,
+                                          tg.get("bot_token", ""), tg.get("chat_id", ""), meta),
+                        _main_loop)
+            except Exception as e:
+                logging.error(f"[Scanner] telegram dispatch: {e}")
+
+        # Toast — existing alert broadcast queue
+        asyncio.run_coroutine_threadsafe(
+            alert_broadcast_queue.put(meta), _main_loop)
+
     try:
         streamer_adapter.start()
+        wall_scanner.on_alert = _dispatch_scanner_alert
+        candle_builder.subscribe_1m(wall_scanner.on_1m_close)
+        wall_scanner.start()
         for index_name in list(streamer_adapter.streamers.keys()):
             streamer = streamer_adapter.get_streamer(index_name)
             if streamer:
                 try:
                     _start_timer(streamer)
+                    _register_scanner_streamer(index_name, streamer)
                 except Exception as e:
                     # one streamer's timer failure must never suppress the hooks
                     print(f"[Startup] Snapshot timer failed for {index_name}: {e}")
@@ -137,6 +213,10 @@ async def lifespan(app: FastAPI):
         # Live add/remove/tier hooks (Settings > Instruments, no restart)
         def _on_stock_added(s):
             _start_timer(s)
+            try:
+                _register_scanner_streamer(getattr(s, "symbol", None) or getattr(s, "index_name", "?"), s)
+            except Exception as e:
+                print(f"[Startup] Scanner registration failed: {e}")
 
         def _on_stock_removed(symbol):
             snapshot_engine.stop_snapshot_timer(symbol)
@@ -185,6 +265,9 @@ async def lifespan(app: FastAPI):
         pass
     print("[FastAPI] Stopping snapshot engine (timers + DB writer)...")
     snapshot_engine.stop()
+    print("[FastAPI] Stopping wall scanner + candle builder (flush + drain)...")
+    wall_scanner.stop()
+    candle_builder.stop()
     print("[FastAPI] Stopping Tier 4 feed + validation sampler...")
     for _m in ("greeks_feed", "greeks_validation"):
         try:
@@ -920,6 +1003,58 @@ async def test_telegram(cfg: dict):
         cfg.get("chat_id", ""),
     )
     return {"success": success, "message": msg}
+
+
+@app.get("/api/scanner/candles")
+async def scanner_candles(symbol: str = Query(...), tf: str = Query(...),
+                          date: str = Query(default=None)):
+    """HTF candles for the chart, derived from persisted candles_1m
+    (market-open anchored 15m/30m/1H; clock-aligned 5m)."""
+    from wall_scanner import htf_bucket_minutes, five_m_bucket_minutes, _aggregate, _label
+    if tf not in ("5m", "15m", "30m", "1H"):
+        raise HTTPException(status_code=400, detail="tf must be one of 5m|15m|30m|1H")
+    if not date:
+        date = datetime.now().strftime("%Y-%m-%d")
+    ones = candle_builder.load_1m(symbol.strip().upper(),
+                                  since_ts_minute=f"{date} 00:00:00")
+    out, cur, part = [], None, []
+    for c in ones:
+        b = (five_m_bucket_minutes(c["ts_minute"]) if tf == "5m"
+             else htf_bucket_minutes(tf, c["ts_minute"]))
+        if b is None:
+            continue
+        if cur is None:
+            cur, part = b, [c]
+        elif b == cur:
+            part.append(c)
+        else:
+            agg = _aggregate(symbol.upper(), part)
+            agg["ts_minute"] = _label(date, cur)
+            out.append(agg)
+            cur, part = b, [c]
+    if part:
+        agg = _aggregate(symbol.upper(), part)
+        agg["ts_minute"] = _label(date, cur)
+        out.append(agg)
+    return {"symbol": symbol.upper(), "tf": tf, "date": date, "candles": out}
+
+
+@app.get("/api/scanner/alerts")
+async def scanner_alerts(symbol: str = Query(default=None),
+                         date: str = Query(default=None)):
+    """Persisted wall_reversal alerts (markers queried, never recomputed)."""
+    from alert_db import get_alert_history
+    res = get_alert_history(index_name=symbol, date_str=date,
+                            rule_type="wall_reversal", page=1, page_size=200)
+    entries = []
+    for e in res["entries"]:
+        try:
+            meta = json.loads(e["market_state"])
+        except Exception:
+            meta = {}
+        entries.append({**meta, "id": e["id"], "timestamp": e["timestamp"],
+                        "rule_name": e["rule_name"]})
+    return {"alerts": entries, "total": res["total"]}
 
 
 @app.get("/api/health")

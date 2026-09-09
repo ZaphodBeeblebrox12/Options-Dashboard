@@ -33,14 +33,16 @@ export default function MobileMap({ data, isScanner }: { data: any; isScanner: b
 
   if (!data) return <div className="mc-empty">Waiting for data…</div>;
 
-  if (isScanner) {
+  // §45: GEX map is Tier-1-only. Tier 2/3/4 get wall chips but no GEX chart.
+  const tier = data?.tier ?? (data?.index_name === "NIFTY" || data?.index_name === "SENSEX" ? 1 : 2);
+  if (isScanner || tier !== 1) {
     return (
       <div className="mc-scrl">
         <div className="mc-title">Map</div>
         <div className="mc-card">
-          <h4>GEX map unavailable on Tier 3</h4>
+          <h4>GEX map unavailable below Tier 1</h4>
           <div style={{ fontSize: 12.5, color: "var(--mdim)", lineHeight: 1.6 }}>
-            Scanner instruments carry no per-strike GEX. Promote {data.index_name} to Tier 2 to unlock this view.
+            Net GEX visualization is Tier-1-only (NIFTY / SENSEX).
           </div>
         </div>
       </div>

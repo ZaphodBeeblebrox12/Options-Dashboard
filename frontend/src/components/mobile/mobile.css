@@ -51,12 +51,12 @@ padding-top:env(safe-area-inset-top)}
 .mc-wn.l{left:-2px;background:var(--mce)}
 .mc-wn.r{right:-2px;background:var(--mpe)}
 .mc-empty{flex:1;display:flex;align-items:center;justify-content:center;text-align:center;color:var(--mfaint);font-size:13px;line-height:1.7;padding:30px}
-#mcAtmPill{position:absolute;right:12px;bottom:calc(60px + env(safe-area-inset-bottom));z-index:6;display:none;align-items:center;gap:6px;background:var(--mpanel2);border:1px solid var(--mborder);border-radius:18px;padding:8px 13px;font-size:12.5px;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,.45)}
+#mcAtmPill{position:fixed;right:12px;bottom:calc(60px + env(safe-area-inset-bottom));z-index:999;display:flex;align-items:center;gap:6px;background:var(--mpanel2);border:1px solid var(--mborder);border-radius:18px;padding:8px 13px;font-size:12.5px;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,.45)}
 #mcAtmPill.on{display:flex}
 @media(max-width:350px){.mc-lh,.mc-row{grid-template-columns:34px 38px 1fr 56px 1fr 38px 34px}.mc-oi{font-size:12.5px}}
 
 /* scanner (tier 3) */
-.mc-scrl{flex:1;overflow-y:auto;padding:12px 14px calc(14px + env(safe-area-inset-bottom));overscroll-behavior:contain}
+.mc-scrl{flex:1;overflow-y:auto;padding:12px 14px calc(14px + env(safe-area-inset-bottom));overscroll-behavior:contain;position:relative}
 .mc-title{font-size:17px;font-weight:700;padding:2px 0 10px}
 .mc-card{background:var(--mpanel);border:1px solid var(--mborder);border-radius:14px;padding:13px;margin-bottom:12px}
 .mc-card h4{margin:0 0 8px;font-size:12.5px;font-weight:600;color:var(--mdim)}
@@ -515,3 +515,9 @@ font-size:14px;font-family:inherit}
 .mc-spot{font-size:26px;font-weight:700;letter-spacing:.2px;line-height:1.05}
 .mc-basis{font-size:10px;color:var(--mfaint);letter-spacing:.2px;margin-top:3px}
 .mc-live.sm i{width:7px;height:7px}
+
+/* Watch tab: let analytical content below the chain scroll into view.
+   The chain ladder (.mc-ladder) was the ONLY vertical scroller; the
+   candlestick/walls content sat in a sibling it could never reach. */
+.mc-main:has(.mc-ladder) { overflow-y: auto; }
+.mc-main:has(.mc-ladder) .mc-ladder { flex: none; overflow: visible; }

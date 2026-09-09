@@ -1,0 +1,7 @@
+{
+  "name": "lightweight-charts",
+  "version": "4.2.0",
+  "main": "./dist/lightweight-charts.production.mjs",
+  "module": "./dist/lightweight-charts.production.mjs",
+  "types": "./dist/typings.d.ts"
+}

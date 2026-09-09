@@ -6,6 +6,7 @@ import React, { useEffect, useState } from "react";
 const RULE_META: Record<string, { name: string; desc: string }> = {
   atm_negative_gex_oi_wall: { name: "ATM + Negative GEX + OI Wall", desc: "ATM is the max negative-GEX strike and also the CE or PE OI wall." },
   atm_max_ce_pe_wall: { name: "ATM Maximum CE/PE Wall", desc: "ATM is either the maximum CE OI wall or the maximum PE OI wall." },
+  wall_reversal: { name: "Wall Reversal", desc: "Evening Star-style CE Wall bearish and Morning Star-style PE Wall bullish reversals on 15m, 30m and 1H." },
 };
 const COOLDOWNS = [60, 300, 600, 900, 1800];
 const cdFmt = (s: number) => s < 60 ? s + "s" : (s / 60) + "m";
