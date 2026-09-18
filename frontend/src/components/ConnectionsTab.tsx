@@ -14,7 +14,7 @@ interface Usage { [instrument: string]: number; }
 interface HealthStat { count: number; avg_ms: number | null; p95_ms: number | null; last_ms: number | null; }
 interface AppHealth {
   overall: string;
-  grades: { analytics: string; broadcast: string; queue: string; freshness: string };
+  grades: { analytics: string; broadcast: string; queue: string; freshness: string; underlying: string };
   stocks_tracked: number;
   queue_depth: number;
   market_open: boolean;

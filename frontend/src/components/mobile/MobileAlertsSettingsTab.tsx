@@ -160,10 +160,13 @@ export default function MobileAlertsSettingsTab() {
         </div>
         <div className="mc-anl-seg" style={{ marginTop: 8 }}>
           {CHANNELS.map(c => (
-            <button key={c} className={(((s.tier4_channels ?? ["telegram"]).includes(c)) ? "on" : "")}
+            <button key={c} className={((((s.tier4?.channels) ?? ["telegram"]).includes(c)) ? "on" : "")}
               onClick={() => {
-                const cur: string[] = s.tier4_channels ?? ["telegram"];
-                upd(p => ({ ...p, tier4_channels: cur.includes(c) ? cur.filter((x: string) => x !== c) : [...cur, c] }));
+                // Edit the dedicated Tier-4 PROFILE (the backend derives the
+                // legacy tier4_channels mirror from it on save — editing the
+                // legacy key directly was silently discarded).
+                const cur: string[] = s.tier4?.channels ?? ["telegram"];
+                upd(p => ({ ...p, tier4: { ...p.tier4, channels: cur.includes(c) ? cur.filter((x: string) => x !== c) : [...cur, c] } }));
               }}>{c[0].toUpperCase() + c.slice(1)}</button>
           ))}
         </div>

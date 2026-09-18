@@ -19,19 +19,23 @@ const PAGE_SIZE = 50;
 
 interface AlertHistoryPanelProps {
   indexName: string;
+  /** Navigate to a symbol's dashboard (existing App navigation mechanism). */
+  onNavigate?: (symbol: string) => void;
 }
 
 const RULE_BADGE_COLORS: Record<string, string> = {
   'atm_negative_gex_oi_wall': 'bg-red-500/20 text-red-400 border-red-500/30',
   'atm_max_ce_pe_wall': 'bg-amber-500/20 text-amber-400 border-amber-500/30',
+  'wall_reversal': 'bg-sky-500/20 text-sky-400 border-sky-500/30',
 };
 
 const RULE_NAMES: Record<string, string> = {
   'atm_negative_gex_oi_wall': 'Strong Signal',
   'atm_max_ce_pe_wall': 'Wall Alignment',
+  'wall_reversal': 'Wall Reversal',
 };
 
-export const AlertHistoryPanel: React.FC<AlertHistoryPanelProps> = ({ indexName }) => {
+export const AlertHistoryPanel: React.FC<AlertHistoryPanelProps> = ({ indexName, onNavigate }) => {
   // Alert Type filter. DEFAULT comes from the persisted Settings value
   // (history_default_rule_type); the user's manual choice is a TEMPORARY
   // override for this open panel. Init happens ONCE at mount (next-open only):
@@ -228,7 +232,7 @@ export const AlertHistoryPanel: React.FC<AlertHistoryPanelProps> = ({ indexName 
               <tr className="text-terminal-muted border-b border-terminal-border">
                 <th className="px-3 py-2 text-left">Date</th>
                 <th className="px-3 py-2 text-left">Time</th>
-                <th className="px-3 py-2 text-left">Index</th>
+                <th className="px-3 py-2 text-left">Symbol</th>
                 <th className="px-3 py-2 text-left">Rule</th>
                 <th className="px-3 py-2 text-right">Spot</th>
                 <th className="px-3 py-2 text-right">ATM</th>
@@ -253,9 +257,13 @@ export const AlertHistoryPanel: React.FC<AlertHistoryPanelProps> = ({ indexName 
                       <td className="px-3 py-2 text-terminal-muted">{formatDate(entry.timestamp)}</td>
                       <td className="px-3 py-2 text-terminal-text font-semibold">{formatTime(entry.timestamp)}</td>
                       <td className="px-3 py-2">
-                        <span className="px-1.5 py-0.5 rounded bg-terminal-bg text-terminal-muted text-[10px]">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onNavigate?.(entry.index_name); }}
+                          className="font-mono font-bold text-[13px] tracking-wider text-terminal-text hover:text-terminal-atm hover:underline underline-offset-4 cursor-pointer transition-colors"
+                          title={`Open ${entry.index_name}`}
+                        >
                           {entry.index_name}
-                        </span>
+                        </button>
                       </td>
                       <td className="px-3 py-2">
                         <span className={`px-1.5 py-0.5 rounded border text-[10px] ${badgeClass}`}>
@@ -387,6 +395,30 @@ export const AlertHistoryPanel: React.FC<AlertHistoryPanelProps> = ({ indexName 
                                 ))}
                               </div>
                             </div>
+                            {entry.rule_type === 'wall_reversal' && (() => {
+                              try {
+                                const ms = JSON.parse(entry.market_state || '{}');
+                                const cells: [string, string][] = [
+                                  ['Direction', ms.direction ?? '—'],
+                                  ['Timeframe', ms.timeframe ?? '—'],
+                                  ['Wall', ms.wall != null ? Number(ms.wall).toLocaleString('en-IN') : '—'],
+                                  ['C2 High/Low', ms.c2_high != null
+                                    ? `${Number(ms.c2_high).toLocaleString('en-IN')} / ${Number(ms.c2_low).toLocaleString('en-IN')}`
+                                    : '—'],
+                                ];
+                                return cells.map(([k, v]) => (
+                                  <div className="space-y-1" key={k}>
+                                    <div className="flex items-center gap-1 text-terminal-muted">
+                                      <Activity className="w-3 h-3" />
+                                      {k}
+                                    </div>
+                                    <div className="text-terminal-text font-semibold">{v}</div>
+                                  </div>
+                                ));
+                              } catch {
+                                return null;
+                              }
+                            })()}
                           </div>
                         </td>
                       </tr>

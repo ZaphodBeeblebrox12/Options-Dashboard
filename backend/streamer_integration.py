@@ -1,14 +1,27 @@
 """Real-time Angel One SmartAPI v2 integration — multi-index + Tier-2 stocks.
 
-v3.0 changes:
-- Removed SharedWebSocketManager. All WebSocket ownership moved to
-  SubscriptionManager (subscription_manager.py): capacity-aware slots,
-  990 token cap per connection, max 3 connections, tier-first allocation.
-- NIFTY/SENSEX register as Tier-1 atomic groups; stocks are Tier-2 with
-  cash-first bootstrap and dynamic ATM windows (stock_streamer.py).
-- Public interface UNCHANGED: streamer_adapter, STREAMING_INDICES,
-  ANGEL_ONE_AVAILABLE, get_streamer(), get_current_state(), LiveDataStore,
-  SpotPricePoller, is_market_open().
+v3.1 changes (production startup patch — verified against repository + schema):
+- FIXED _load_yesterday_baselines: the previous query joined and sorted the
+  ENTIRE option_snapshots history per index (~96-101s at production DB sizes),
+  serially blocking NIFTY then SENSEX streamer construction. Replaced with two
+  indexed lookups (MAX(timestamp) via idx_snapshots_index, then a single-
+  snapshot join via idx_option_snapshots_snapshot) — milliseconds.
+  Schema verification (database.py): snapshots has UNIQUE(timestamp, index_name)
+  and INDEX index_name; option_snapshots has INDEX snapshot_id; timestamps are
+  '%Y-%m-%d %H:%M:%S' so `timestamp < date('now')` is a valid, index-friendly
+  string comparison that excludes today and keeps all prior days.
+- PHASED STARTUP: start() now brings up auth + SubscriptionManager + NIFTY +
+  SENSEX only (critical path) and returns; ALL stock/Tier-2/3/4 initialization
+  moved to _start_background() on a daemon thread. The FastAPI lifespan, event
+  loop, Tier-1 snapshot timers and broadcasts are no longer held hostage to
+  lower tiers (previously the server accepted no connections and produced no
+  snapshots for ~5.5 minutes).
+- THREAD SAFETY: _stocks_lock guards all stock_streamers/streamers/
+  configured_stocks mutations (the broadcast loop and API endpoints iterate
+  these from other threads). Readiness timestamps recorded per instrument.
+- Everything else identical to v3.0: public interface unchanged
+  (streamer_adapter, STREAMING_INDICES, ANGEL_ONE_AVAILABLE, get_streamer(),
+  get_current_state(), LiveDataStore, SpotPricePoller, is_market_open()).
 """
 import os
 import copy
@@ -332,31 +345,58 @@ if ANGEL_ONE_AVAILABLE:
                 logger.warning(f"[{self.index_name}] Could not load baselines from DB: {e}")
 
         def _load_yesterday_baselines(self):
+            """Seed OI baselines from the most recent PRIOR-day snapshot.
+
+            v3.1 FIX — the previous implementation joined and sorted the ENTIRE
+            option_snapshots history per index and fetchall()ed it into Python,
+            which took ~96s (NIFTY) / ~101s (SENSEX) at production DB sizes and
+            serially blocked both Tier-1 streamer constructors.
+
+            Replacement: two indexed lookups, milliseconds:
+              1) MAX(timestamp) over snapshots for the index, prior days only.
+              2) The option rows of exactly that one snapshot.
+
+            Schema verification (database.py):
+              - snapshots: UNIQUE(timestamp, index_name), INDEX index_name
+                (idx_snapshots_index)  -> step 1 is an index walk.
+              - option_snapshots: INDEX snapshot_id (idx_option_snapshots_snapshot)
+                -> step 2's join is index-driven.
+              - timestamps are stored as '%Y-%m-%d %H:%M:%S', so the string
+                comparison `timestamp < date('now')` excludes today's rows and
+                keeps every prior day WITHOUT wrapping the column in date()
+                (which would defeat the index).
+            """
             try:
                 from database import get_db_connection
                 conn = get_db_connection()
-                cursor = conn.execute("""
-                    SELECT o.strike, o.option_type, o.oi
-                    FROM option_snapshots o
-                    JOIN snapshots s ON o.snapshot_id = s.id
-                    WHERE s.index_name = ?
-                      AND date(s.timestamp) < date('now')
-                    ORDER BY s.timestamp DESC
-                """, (self.index_name,))
-
-                loaded = 0
-                seen = set()
-                for row in cursor.fetchall():
-                    key = (row["strike"], row["option_type"])
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    self.data_store.set_daily_baseline(row["strike"], row["option_type"], row["oi"])
-                    loaded += 1
-
-                conn.close()
-                if loaded:
-                    logger.info(f"[{self.index_name}] Seeded {loaded} baselines from yesterday's closing OI")
+                try:
+                    row = conn.execute(
+                        "SELECT MAX(timestamp) FROM snapshots "
+                        "WHERE index_name = ? AND timestamp < date('now')",
+                        (self.index_name,),
+                    ).fetchone()
+                    last_ts = row[0] if row else None
+                    if not last_ts:
+                        logger.info(f"[{self.index_name}] No prior-day snapshot "
+                                    f"available for baseline seeding")
+                        return
+                    cursor = conn.execute(
+                        "SELECT o.strike, o.option_type, o.oi "
+                        "FROM option_snapshots o "
+                        "JOIN snapshots s ON o.snapshot_id = s.id "
+                        "WHERE s.index_name = ? AND s.timestamp = ?",
+                        (self.index_name, last_ts),
+                    )
+                    loaded = 0
+                    for r in cursor.fetchall():
+                        self.data_store.set_daily_baseline(
+                            r["strike"], r["option_type"], r["oi"])
+                        loaded += 1
+                    if loaded:
+                        logger.info(f"[{self.index_name}] Seeded {loaded} baselines "
+                                    f"from {last_ts[:10]} close")
+                finally:
+                    conn.close()
             except Exception as e:
                 logger.warning(f"[{self.index_name}] Could not load yesterday baselines: {e}")
 
@@ -548,6 +588,7 @@ if ANGEL_ONE_AVAILABLE:
                         "max_gex_strike": analytics.get("max_gex_strike"),
                         "max_pain": analytics.get("max_pain"),
                         "gamma_flip": analytics.get("gamma_flip"),
+                        "atm": min(sorted(data.keys()), key=lambda s: abs(s - spot)) if spot is not None else None,
                         "market_open": is_market_open(),
                         "contract_multiplier": self.contract_multiplier,
                         "expiry": self.expiry_str,
@@ -590,8 +631,34 @@ class StreamerAdapter:
         self.on_stock_removed = None    # set by main.py -> stops snapshot timer
         self.on_tier_changed = None     # set by main.py -> start/stop snapshot timer
         self.on_scanner_alerts = None   # set by main.py -> dispatch fired alerts
+        # v3.1: guards stock_streamers/streamers/configured_stocks mutations.
+        # The background init thread, the API endpoints (anyio worker threads)
+        # and the broadcast loop (asyncio) all touch these containers.
+        self._stocks_lock = threading.RLock()
+        # v3.1: per-instrument lifecycle timestamps for /api/readiness.
+        self.readiness: Dict[str, Dict[str, Any]] = {}
+        self._bg_thread: Optional[threading.Thread] = None
+        # Case A/B/C hook-ordering closure: set by main.py after the hooks are
+        # wired; the background thread waits on it (bounded) before reconciling
+        # so no seeded instrument can miss its snapshot timer regardless of
+        # which thread wins the startup race. Also set by stop().
+        self._hooks_ready = threading.Event()
 
     def start(self):
+        """PHASED STARTUP (v3.1).
+
+        CRITICAL PATH (this thread, blocking but now seconds): scrip-master
+        warm thread, Angel login, SubscriptionManager, then NIFTY + SENSEX
+        only. Returns as soon as Tier-1 is subscription-ACTIVE.
+
+        BACKGROUND (daemon thread): every Tier-2/3/4 instrument, supervisor,
+        hook wiring. The FastAPI event loop, Tier-1 snapshot timers and
+        broadcasts are never blocked by lower tiers.
+
+        Previously all 38 instruments initialized serially here (~5.5 min),
+        and no HTTP/WS/snapshot could run until the last stock finished —
+        while NIFTY had been data-ready minutes earlier.
+        """
         self.running = True
 
         if not ANGEL_ONE_AVAILABLE:
@@ -628,29 +695,27 @@ class StreamerAdapter:
                 logger.warning("[StreamerAdapter] WebSocket not open after 20s — "
                                "group registrations will flush when it connects")
 
-            # Tier 1 — indices
+            # ── CRITICAL PATH: Tier 1 only ─────────────────────────────
+            t0 = time.time()
             for index_name in TIER1_INDICES:
                 try:
                     streamer = AngelOneIndexStreamer(index_name, self.auth_manager)
                     streamer.register_with_manager(self.manager)
-                    self.streamers[index_name] = streamer
-                    logger.info(f"[StreamerAdapter] {index_name} streamer ready")
-                    time.sleep(1)
+                    with self._stocks_lock:
+                        self.streamers[index_name] = streamer
+                    self.readiness[index_name] = {"active_at": round(time.time(), 3)}
+                    logger.info(f"[StreamerAdapter] {index_name} streamer ready "
+                                f"(+{time.time()-t0:.1f}s)")
                 except Exception as e:
                     logger.error(f"[StreamerAdapter] Failed to start {index_name}: {e}")
+            logger.info(f"[StreamerAdapter] TIER-1 READY in {time.time()-t0:.1f}s — "
+                        f"NIFTY/SENSEX live; background init of remaining "
+                        f"instruments starting")
 
-            # Tier 2 — stocks (cash-first bootstrap), seeded from app settings
-            init_app_settings()
-            self.configured_stocks = settings_get_stocks()
-            logger.info(f"[StreamerAdapter] TIER2_STOCKS configured: {self.configured_stocks}")
-            if self.configured_stocks:
-                for symbol in self.configured_stocks:
-                    kind = app_settings.get_instrument_kind(symbol)
-                    tier = app_settings.get_instrument_tier(symbol)
-                    self._start_instrument(symbol, kind=kind, tier=tier, delay=0.3)
-                for sym in self.stock_streamers:
-                    self._wire_streamer_hooks(sym)
-                self._ensure_supervisor()
+            # ── EVERYTHING ELSE: background daemon thread ──────────────
+            self._bg_thread = threading.Thread(target=self._start_background,
+                                               daemon=True, name="adapter-bg")
+            self._bg_thread.start()
 
             if self.streamers:
                 market_status = "OPEN" if is_market_open() else "CLOSED"
@@ -668,13 +733,61 @@ class StreamerAdapter:
             logger.error(f"[StreamerAdapter] Real mode failed: {e}")
             self.mode = "unavailable"
 
+    def _start_background(self):
+        """Tier-2/3/4 instruments + supervisor. Runs on a daemon thread so the
+        FastAPI event loop and Tier-1 pipeline are never blocked by it.
+
+        RACE NOTE (verified): main.py wires streamer_adapter.on_stock_added
+        AFTER start() returns, but this thread may already have seeded stocks
+        by then. main.py therefore runs an idempotent catch-up pass (lock-
+        guarded _timers_started set) over stock_streamers after wiring the
+        hooks — seeded stocks get their timers exactly once regardless of
+        which side wins the race. Dict mutations here are under _stocks_lock
+        because the broadcast loop and API endpoints iterate these dicts."""
+        try:
+            init_app_settings()
+            with self._stocks_lock:
+                self.configured_stocks = settings_get_stocks()
+                configured = list(self.configured_stocks)
+            logger.info(f"[StreamerAdapter] Instruments configured: {configured}")
+            if configured:
+                for symbol in configured:
+                    if not self.running:
+                        return
+                    kind = app_settings.get_instrument_kind(symbol)
+                    tier = app_settings.get_instrument_tier(symbol)
+                    self._start_instrument(symbol, kind=kind, tier=tier, delay=0.3)
+                for sym in list(self.stock_streamers.keys()):
+                    self._wire_streamer_hooks(sym)
+                self._ensure_supervisor()
+            # Case A/B/C closure (verified): wait (bounded) until main.py has
+            # wired the hooks, then run the SAME idempotent path as
+            # on_stock_added over everything seeded so far. Exactly-once is
+            # guaranteed by main.py's lock-guarded _timers_started registry, so
+            # this is safe no matter which side of the race observed a stock.
+            self._hooks_ready.wait(timeout=60)
+            self._reconcile_hooks()
+            with self._stocks_lock:
+                names = list(self.stock_streamers.keys())
+            logger.info(f"[StreamerAdapter] Background init complete: {names}")
+            if self.manager:
+                logger.info(f"[StreamerAdapter] WS stats: {self.manager.stats()}")
+        except Exception as e:
+            logger.error(f"[StreamerAdapter] Background init failed: {e}")
+
     def stop(self):
         """Orderly shutdown:
+        0. background init thread joined first (so no registration is mid-
+           flight when the manager closes),
         1. reconnect loops (manager closing state) -> 2. processing workers
         (supervisor/streamers) -> 3. WebSockets closed + threads joined
         (inside manager.stop) -> 4. API logout LAST, with full diagnostics."""
-        logger.info("[StreamerAdapter] Stopping: reconnect loops -> workers -> sockets -> logout")
+        logger.info("[StreamerAdapter] Stopping: bg init -> reconnect loops -> "
+                    "workers -> sockets -> logout")
         self.running = False
+        self._hooks_ready.set()          # release any waiting bg thread immediately
+        if self._bg_thread:
+            self._bg_thread.join(timeout=10)
 
         # 1. reconnect loops + close sockets + join slot threads
         if self.manager:
@@ -713,8 +826,9 @@ class StreamerAdapter:
         from stock_streamer import InstrumentStreamer
         try:
             sym = symbol.strip().upper()
-            if sym in self.stock_streamers:
-                return {"ok": False, "error": f"{sym} already added"}
+            with self._stocks_lock:
+                if sym in self.stock_streamers:
+                    return {"ok": False, "error": f"{sym} already added"}
             if kind is None:
                 from scrip_master import scrip_master
                 kind = scrip_master.detect_kind(sym)
@@ -723,8 +837,18 @@ class StreamerAdapter:
                                                     f"(index / stock / commodity)"}
             s = InstrumentStreamer(sym, self.manager, kind=kind, tier=tier)
             s.start()
-            self.stock_streamers[sym] = s
-            self.streamers[sym] = s
+            with self._stocks_lock:
+                if sym in self.stock_streamers:
+                    # lost a concurrent-add race: unwind ours, keep the winner
+                    try:
+                        s.stop()
+                    except Exception:
+                        pass
+                    return {"ok": False, "error": f"{sym} already added"}
+                self.stock_streamers[sym] = s
+                self.streamers[sym] = s
+            self.readiness[sym] = {"active_at": round(time.time(), 3),
+                                   "tier": s.tier, "kind": s.kind}
             if delay:
                 time.sleep(delay)
             logger.info(f"[StreamerAdapter] {sym} streamer starting "
@@ -733,6 +857,21 @@ class StreamerAdapter:
         except Exception as e:
             logger.error(f"[StreamerAdapter] Failed to start {symbol}: {e}")
             return {"ok": False, "error": str(e)}
+
+    def _reconcile_hooks(self):
+        """Idempotent exactly-once pass over seeded instruments — the same
+        path as on_stock_added. No-op when hooks are not yet wired. Callers:
+        _start_background (after _hooks_ready) and, defensively, add paths."""
+        hook = self.on_stock_added
+        if hook is None:
+            return
+        with self._stocks_lock:
+            seeded = list(self.stock_streamers.values())
+        for s in seeded:
+            try:
+                hook(s)
+            except Exception as e:
+                logger.error(f"[StreamerAdapter] reconcile hook: {e}")
 
     def _ensure_supervisor(self):
         if self._supervisor is None:
@@ -752,8 +891,9 @@ class StreamerAdapter:
         if result.get("ok"):
             app_settings.add_instrument(sym, result.get("kind", kind or "STOCK"))
             app_settings.set_instrument_tier(sym, tier)
-            if sym not in self.configured_stocks:
-                self.configured_stocks.append(sym)   # dropdown reads this list
+            with self._stocks_lock:
+                if sym not in self.configured_stocks:
+                    self.configured_stocks.append(sym)   # dropdown reads this list
             self._wire_streamer_hooks(sym)
             self._ensure_supervisor()
             if self.on_stock_added:
@@ -787,7 +927,8 @@ class StreamerAdapter:
 
     def remove_stock(self, symbol: str) -> dict:
         sym = symbol.strip().upper()
-        s = self.stock_streamers.get(sym)
+        with self._stocks_lock:
+            s = self.stock_streamers.get(sym)
         if not s:
             return {"ok": False, "error": f"{sym} not found"}
         for gid in (f"{sym}_SPOT", f"{sym}_FUTURES", f"{sym}_OPTION_WINDOW", f"{sym}_CASH"):
@@ -799,14 +940,15 @@ class StreamerAdapter:
             s.stop()
         except Exception:
             pass
-        self.stock_streamers.pop(sym, None)
-        self.streamers.pop(sym, None)
+        with self._stocks_lock:
+            self.stock_streamers.pop(sym, None)
+            self.streamers.pop(sym, None)
+            if sym in self.configured_stocks:
+                self.configured_stocks.remove(sym)
         if self._supervisor is not None and not self.stock_streamers:
             self._supervisor.stop()
             self._supervisor = None
         app_settings.remove_instrument(sym)
-        if sym in self.configured_stocks:
-            self.configured_stocks.remove(sym)
         if self.on_stock_removed:
             try:
                 self.on_stock_removed(sym)
@@ -838,7 +980,9 @@ class StreamerAdapter:
 
     def instruments_status(self) -> list:
         rows = []
-        for s in self.stock_streamers.values():
+        with self._stocks_lock:
+            stock_snapshot = list(self.stock_streamers.values())
+        for s in stock_snapshot:
             st = s.status()
             st["fixed"] = False
             rows.append(st)
@@ -890,7 +1034,9 @@ class StreamerAdapter:
         return streamer.get_current_state()
 
     def get_all_states(self):
-        return {name: s.get_current_state() for name, s in self.streamers.items()}
+        with self._stocks_lock:
+            snapshot = list(self.streamers.items())
+        return {name: s.get_current_state() for name, s in snapshot}
 
 
 streamer_adapter = StreamerAdapter()

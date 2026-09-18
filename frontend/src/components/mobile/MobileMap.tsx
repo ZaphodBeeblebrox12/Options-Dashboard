@@ -4,11 +4,13 @@ import { fmtGex, fmtNum } from "./mobileFormat";
 
 /**
  * Mobile Map — reuses the DESKTOP GexChart component (which already adapts
- * to narrow widths: ATM-windowed bars, per-strike labels, ATM / max-pain /
- * gamma-flip reference lines, tooltip on tap). We only build the same
- * gexByStrike shape the desktop builds from /api/gex-by-strike, live from
- * the tick payload. Walls (argmax OI, same definition as the alert engine)
- * are surfaced as chips below — the desktop chart itself has no wall prop.
+ * to narrow widths: ATM-windowed bars, per-strike labels, reference lines
+ * with a mobile bottom legend, tooltip on tap).
+ *
+ * v3.10: the chart now accepts CE/PE wall strikes and renders them as
+ * reference lines + legend entries, so the walls computed here (argmax OI,
+ * same definition as the alert engine) are passed straight through —
+ * previously they were chips-only below the chart.
  */
 export default function MobileMap({ data, isScanner }: { data: any; isScanner: boolean }) {
   const gexByStrike = useMemo(() => {
@@ -62,6 +64,8 @@ export default function MobileMap({ data, isScanner }: { data: any; isScanner: b
           atmStrike={atmStrike}
           maxPain={data.max_pain ?? null}
           gammaFlip={data.gamma_flip ?? null}
+          ceWall={walls.ceWall}
+          peWall={walls.peWall}
         />
         <div className="mc-note" style={{ padding: "4px 20px 8px" }}>Tap a bar for strike, CE/PE GEX and net values.</div>
       </div>

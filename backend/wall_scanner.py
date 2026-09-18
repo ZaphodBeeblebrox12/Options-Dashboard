@@ -382,26 +382,69 @@ class WallScanner:
         if time.time() - self._last_fire.get(ck, 0) < _cooldown:
             return
         self._last_fire[ck] = time.time()
-        # channel decision mirrors alert_engine.evaluate_rules semantics
+        # ── Channel decision ─────────────────────────────────────────
+        # T1/T2/T3 (unchanged): per-rule flags + shared telegram toggle.
+        # Tier 4: the dedicated Tier-4 profile owns routing — same semantics as
+        # the engine path (evaluate_rules): profile channels decide, and the
+        # destination is the dedicated config when fully configured, else the
+        # shared destination.
         _ch = list(_cfg.get("channels") or [NotificationChannel.TOAST.value])
         if (_cfg.get("sound_enabled")
                 and _settings.get("sound", {}).get("master_enabled", True)
                 and NotificationChannel.SOUND.value not in _ch):
             _ch.append(NotificationChannel.SOUND.value)
-        if (_cfg.get("telegram_enabled")
-                and _settings.get("telegram", {}).get("enabled", False)
-                and NotificationChannel.TELEGRAM.value not in _ch):
-            _ch.append(NotificationChannel.TELEGRAM.value)
+        _tier = self._providers.get(s.symbol, {}).get("tier")
+        _t4 = _settings.get("tier4") or {}
+        _t4tg = _t4.get("telegram") or {}
+        _t4_dedicated = bool(_t4tg.get("enabled") and _t4tg.get("bot_token") and _t4tg.get("chat_id"))
+        _shared_tg = _settings.get("telegram") or {}
+        if _tier == 4:
+            if (NotificationChannel.TELEGRAM.value in (_t4.get("channels") or ["telegram"])
+                    and (_t4_dedicated or _shared_tg.get("enabled", False))
+                    and NotificationChannel.TELEGRAM.value not in _ch):
+                _ch.append(NotificationChannel.TELEGRAM.value)
+        else:
+            if (_cfg.get("telegram_enabled")
+                    and _shared_tg.get("enabled", False)
+                    and NotificationChannel.TELEGRAM.value not in _ch):
+                _ch.append(NotificationChannel.TELEGRAM.value)
+
+        # ── Enrichment at fire time ──────────────────────────────────
+        # All values come from the SAME data store / providers the detection
+        # used — snapshotted now, never recalculated later.
+        prov = self._providers.get(s.symbol) or {}
+        _spot = None
+        _strikes = []
+        try:
+            if prov.get("get_spot"):
+                _spot = prov["get_spot"]()
+        except Exception:
+            _spot = None
+        try:
+            if prov.get("get_strikes"):
+                _strikes = list(prov["get_strikes"]() or [])
+        except Exception:
+            _strikes = []
+        _ce_w = _pe_w = None
+        if prov:
+            try:
+                _ce_w, _pe_w = self._walls(prov)
+            except Exception:
+                _ce_w = _pe_w = None
+        _atm_strike = min(sorted(_strikes), key=lambda x: abs(x - _spot)) if (_spot is not None and _strikes) else None
+        if _spot is None:
+            _spot = s.atm  # Setup.atm holds the spot price captured at detection
+
         tf_min = TF_MINUTES[s.tf]
         side = "CE Wall" if s.direction == "CE" else "PE Wall"
         rule_name = (f"SETUP FORMING — {s.tf} {side}" if kind == "SETUP_FORMING"
                      else f"CONFIRMED — {s.tf} {side} Reversal")
         now = datetime.now()
-        metadata = {
+        scanner_meta = {
             "scanner": RULE_TYPE, "kind": kind, "direction": s.direction,
             "timeframe": s.tf, "symbol": s.symbol,
-            "wall": s.wall, "atm": s.atm, "neg_gex": s.neg_gex,
-            "strike_interval": s.interval,
+            "wall": s.wall, "wall_ce": _ce_w, "wall_pe": _pe_w, "atm": s.atm,
+            "neg_gex": s.neg_gex, "strike_interval": s.interval,
             "c1_ts": s.c1["ts_minute"], "c2_ts": s.c2["ts_minute"],
             "c2_high": s.c2["high"], "c2_low": s.c2["low"],
             "c1_range": s.c1["high"] - s.c1["low"],
@@ -411,26 +454,48 @@ class WallScanner:
             "c3_close": htf_c["close"] if htf_c else None,
             "five_m_ts": c5["ts_minute"] if c5 else None,
             "five_m_close": c5["close"] if c5 else None,
+        }
+        # Normalized payload: AlertTriggerPayload-compatible top level so every
+        # downstream consumer — toast, mobile feed, Telegram template, history
+        # API — reads ONE schema. Scanner specifics remain in market_state AND
+        # as top-level extras (direction/timeframe/wall).
+        metadata = {
+            "timestamp": now.isoformat(),
+            "index_name": s.symbol,
+            "rule_type": RULE_TYPE,
+            "rule_name": rule_name,
+            "instrument_tier": _tier,
+            "spot": _spot,
+            "atm_strike": _atm_strike,
+            "max_ce_oi_strike": int(_ce_w) if _ce_w is not None else None,
+            "max_pe_oi_strike": int(_pe_w) if _pe_w is not None else None,
+            "max_negative_gex_strike": (int(s.neg_gex) if s.neg_gex else None),
+            "net_gex": None,
+            "futures_spread": None,
             "channels_fired": _ch,
+            "market_state": scanner_meta,
+            "direction": s.direction,
+            "timeframe": s.tf,
+            "wall": s.wall,
         }
         try:
             from alert_db import save_alert_history
             aid = save_alert_history(
                 timestamp=now.strftime("%Y-%m-%d %H:%M:%S"),
                 index_name=s.symbol, rule_type=RULE_TYPE, rule_name=rule_name,
-                spot=s.atm, atm_strike=None,
-                max_ce_oi_strike=int(s.wall) if s.direction == "CE" else None,
-                max_pe_oi_strike=int(s.wall) if s.direction == "PE" else None,
+                spot=_spot, atm_strike=_atm_strike,
+                max_ce_oi_strike=int(_ce_w) if _ce_w is not None else None,
+                max_pe_oi_strike=int(_pe_w) if _pe_w is not None else None,
                 max_negative_gex_strike=(int(s.neg_gex) if s.neg_gex else None),
                 net_gex=None, futures_spread=None,
                 channels_fired=_ch,
-                market_state=metadata,
-                instrument_tier=self._providers.get(s.symbol, {}).get("tier"),
+                market_state=scanner_meta,
+                instrument_tier=_tier,
             )
             s.alert_id = aid
         except Exception as e:
             logger.error("[WallScanner] history write failed: %s", e)
-        logger.info("[WallScanner] ALERT %s | %s", rule_name, s.symbol)
+        logger.info("[WallScanner] ALERT %s | %s | channels=%s", rule_name, s.symbol, _ch)
         if self.on_alert:
             try:
                 self.on_alert(metadata)

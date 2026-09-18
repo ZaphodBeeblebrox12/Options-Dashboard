@@ -1,5 +1,6 @@
 """SQLite database setup with WAL mode for concurrent reads/writes."""
 import sqlite3
+import time
 import os
 from contextlib import contextmanager
 from datetime import datetime
@@ -45,9 +46,34 @@ def _migrate_db(conn):
 
 
 def init_db():
-    """Initialize database with WAL mode and schema."""
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL")
+    """Initialize database with WAL mode and schema.
+
+    v3.3: retry briefly on 'database is locked' (a killed previous instance
+    can hold the file for a few seconds while Windows releases handles), then
+    fail with an ACTIONABLE message instead of a raw traceback — the lock
+    means another backend instance is holding nifty_snapshots.db."""
+    conn = None
+    for attempt in range(6):
+        try:
+            conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")
+            break
+        except sqlite3.OperationalError as e:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            if "locked" in str(e).lower() and attempt < 5:
+                time.sleep(1)
+                continue
+            raise SystemExit(
+                "[DB] nifty_snapshots.db is LOCKED — another backend instance (or a "
+                "stuck python.exe) is holding it. Find it with:\n"
+                "    tasklist | findstr /I \"python\"\n"
+                "    netstat -ano | findstr :8000\n"
+                "then close/kill that process and restart. "
+                f"(last error: {e})"
+            )
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA temp_store=MEMORY")
     conn.execute("PRAGMA mmap_size=30000000000")
@@ -236,3 +262,28 @@ def load_all_baselines_for_date(conn, date_str, index_name):
         (date_str, index_name)
     ).fetchall()
     return {(row["strike"], row["option_type"]): row["baseline_oi"] for row in rows}
+
+
+# ── v3.11 PERF: performance-index bookkeeping (NO build here) ──────────────
+# The composite (strike, snapshot_id) index that backs the two-step history
+# query is built EXPLICITLY before market hours via build_perf_index.py.
+# init_db() must never build it: on a large production DB that would re-create
+# the market-open startup blocking problem. The startup path only performs
+# the existence check below, which reads sqlite_master — microseconds.
+PERF_INDEX_NAME = "idx_option_snapshots_strike_snap"
+PERF_INDEX_SQL = ("CREATE INDEX IF NOT EXISTS idx_option_snapshots_strike_snap "
+                  "ON option_snapshots(strike, snapshot_id)")
+
+
+def perf_index_exists(conn=None) -> bool:
+    """Instant existence check (sqlite_master lookup). Startup-safe."""
+    own = conn is None
+    if own:
+        conn = sqlite3.connect(DB_PATH)
+    try:
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
+            (PERF_INDEX_NAME,)).fetchone() is not None
+    finally:
+        if own:
+            conn.close()

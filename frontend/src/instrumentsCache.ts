@@ -1,18 +1,26 @@
 /**
- * Shared in-memory cache for GET /api/instruments.
- *
- * App.tsx (instrument-kind/session loader, polls every 60s) and
- * InstrumentSelect.tsx (replay-controls dropdown) both fetch this at
- * startup — this cache dedupes the burst so the endpoint is hit once.
+ * Shared in-memory cache for GET /api/instruments — dedupes concurrent
+ * first-callers (single in-flight promise) and serves repeats for 60s.
  */
 let cached: { data: any; ts: number } | null = null;
+let inflight: Promise<any> | null = null;
 const TTL_MS = 60_000;
 
 export async function fetchInstruments(): Promise<any> {
   if (cached && Date.now() - cached.ts < TTL_MS) return cached.data;
-  const res = await fetch('/api/instruments');
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = await res.json();
-  cached = { data, ts: Date.now() };
-  return data;
+  if (!inflight) {
+    inflight = fetch('/api/instruments')
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        cached = { data, ts: Date.now() };
+        return data;
+      })
+      .finally(() => {
+        inflight = null;
+      });
+  }
+  return inflight;
 }

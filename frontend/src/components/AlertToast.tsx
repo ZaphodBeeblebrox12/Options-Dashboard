@@ -21,6 +21,12 @@ const RULE_COLORS: Record<string, { accent: string; glow: string; text: string; 
     text: 'text-amber-300',
     bg: 'bg-slate-900/90',
   },
+  'wall_reversal': {
+    accent: 'border-l-sky-400',
+    glow: 'shadow-sky-500/10',
+    text: 'text-sky-300',
+    bg: 'bg-slate-900/90',
+  },
 };
 
 const ToastItem: React.FC<{
@@ -46,7 +52,7 @@ const ToastItem: React.FC<{
 
     const dismissTimer = setTimeout(() => {
       setVisible(false);
-      setTimeout(() => onDismiss(alert.timestamp), 300);
+      setTimeout(() => onDismiss(`${alert.timestamp}|${alert.rule_type}`), 300);
     }, duration);
 
     return () => { clearInterval(timer); clearTimeout(dismissTimer); };
@@ -88,7 +94,7 @@ const ToastItem: React.FC<{
           </span>
         </div>
         <button
-          onClick={() => { setVisible(false); setTimeout(() => onDismiss(alert.timestamp), 300); }}
+          onClick={() => { setVisible(false); setTimeout(() => onDismiss(`${alert.timestamp}|${alert.rule_type}`), 300); }}
           className="p-0.5 rounded hover:bg-white/10 text-slate-500 hover:text-white transition-colors shrink-0"
         >
           <X className="w-3 h-3" />
@@ -158,7 +164,7 @@ export const AlertToastContainer: React.FC<AlertToastProps> = ({ alerts, onDismi
   return (
     <div className="fixed top-3 right-2 z-[999] space-y-1.5 w-[260px] sm:w-[300px] pointer-events-none">
       {alerts.map((alert) => (
-        <ToastItem key={alert.timestamp} alert={alert} onDismiss={onDismiss} duration={duration} />
+        <ToastItem key={`${alert.timestamp}|${alert.rule_type}`} alert={alert} onDismiss={onDismiss} duration={duration} />
       ))}
     </div>
   );

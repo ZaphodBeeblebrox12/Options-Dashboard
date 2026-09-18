@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { fmtOI, fmtDelta, fmtPx } from "./mobileFormat";
+import { nearestStrike } from "../../strikeUtils";
 
 interface Opt {
   strike: number; option_type: string; oi: number; oi_change: number;
@@ -85,19 +86,13 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
   }, [data?.options]);
 
   const spot: number | null = data?.spot ?? null;
+  // Single source of truth: backend payload `atm` when present (same
+  // nearest-strike definition as the backend); shared fallback otherwise.
   const atmStrike = useMemo(() => {
+    if (data?.atm != null && rows.some(r => r.strike === data.atm)) return data.atm;
     if (spot == null || !rows.length) return null;
-    const sorted = rows.map(r => r.strike).sort((a, b) => a - b);
-    const step = sorted.length > 1 ? sorted[1] - sorted[0] : 0;
-    // Ideal strike by rounding spot to the ladder; ties resolve to the HIGHER strike.
-    const ideal = step > 0 ? Math.round(spot / step) * step : spot;
-    return sorted.reduce((best, s) => {
-      const dIdeal = Math.abs(s - ideal), bIdeal = Math.abs(best - ideal);
-      if (dIdeal !== bIdeal) return dIdeal < bIdeal ? s : best;
-      const dSpot = Math.abs(s - spot), bSpot = Math.abs(best - spot);
-      return dSpot !== bSpot ? (dSpot < bSpot ? s : best) : Math.max(s, best);
-    }, sorted[0]);
-  }, [rows, spot]);
+    return nearestStrike(spot, rows.map(r => r.strike));
+  }, [data?.atm, rows, spot]);
 
   const walls = useMemo(() => {
     let ceW: number | null = null, peW: number | null = null, ceM = -1, peM = -1;
@@ -112,41 +107,28 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
   const gMax = useMemo(() => rows.reduce((m, r) =>
     Math.max(m, Math.abs(r.ce?.gex ?? 0), Math.abs(r.pe?.gex ?? 0)), 0), [rows]);
 
-  const scrollToATM = useCallback(() => {
+  // Robust native positioning: scrollIntoView resolves the correct scroll
+  // container itself, immune to CSS changes and offsetParent drift.
+  const scrollToATM = useCallback((behavior: ScrollBehavior = "auto") => {
     const el = listRef.current?.querySelector('.mc-row.atm') as HTMLElement | null;
-    if (!el || !listRef.current) return;
+    if (!el) return;
     lastUserScroll.current = 0; // program scroll must not count as user scroll
-    const target = el.offsetTop - listRef.current.clientHeight / 2 + el.offsetHeight / 2;
-    listRef.current.scrollTo({ top: target, behavior: "smooth" });
-  }, [rows, atmStrike]);
+    el.scrollIntoView({ block: "center", behavior });
+  }, []);
 
-  // Auto-center on first data load (rows + atmStrike available).
-  // Previously the chain rendered at scrollTop=0 (top of chain) on mount,
-  // leaving ATM far off-screen until the user manually scrolled or tapped
-  // the floating pill. Now it centers as soon as data arrives.
-  const didInitScroll = useRef(false);
+  // Deterministic initial positioning: fires exactly once per
+  // instrument/expiry context, when BOTH chain rows and the ATM strike are
+  // known AND the ATM strike exists in the loaded strikes. Order-agnostic
+  // (ATM-first or rows-first both resolve), no setTimeout retries, no flags
+  // that can go stale across symbol/expiry changes.
+  const centerKey = (data?.index_name ?? "") + ":" + (data?.expiry ?? "");
+  const atmReady = rows.length > 0 && atmStrike != null && rows.some(r => r.strike === atmStrike);
   useEffect(() => {
-    if (didInitScroll.current || rows.length === 0 || atmStrike == null) return;
-    // retry up to 5 times (200ms apart) — the .mc-row.atm element may not be
-    // in the DOM yet on first render, so a single timeout often missed it.
-    let attempts = 0;
-    const tryScroll = () => {
-      attempts++;
-      const el = listRef.current?.querySelector('.mc-row.atm') as HTMLElement | null;
-      if (el) {
-        didInitScroll.current = true;
-        console.log("[MobileChain] auto-centered to ATM on load, attempt", attempts);
-        scrollToATM();
-      } else if (attempts < 5) {
-        setTimeout(tryScroll, 200);
-      } else {
-        didInitScroll.current = true;
-        console.log("[MobileChain] auto-center gave up after", attempts, "attempts");
-      }
-    };
-    const t = setTimeout(tryScroll, 100);
-    return () => clearTimeout(t);
-  }, [rows.length, atmStrike, scrollToATM]);
+    if (!atmReady) return;
+    if (centeredFor.current === centerKey) return;
+    centeredFor.current = centerKey;
+    scrollToATM();
+  }, [atmReady, centerKey, scrollToATM]);
 
   // External recenter requests (walls-strip ATM chip).
   useEffect(() => { if (recenterTick > 0) scrollToATM(); }, [recenterTick, scrollToATM]);
@@ -156,24 +138,19 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
     if (focusStrike == null || focusTick === 0 || !listRef.current) return;
     lastUserScroll.current = 0;
     const el = listRef.current.querySelector(`.mc-row[data-s="${focusStrike}"]`) as HTMLElement | null;
-    if (el) listRef.current.scrollTop = el.offsetTop - listRef.current.clientHeight / 2 + el.offsetHeight / 2;
+    el?.scrollIntoView({ block: "center" });
   }, [focusTick, focusStrike]);
 
-  // Centering policy: load / instrument / expiry always; drift only when idle.
-  const centerKey = (data?.index_name ?? "") + ":" + (data?.expiry ?? "");
+  // Drift policy: follow the ATM only while the user has been idle.
   useEffect(() => {
     if (!rows.length) return;
-    const isNewContext = centeredFor.current !== centerKey;
     const atmMoved = lastATM.current !== null && atmStrike !== null && atmStrike !== lastATM.current;
     const userIdle = Date.now() - lastUserScroll.current > IDLE_RECENTER_MS;
-    if (isNewContext || (atmMoved && userIdle)) {
-      centeredFor.current = centerKey;
-      const t = setTimeout(scrollToATM, 60);
-      lastATM.current = atmStrike;
-      return () => clearTimeout(t);
+    if (atmMoved && userIdle) {
+      scrollToATM("smooth");
     }
     lastATM.current = atmStrike;
-  }, [centerKey, rows.length, atmStrike, scrollToATM]);
+  }, [rows.length, atmStrike, scrollToATM]);
 
   // Pill visibility — depends on atmStrike too, so a data swap (replay,
   // instrument change) can never leave a stale pill on screen.
@@ -223,7 +200,7 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
             onSelect={onSelect} />
         ))}
         {floating && atmStrike != null && (
-          <button id="mcAtmPill" className={pillOn ? "on num" : "num"} onClick={scrollToATM}>
+          <button id="mcAtmPill" className={pillOn ? "on num" : "num"} onClick={() => scrollToATM("smooth")}>
             ⌖ ATM {atmStrike != null ? atmStrike.toLocaleString("en-IN") : ""}
           </button>
         )}

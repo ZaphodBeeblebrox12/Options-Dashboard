@@ -123,6 +123,54 @@ class SnapshotEngine:
                            baseline, source="first_reading", commit=False)
         return baseline
 
+    def _preload_baselines(self, index_name):
+        """One-time, single-query preload of yesterday's closing OI for an
+        instrument into self.daily_baselines — so the capture loop never
+        touches the DB per contract. Same two-step indexed lookup as the
+        Tier-1 streamer fix (MAX via idx_snapshots_index, then one snapshot's
+        rows via idx_option_snapshots_snapshot).
+
+        v3.3: without this, the first capture per instrument ran
+        get_yesterday_last_oi per contract — an index-defeating full
+        scan+sort each time (382 sequential calls for SENSEX) — which
+        wedged NIFTY/SENSEX silently for the whole session once the
+        36-stock first-capture burst hit at startup."""
+        if index_name in self.baseline_loaded_for_index:
+            return
+        self.baseline_loaded_for_index.add(index_name)   # once, even on failure
+        try:
+            from database import get_db_connection
+            conn = get_db_connection()
+            try:
+                row = conn.execute(
+                    "SELECT MAX(timestamp) FROM snapshots "
+                    "WHERE index_name = ? AND timestamp < date('now')",
+                    (index_name,)).fetchone()
+                last_ts = row[0] if row else None
+                if not last_ts:
+                    return
+                cur = conn.execute(
+                    "SELECT o.strike, o.option_type, o.oi "
+                    "FROM option_snapshots o JOIN snapshots s ON o.snapshot_id = s.id "
+                    "WHERE s.index_name = ? AND s.timestamp = ?",
+                    (index_name, last_ts))
+                n = 0
+                for r in cur.fetchall():
+                    self.daily_baselines[(index_name, r["strike"], r["option_type"])] = r["oi"]
+                    n += 1
+                if n:
+                    print(f"[SnapshotEngine] {index_name}: preloaded {n} OI baselines "
+                          f"from {last_ts[:10]} close (one query)")
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"[SnapshotEngine] {index_name}: baseline preload failed ({e}) — "
+                  f"per-contract fallback active")
+        # Bound the per-contract DB fallback: after 3s of misses, new
+        # contracts simply baseline to current OI (oi_change=0) instead of
+        # opening DB connections per contract.
+        self._baseline_db_budget_until = time.monotonic() + 3.0
+
     def _get_or_create_baseline_readonly(self, index_name, strike, option_type, current_oi):
         """Determine the baseline value WITHOUT a DB connection.
         Mirrors _get_or_create_baseline logic but returns the value only;
@@ -137,6 +185,11 @@ class SnapshotEngine:
         ck = (index_name, strike, option_type)
         if ck in self._baseline_cache:
             return self._baseline_cache[ck]
+        # budget guard: after preload + 3s grace, never open per-contract DB
+        # connections here (new intraday contracts baseline to current OI)
+        if time.monotonic() > getattr(self, '_baseline_db_budget_until', 0.0):
+            self._baseline_cache[ck] = current_oi
+            return current_oi
         try:
             from database import get_db_connection, get_yesterday_last_oi
             conn = get_db_connection()
@@ -190,6 +243,10 @@ class SnapshotEngine:
 
             futures = spot_poller.get_futures()
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # Trading date for the queued baseline writes — the SAME local date
+            # as the snapshot itself (one clock read; matches the established
+            # convention and the daily_oi_baseline key).
+            today_str = timestamp[:10]
 
             mult = self._resolve(contract_multiplier)
             expiry = self._resolve(expiry_datetime)
@@ -429,6 +486,7 @@ class SnapshotEngine:
         injected by main.py for alert evaluation; never imported here directly."""
 
         self.stop_snapshot_timer(index_name)
+        self._preload_baselines(index_name)   # one query; replaces per-contract DB scans
         stop_event = threading.Event()
         self._timer_events[index_name] = stop_event
 
@@ -482,10 +540,37 @@ class SnapshotEngine:
         self._instrument_open.pop(index_name, None)
 
     def stop(self):
+        """Stop all capture timers + the DB writer.
+
+        v3.3 fix for slow one-by-one shutdown: signal EVERY timer's stop
+        event first, then join against ONE shared deadline. The old loop
+        called stop_snapshot_timer() per instrument — a serial join with a
+        5s timeout each — so timers caught mid-capture under load made
+        shutdown burn up to 5s per instrument (~38 × 5s ≈ 190s worst case,
+        observed as 'snapshot timer stopped' lines appearing one by one).
+        In-flight captures run to completion on their own (they cannot be
+        safely interrupted); setting all events at once stops NEW captures
+        from starting and lets all threads exit CONCURRENTLY. Total wait is
+        bounded by the shared deadline, not by the instrument count."""
         self.running = False
+        # 1. Signal every timer at once — no new captures start after this.
+        for ev in list(self._timer_events.values()):
+            ev.set()
+        # 2. Drain registrations; join with a single shared deadline instead
+        #    of timeout=5 per thread. Threads past their deadline are daemon
+        #    threads and finish their current capture harmlessly (data_store
+        #    is lock-guarded; the DB queue put has its own timeout).
+        deadline = time.monotonic() + 10
         for name in list(self._timer_events.keys()):
-            self.stop_snapshot_timer(name)
-        for t in list(self._timer_threads.values()):
-            t.join(timeout=5)
+            self._timer_events.pop(name, None)
+            t = self._timer_threads.pop(name, None)
+            self._instrument_open.pop(name, None)
+            if t:
+                t.join(timeout=max(0.0, deadline - time.monotonic()))
+        for name in list(self._timer_threads.keys()):
+            t = self._timer_threads.pop(name, None)
+            if t:
+                t.join(timeout=max(0.0, deadline - time.monotonic()))
+        print("[SnapshotEngine] all snapshot timers stopped")
         self.writer_thread.join(timeout=5)
         self._analytics_executor.shutdown(wait=False)

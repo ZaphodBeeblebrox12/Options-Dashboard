@@ -82,6 +82,16 @@ def option_type(symbol: str) -> str:
     return "PE" if s.endswith("PE") else "CE"
 
 
+def _nearest_strike(spot, strikes):
+    """THE ATM definition, backend-wide: nearest listed strike to spot, ties
+    resolve to the LOWER strike. Returns None — never the raw spot — when
+    inputs are missing. Every payload `atm` and every frontend fallback must
+    match this exactly (single source of truth)."""
+    if spot is None or not strikes:
+        return None
+    return min(sorted(strikes), key=lambda s: abs(s - spot))
+
+
 def _half_width() -> int:
     try:
         return app_settings.get_window_half_width()
@@ -488,6 +498,7 @@ class InstrumentStreamer:
                     "options": [], "market_open": self._market_open(), "window_state": self.state,
                     "message": (f"Building Tier 4 feed for {self.symbol}..."
                                 if self._market_open() else None)}}
+        atm_strike = _nearest_strike(spot, sorted(data.keys())) if spot is not None else None
         analytics, feed_note = self._enrich_tier4(data, spot)
         enriched = []
         for strike in sorted(data.keys()):
@@ -516,6 +527,7 @@ class InstrumentStreamer:
             "market_open": self._market_open(),
             "contract_multiplier": self.contract_multiplier, "expiry": self.expiry_str,
             "instrument_kind": self.kind.lower(), "tier": 4, "greeks_source": "angel",
+            "atm": atm_strike,
             "window_state": self.state,
             "window_note": feed_note or f"Angel-fed Greeks (Tier 4) — ±{TIER4_HALF_WIDTH} window, no local calculation",
         }}
@@ -1280,6 +1292,7 @@ class InstrumentStreamer:
                     })
 
             diff, pct, label = self.spot_poller.get_premium_discount() or (None, None, None)
+            atm_strike = _nearest_strike(spot, sorted(data.keys()))
             # Commodities have no cash market: the front-month futures price IS the
             # underlying used for Greeks. Show it as SPOT and blank the FUTURES card
             # instead of displaying the same number twice.
@@ -1302,6 +1315,7 @@ class InstrumentStreamer:
                 "expiry": self.expiry_str,
                 "instrument_kind": self.kind.lower(),
                 "tier": self.tier,
+                "atm": atm_strike,
                 "window_state": self.state,
                 "spot_age_sec": _age,
                 "window_note": f"ATM±{_half_width()} strikes (window view)",

@@ -33,13 +33,14 @@ async function fetchHistory(key: string, url: string): Promise<any[]> {
 const RULE_META: Record<string, { short: string; tags: string[] }> = {
   atm_negative_gex_oi_wall: { short: "Rule 1", tags: ["Negative GEX", "OI Wall"] },
   atm_max_ce_pe_wall: { short: "Rule 2", tags: ["OI Wall"] },
+  wall_reversal: { short: "Wall Reversal", tags: ["Pattern"] },
 };
 const timeOf = (iso: string) => {
   const d = new Date(iso);
   return isNaN(d.getTime()) ? "" : d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true });
 };
 
-export default function MobileAlerts({ feed, selected, live }: { feed: AlertFiring[]; selected: string; live?: boolean }) {
+export default function MobileAlerts({ feed, selected, live, onNavigate }: { feed: AlertFiring[]; selected: string; live?: boolean; onNavigate?: (symbol: string) => void }) {
   const [today, setToday] = useState<any[]>([]);
   const [dates, setDates] = useState<{ date: string; count: number }[] | null>(null);
   const [histDate, setHistDate] = useState<string | null>(null);
@@ -98,7 +99,11 @@ export default function MobileAlerts({ feed, selected, live }: { feed: AlertFiri
           {a.instrument_tier === 4 && (
             <span className="mc-altc-tag" style={{ background: "rgba(139,92,246,.15)", color: "#a78bfa" }}>TIER 4</span>
           )}
-          <span className="mc-altc-inst">{a.index_name}</span>
+          {onNavigate ? (
+            <button className="mc-altc-inst num" style={{ cursor: "pointer" }} onClick={() => onNavigate(a.index_name)}>{a.index_name}</button>
+          ) : (
+            <span className="mc-altc-inst">{a.index_name}</span>
+          )}
           <span className="mc-altc-time num">{timeOf(a.timestamp)}</span>
         </div>
         <div className="mc-altc-name">{a.rule_name}</div>

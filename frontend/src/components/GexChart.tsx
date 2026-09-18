@@ -24,6 +24,13 @@ interface GexChartProps {
   atmStrike: number | null;
   maxPain: number | null;
   gammaFlip: number | null;
+  /** v3.10: max-CE-OI and max-PE-OI wall strikes (the "OI walls" used across
+   *  the app — same definition as OptionChain's #1 CE/PE rank and the alert
+   *  engine's max_ce_oi_strike / max_pe_oi_strike). Rendered as reference
+   *  lines with the same label treatment as ATM/MAX PAIN/GAMMA FLIP.
+   *  Optional: the chart is unchanged when they are omitted. */
+  ceWall?: number | null;
+  peWall?: number | null;
 }
 
 interface RefLineConfig {
@@ -31,6 +38,42 @@ interface RefLineConfig {
   strike: number;
   color: string;
   text: string;
+}
+
+// ── OI-wall computation helper (exported for App.tsx wiring) ──────────
+// Walls are max-OI strikes, NOT derivable from GEX values — the chart's
+// `data` prop carries only GEX. Callers compute them once from the live
+// options array and pass them down:
+//
+//   const { ceWall, peWall } = useMemo(() => computeOiWalls(options), [options]);
+//   <GexChart ... ceWall={ceWall} peWall={peWall} />
+//
+// Mirrors alert_engine._calculate_walls exactly (strict `>` keeps the FIRST
+// max on ties — deterministic, same wall the alerts report).
+export interface OiWallInput {
+  strike: number;
+  option_type: string;
+  oi?: number;
+}
+
+export function computeOiWalls(
+  options: OiWallInput[] | undefined | null,
+): { ceWall: number | null; peWall: number | null } {
+  let ceWall: number | null = null;
+  let peWall: number | null = null;
+  let ceOi = -1;
+  let peOi = -1;
+  for (const o of options ?? []) {
+    const oi = o.oi ?? 0;
+    if (o.option_type === 'CE' && oi > ceOi) {
+      ceOi = oi;
+      ceWall = o.strike;
+    } else if (o.option_type === 'PE' && oi > peOi) {
+      peOi = oi;
+      peWall = o.strike;
+    }
+  }
+  return { ceWall, peWall };
 }
 
 const CustomTooltip = ({ active, payload, label }: any) => {
@@ -74,20 +117,30 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   );
 };
 
+// CE Wall = max CE OI strike (resistance — sellers' wall above spot).
+// PE Wall = max PE OI strike (support — sellers' wall below spot).
+// Colors match the OptionChain rank-1 badges and WallChart wall lines.
+const CE_WALL_COLOR = '#f43f5e';
+const PE_WALL_COLOR = '#22c55e';
+
 function buildRefLineConfigs(
   atmStrike: number | null,
   maxPain: number | null,
-  gammaFlip: number | null
+  gammaFlip: number | null,
+  ceWall: number | null,
+  peWall: number | null,
 ): RefLineConfig[] {
   const raw = [
     { key: 'atm', strike: atmStrike, color: '#eab308', text: 'ATM' },
     { key: 'mp', strike: maxPain, color: '#d946ef', text: 'MAX PAIN' },
     { key: 'gf', strike: gammaFlip, color: '#06b6d4', text: 'GAMMA FLIP' },
+    { key: 'cewall', strike: ceWall ?? null, color: CE_WALL_COLOR, text: 'CE WALL' },
+    { key: 'pewall', strike: peWall ?? null, color: PE_WALL_COLOR, text: 'PE WALL' },
   ].filter((r): r is RefLineConfig => r.strike !== null);
   return raw;
 }
 
-const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, gammaFlip }) => {
+const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, gammaFlip, ceWall, peWall }) => {
   const chartWrapRef = useRef<HTMLDivElement>(null);
   const [chartWidth, setChartWidth] = useState(0);
   const widthRef = useRef(0);
@@ -165,7 +218,11 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
     let filtered = data.filter((d, idx) => {
       const hasMeaningfulGex = Math.abs(d.net_gex) >= threshold;
       const nearAtm = atmIdx >= 0 ? Math.abs(idx - atmIdx) <= 10 : true;
-      const isKeyStrike = d.strike === maxPain || d.strike === gammaFlip || d.strike === atmStrike;
+      // Walls are KEY STRIKES: the threshold filter and the mobile window
+      // must never drop them — a wall outside the plotted range would make
+      // its reference line vanish exactly when it matters most.
+      const isKeyStrike = d.strike === maxPain || d.strike === gammaFlip || d.strike === atmStrike
+        || d.strike === ceWall || d.strike === peWall;
       return hasMeaningfulGex || nearAtm || isKeyStrike;
     });
 
@@ -221,8 +278,8 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
       barSize = Math.min(32, Math.max(10, Math.floor(700 / filtered.length)));
     }
 
-    // 5. REF LINES
-    const refLineConfigs = buildRefLineConfigs(atmStrike, maxPain, gammaFlip);
+    // 5. REF LINES (ATM / MAX PAIN / GAMMA FLIP / CE WALL / PE WALL)
+    const refLineConfigs = buildRefLineConfigs(atmStrike, maxPain, gammaFlip, ceWall ?? null, peWall ?? null);
 
     return {
       hasData: true,
@@ -232,13 +289,20 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
       barSize,
       refLines: refLineConfigs,
     };
-  }, [data, atmStrike, maxPain, gammaFlip, chartWidth, isMobile]);
+  }, [data, atmStrike, maxPain, gammaFlip, ceWall, peWall, chartWidth, isMobile]);
 
   // ── Compute label pixel positions (desktop only logic) ──────────
   const plotLeft = isMobile ? 40 : 60;
   const plotRight = 15;
   const plotWidth = Math.max(chartWidth - plotLeft - plotRight, 1);
 
+  // v3.10.1: pills are stacked DOWNWARD from the chart's top edge. The
+  // previous fixed 38px margin could not hold the stagger once CE/PE walls
+  // joined ATM/MAX PAIN/GAMMA FLIP — pills sank into the plot and collided
+  // with bar value labels (seen in production: ATM pill sitting on the
+  // "+59.4K" label). Now the stagger depth is computed FIRST and the top
+  // margin band grows to contain every pill above the plot area, so pills
+  // and bar labels can never overlap, however many levels coincide.
   const labelPositions = useMemo(() => {
     if (!isMobile && chartWidth > 0 && memoized.chartData.length > 0) {
       const n = memoized.chartData.length;
@@ -249,8 +313,9 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
         return { ...cfg, x, idx };
       }).filter(Boolean) as Array<RefLineConfig & { x: number; idx: number }>;
 
+      // Pill width ≈ 44–62px at 10px bold mono — 62px gap before stacking.
       const STAGGER_PX = 14;
-      const MIN_GAP = 55;
+      const MIN_GAP = 62;
       const sorted = [...positions].sort((a, b) => a.x - b.x);
 
       return sorted.map((item, i) => {
@@ -287,7 +352,11 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
 
   // ── Desktop vs Mobile chart config ──────────────────────────────
   const chartHeight = isMobile ? 180 : 280;
-  const marginTop = isMobile ? 4 : 38;
+  // Adaptive top band: holds every staggered pill ABOVE the plot. The plot
+  // only gives up height when many levels genuinely coincide; with just
+  // ATM + MAX PAIN (the old common case) it stays at the original 38px.
+  const deepestPill = labelPositions.reduce((m, l) => Math.max(m, l.topOffset), 8);
+  const marginTop = isMobile ? 4 : Math.max(38, deepestPill + 22);
   const margin = { top: marginTop, right: 15, left: 5, bottom: 5 };
   const categoryGap = isMobile ? '25%' : '20%';
   const axisFontSize = isMobile ? 8 : 10;
@@ -308,6 +377,14 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
           <span className="flex items-center gap-1.5">
             <span className="w-3 h-3 rounded-sm bg-red-500/70" />
             <span className="text-terminal-muted">−GEX (Resistance)</span>
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: CE_WALL_COLOR, opacity: 0.7 }} />
+            <span className="text-terminal-muted">CE Wall</span>
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: PE_WALL_COLOR, opacity: 0.7 }} />
+            <span className="text-terminal-muted">PE Wall</span>
           </span>
           <span className="text-terminal-muted/60 ml-2 hidden sm:inline">
             {chartData.length} of {data.length} strikes
@@ -388,10 +465,18 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
             {gammaFlip && (
               <ReferenceLine x={gammaFlip} stroke="#06b6d4" strokeDasharray="5 5" strokeWidth={2} />
             )}
+            {ceWall != null && (
+              <ReferenceLine x={ceWall} stroke={CE_WALL_COLOR} strokeDasharray="5 5" strokeWidth={2} />
+            )}
+            {peWall != null && (
+              <ReferenceLine x={peWall} stroke={PE_WALL_COLOR} strokeDasharray="5 5" strokeWidth={2} />
+            )}
           </BarChart>
         </ResponsiveContainer>
 
-        {/* ── Desktop HTML overlays only ── */}
+        {/* ── Desktop HTML overlays only. Every pill lives INSIDE the top
+            margin band (marginTop adapts to the stagger depth), so a pill
+            can never reach the plot area or a bar value label. ── */}
         {showOverlays && chartWidth > 0 && labelPositions.map((cfg) => {
           const nearLeft = cfg.x < plotLeft + 30;
           const nearRight = cfg.x > chartWidth - plotRight - 30;
@@ -426,7 +511,7 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
         })}
       </div>
 
-      {/* ── Bottom legend: mobile only ── */}
+      {/* ── Bottom legend: mobile only (ATM / MAX PAIN / GAMMA FLIP / walls) ── */}
       {isMobile && refLines.length > 0 && (
         <div className="flex flex-wrap items-center justify-center gap-2 sm:gap-3 px-2 sm:px-3 py-1.5 sm:py-2 border-t border-terminal-border text-[9px] sm:text-[10px] font-mono">
           {refLines.map((cfg) => (

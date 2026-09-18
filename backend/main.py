@@ -1,4 +1,14 @@
-"""FastAPI backend for NIFTY/SENSEX + Tier-2 stocks Option Chain Replay Dashboard + Alert System v2.2."""
+"""FastAPI backend for NIFTY/SENSEX + Tier-2 stocks Option Chain Replay Dashboard + Alert System v2.2.
+
+v3.1 startup patch (see README.md in this package):
+- Phased startup: Tier-1 (NIFTY/SENSEX) snapshot timers + broadcasts start as
+  soon as the critical adapter path returns; stock initialization continues on
+  a background thread. Idempotent, lock-guarded timer registry + catch-up pass
+  closes the race between background seeding and hook wiring.
+- Startup banner now reads the settings DB instrument list (the old banner
+  showed the stale .env TIER2_STOCKS value).
+- New GET /api/readiness — per-instrument lifecycle observability.
+"""
 import os
 
 # ── Load .env BEFORE any project imports ─────────────────────
@@ -17,8 +27,9 @@ else:
 import asyncio
 import json
 import logging
+import threading
 import time
-from datetime import datetime, date, time as dt_time
+from datetime import datetime, date, timedelta, time as dt_time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, UploadFile, File, Form
@@ -87,8 +98,20 @@ def log_startup_status():
             print("  Reason: Outside trading hours (09:15-15:30 IST)")
     print(f"  SmartApi: {'✓ INSTALLED' if ANGEL_ONE_AVAILABLE else '✗ NOT INSTALLED'}")
     print(f"  Tier 1: {', '.join(TIER1_INDICES)}")
-    _stocks = getattr(streamer_adapter, "configured_stocks", None) or TIER2_STOCKS
-    print(f"  Tier 2 stocks: {', '.join(_stocks) if _stocks else '(none configured — set TIER2_STOCKS in .env)'}")
+    # v3.1 FIX: the old banner read streamer_adapter.configured_stocks (still
+    # the env-parsed value at this point) and labelled it "Tier 2 stocks",
+    # which contradicted the settings DB. The authoritative instrument list
+    # and its per-instrument tiers come from app_settings.
+    _all = app_settings.get_stocks()
+    _tiers = app_settings.get_all().get("instrument_tiers", {})
+    print(f"  Configured instruments ({len(_all)}): "
+          f"{', '.join(_all) if _all else '(none — add via Settings > Instruments)'}")
+    if _tiers:
+        _by_tier: dict = {}
+        for _s in _all:
+            _by_tier.setdefault(_tiers.get(_s, 3), []).append(_s)
+        for _t in sorted(_by_tier):
+            print(f"    tier {_t}: {len(_by_tier[_t])} instrument(s)")
     print("=" * 60)
 
 
@@ -96,7 +119,16 @@ def log_startup_status():
 async def lifespan(app: FastAPI):
     global _main_loop
     _main_loop = asyncio.get_running_loop()
-    init_db()
+    init_db()   # tables/schema only — never builds indexes (v3.11)
+    # Startup-safe perf-index bookkeeping: existence check only (microseconds).
+    # A MISSING index never blocks startup; run backend/build_perf_index.py
+    # before market hours to build it once. The endpoint is correct either way.
+    try:
+        from database import perf_index_exists
+        _pi = "present" if perf_index_exists() else "MISSING — run build_perf_index.py before market hours (endpoint remains correct, just slower)"
+        print(f"[DB] perf index idx_option_snapshots_strike_snap: {_pi}")
+    except Exception as _e:
+        print(f"[DB] perf index check skipped: {_e}")
     init_alert_db()
     app_settings.init_settings()
     set_risk_free_rate(app_settings.get_risk_free_rate())
@@ -107,10 +139,23 @@ async def lifespan(app: FastAPI):
         # InstrumentStreamer uses .symbol; AngelOneIndexStreamer uses .index_name
         return getattr(s, "symbol", None) or getattr(s, "index_name", "UNKNOWN")
 
+    # v3.1: idempotent, thread-safe timer registry. _start_timer may be called
+    # from (a) the lifespan catch-up pass, (b) the adapter's on_stock_added
+    # hook (fires on the background init thread), and (c) on_tier_changed.
+    # The lock + set guarantee exactly-once timer startup regardless of which
+    # thread wins the race between background seeding and hook wiring.
+    _timers_started: set = set()
+    _timers_lock = threading.Lock()
+
     def _start_timer(s):
-        """Tier 1/2 get 30s analytics snapshots; Tier 3 scanners skip the
-        snapshot pipeline entirely (their own lightweight loop + triggers)."""
+        """Tier 1/2(/4) get 30s analytics snapshots; Tier 3 scanners skip the
+        snapshot pipeline entirely (their own lightweight loop + triggers).
+        Idempotent per instrument — safe to call from any thread."""
         name = _streamer_name(s)
+        with _timers_lock:
+            if name in _timers_started:
+                return
+            _timers_started.add(name)
         if getattr(s, "tier", 2) == 3:
             print(f"[Startup] {name}: Tier 3 scanner — no snapshot timer")
             return
@@ -188,6 +233,13 @@ async def lifespan(app: FastAPI):
                         asyncio.to_thread(send_telegram_alert,
                                           tg.get("bot_token", ""), tg.get("chat_id", ""), meta),
                         _main_loop)
+                else:
+                    # Silent-failure guard: the channel was requested but every
+                    # destination is disabled/unconfigured.
+                    logging.warning(
+                        "[Scanner] telegram channel requested but destination disabled "
+                        "or unconfigured (symbol=%s tier=%s)",
+                        meta.get("index_name"), meta.get("instrument_tier"))
             except Exception as e:
                 logging.error(f"[Scanner] telegram dispatch: {e}")
 
@@ -195,6 +247,7 @@ async def lifespan(app: FastAPI):
         asyncio.run_coroutine_threadsafe(
             alert_broadcast_queue.put(meta), _main_loop)
 
+    # ── CRITICAL PHASE: Tier 1 only (returns in seconds, not minutes) ──
     try:
         streamer_adapter.start()
         wall_scanner.on_alert = _dispatch_scanner_alert
@@ -214,15 +267,19 @@ async def lifespan(app: FastAPI):
         def _on_stock_added(s):
             _start_timer(s)
             try:
-                _register_scanner_streamer(getattr(s, "symbol", None) or getattr(s, "index_name", "?"), s)
+                _register_scanner_streamer(_streamer_name(s), s)
             except Exception as e:
                 print(f"[Startup] Scanner registration failed: {e}")
 
         def _on_stock_removed(symbol):
+            with _timers_lock:
+                _timers_started.discard(symbol)
             snapshot_engine.stop_snapshot_timer(symbol)
 
         def _on_tier_changed(s):
             if getattr(s, "tier", 2) == 3:
+                with _timers_lock:
+                    _timers_started.discard(_streamer_name(s))
                 snapshot_engine.stop_snapshot_timer(_streamer_name(s))
             else:
                 _start_timer(s)
@@ -231,6 +288,19 @@ async def lifespan(app: FastAPI):
         streamer_adapter.on_stock_removed = _on_stock_removed
         streamer_adapter.on_scanner_alerts = lambda fired: _dispatch_fired_alerts(fired)
         streamer_adapter.on_tier_changed = _on_tier_changed
+
+        # RACE CLOSURE (verified): the adapter's background thread may have
+        # seeded some or all stocks BEFORE the hooks above were assigned, and
+        # seeded stocks do not fire on_stock_added. Run the same idempotent
+        # path over whatever exists — _timers_started makes this exactly-once
+        # no matter which side won the race.
+        with streamer_adapter._stocks_lock:
+            _seeded = list(streamer_adapter.stock_streamers.values())
+        for s in _seeded:
+            _on_stock_added(s)
+        # Fix 2: release the adapter's background thread so it can reconcile
+        # any stock seeded after the catch-up snapshot above (bounded wait).
+        streamer_adapter._hooks_ready.set()
     except Exception as e:
         print(f"[Startup] Streamer error: {e}")
 
@@ -391,7 +461,11 @@ async def broadcast_loop():
                 continue
             if manager.active_connections:
                 now = time.time()
-                for index_name in list(streamer_adapter.streamers.keys()):
+                # Snapshot the key view once — the background init thread may
+                # mutate adapter.streamers concurrently.
+                with streamer_adapter._stocks_lock:
+                    names = list(streamer_adapter.streamers.keys())
+                for index_name in names:
                     streamer = streamer_adapter.streamers.get(index_name)
                     if not streamer:
                         continue
@@ -458,7 +532,8 @@ async def get_current_state(index: str = Query(default="NIFTY", description="Ins
 async def get_instruments():
     """Searchable dropdown source: fixed Tier-1 indices + all configured
     instruments (any kind, any tier)."""
-    configured = getattr(streamer_adapter, "configured_stocks", None) or TIER2_STOCKS
+    with streamer_adapter._stocks_lock:
+        configured = list(streamer_adapter.configured_stocks or TIER2_STOCKS)
     stocks_running = [s for s in configured if s in streamer_adapter.streamers]
     instruments = [{
         "name": s,
@@ -471,6 +546,38 @@ async def get_instruments():
         "instruments": instruments,
         "stocks_running": stocks_running,
         "ws": streamer_adapter.manager.stats() if streamer_adapter.manager else None,
+    }
+
+
+@app.get("/api/readiness")
+async def api_readiness():
+    """Per-instrument lifecycle observability (v3.1).
+
+    Answers 'when did each instrument become usable': active_at (subscription
+    registered), msg_count (ticks flowing), last_snapshot_at (first/last
+    snapshot captured), plus WS slot stats. Read-only, cheap, no locks held
+    across awaits (dict snapshot taken under the adapter lock)."""
+    with streamer_adapter._stocks_lock:
+        names = list(streamer_adapter.streamers.keys())
+    instruments: dict = {}
+    for name in names:
+        s = streamer_adapter.streamers.get(name)
+        if not s:
+            continue
+        try:
+            instruments[name] = {
+                **streamer_adapter.readiness.get(name, {}),
+                "msg_count": getattr(s.data_store, "msg_count", 0),
+                "last_snapshot_at": snapshot_engine.latest_timestamps.get(name),
+                "tier": getattr(s, "tier", 1),
+            }
+        except Exception:
+            pass
+    return {
+        "market_open": is_market_open(),
+        "mode": streamer_adapter.mode,
+        "ws": streamer_adapter.manager.stats() if streamer_adapter.manager else None,
+        "instruments": instruments,
     }
 
 
@@ -632,7 +739,9 @@ async def app_health():
     # Underlying feed staleness (worst across all streamers) — catches a
     # stalled index/underlying token while option ticks keep flowing.
     ages = []
-    for name, s in streamer_adapter.streamers.items():
+    with streamer_adapter._stocks_lock:
+        streamer_items = list(streamer_adapter.streamers.items())
+    for name, s in streamer_items:
         try:
             a = s.spot_poller.spot_age_sec()
             if a is not None:
@@ -649,17 +758,21 @@ async def app_health():
     g_broadcast = grade(perf["broadcast_tier2"]["p95_ms"], 1000, 3000)
     g_queue = "ok" if queue_depth == 0 else ("warning" if queue_depth <= 3 else "degraded")
 
-    # Freshness: newest Tier-2 snapshot vs the configured interval (market hours only)
-    last_t2 = max(
+    # Freshness: newest snapshot among instruments that actually produce
+    # snapshots (Tier 3 scanners skip the snapshot pipeline). The old filter
+    # matched tier==2 only, so a fleet of Tier-4 instruments — or even just
+    # the Tier-1 indices with no Tier-2 stocks — reported a false "Degraded".
+    SNAPSHOT_TIERS = (1, 2, 4)
+    last_snap = max(
         (ts for name, ts in perf["last"]["snapshot"].items()
-         if app_settings.get_instrument_tier(name) == 2),
+         if app_settings.get_instrument_tier(name) in SNAPSHOT_TIERS),
         default=None,
     )
-    age = (time.time() - last_t2) if last_t2 else None
+    age = (time.time() - last_snap) if last_snap else None
     if not market_open:
         g_fresh = "idle"
     elif age is None:
-        g_fresh = "idle" if stocks_tracked == 0 else "degraded"
+        g_fresh = "idle"   # no snapshot-producing instruments configured — not an error
     else:
         g_fresh = "ok" if age <= 2 * interval else ("warning" if age <= 4 * interval else "degraded")
 
@@ -686,7 +799,10 @@ async def app_health():
         "queue_depth": queue_depth,
         "snapshot_interval": interval,
         "market_open": market_open,
-        "last_tier2_snapshot_at": last_t2,
+        "last_snapshot_at": last_snap,
+        "last_snapshot_age_sec": round(age) if age is not None else None,
+        # legacy aliases — the existing ConnectionsTab reads these names
+        "last_tier2_snapshot_at": last_snap,
         "last_tier2_snapshot_age_sec": round(age) if age is not None else None,
         **perf,
     }
@@ -734,26 +850,93 @@ async def get_snapshot_by_timestamp(
         return snapshot
 
 
+# ── v3.11 PERF: strike-history hot cache ──────────────────────────────
+# During market hours the desktop StrikeChart and mobile strike sheet poll
+# GET /api/history/{strike} every 30s for the SELECTED strike. A 5s TTL
+# collapses those repeats (and re-clicks on the same strike) without ever
+# serving data older than one poll tick. Keyed by (index, strike, date);
+# bounded; cleared wholesale past 500 entries (strike picks churn fast).
+_STRIKE_HISTORY_CACHE: dict = {}
+_STRIKE_HISTORY_CACHE_TTL = 5.0
+
+
 @app.get("/api/history/{strike}")
 async def get_strike_history(
     strike: int,
     date_str: str = Query(default=None, alias="date"),
     index: str = Query(default="NIFTY", description="Instrument name")
 ):
+    """Per-strike intraday timeseries (OI / LTP / Gamma charts).
+
+    v3.11 PERF REWRITE — the previous plan drove the join from snapshot_id
+    and therefore index-scanned EVERY option row of EVERY snapshot for the
+    day (~380 snapshots x 300-800 rows = 150k-300k rows) to keep 2 rows per
+    snapshot. During market hours that fought the per-instrument snapshot
+    writers (commits every 30s x 38 instruments) and, because the handler is
+    async, the whole FastAPI event loop stalled with it — which is why the
+    charts crawled at 10:00 and were merely slow at 18:00.
+
+    Replacement (two-step, index-driven):
+      1) snapshot ids for (index, day) via idx_snapshots_index — ~380 rows.
+      2) ONE lookup: strike = ? AND snapshot_id IN (ids) against the new
+         composite idx_option_snapshots_strike_snap (strike, snapshot_id) —
+         one B-tree seek per snapshot -> ~2 rows per snapshot (~760 total),
+         regardless of how large the DB or the day has grown.
+    Also moved to asyncio.to_thread so a slow read can never block the loop.
+    Ordering: snapshot ids are AUTOINCREMENT and inserted in timestamp
+    order, so ORDER BY snapshot_id == ORDER BY timestamp for one instrument.
+    """
     if not date_str:
         date_str = date.today().isoformat()
 
-    with get_db() as conn:
-        rows = conn.execute("""
-            SELECT s.timestamp, o.option_type, o.oi, o.oi_change, o.oi_change_pct, o.volume,
-                   o.ltp, o.iv, o.delta, o.gamma, o.theta, o.vega, o.gex
-            FROM snapshots s
-            JOIN option_snapshots o ON s.id = o.snapshot_id
-            WHERE date(s.timestamp) = ? AND o.strike = ? AND s.index_name = ?
-            ORDER BY s.timestamp, o.option_type
-        """, (date_str, strike, index)).fetchall()
+    cache_key = (index, strike, date_str)
+    now_mono = time.monotonic()
+    hit = _STRIKE_HISTORY_CACHE.get(cache_key)
+    if hit is not None and now_mono - hit[0] < _STRIKE_HISTORY_CACHE_TTL:
+        return {"strike": strike, "index_name": index, "timeseries": hit[1]}
 
-    timeseries = [dict(row) for row in rows]
+    def _query():
+        with get_db() as conn:
+            next_day = (datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+            # Step 1: the day's snapshot ids for this instrument.
+            snap_rows = conn.execute(
+                "SELECT id, timestamp FROM snapshots "
+                "WHERE index_name = ? AND timestamp >= ? AND timestamp < ? "
+                "ORDER BY id",
+                (index, f"{date_str} 00:00:00", f"{next_day} 00:00:00"),
+            ).fetchall()
+            if not snap_rows:
+                return []
+            ids = [r["id"] for r in snap_rows]
+            ts_by_id = {r["id"]: r["timestamp"] for r in snap_rows}
+            # Step 2: only this strike's rows, one index seek per snapshot.
+            marks = ",".join("?" * len(ids))
+            rows = conn.execute(
+                f"SELECT o.snapshot_id, o.option_type, o.oi, o.oi_change, "
+                f"o.oi_change_pct, o.volume, o.ltp, o.iv, o.delta, o.gamma, "
+                f"o.theta, o.vega, o.gex "
+                f"FROM option_snapshots o "
+                f"WHERE o.strike = ? AND o.snapshot_id IN ({marks}) "
+                f"ORDER BY o.snapshot_id, o.option_type",
+                (strike, *ids),
+            ).fetchall()
+            return [
+                {
+                    "timestamp": ts_by_id[r["snapshot_id"]],
+                    "option_type": r["option_type"],
+                    "oi": r["oi"], "oi_change": r["oi_change"],
+                    "oi_change_pct": r["oi_change_pct"], "volume": r["volume"],
+                    "ltp": r["ltp"], "iv": r["iv"], "delta": r["delta"],
+                    "gamma": r["gamma"], "theta": r["theta"], "vega": r["vega"],
+                    "gex": r["gex"],
+                }
+                for r in rows
+            ]
+
+    timeseries = await asyncio.to_thread(_query)
+    if len(_STRIKE_HISTORY_CACHE) >= 500:
+        _STRIKE_HISTORY_CACHE.clear()
+    _STRIKE_HISTORY_CACHE[cache_key] = (now_mono, timeseries)
     return {"strike": strike, "index_name": index, "timeseries": timeseries}
 
 
@@ -1198,16 +1381,19 @@ async def websocket_endpoint(websocket: WebSocket):
         logging.info(f"[WS] {peer} vanished before accept completed — closing quietly")
         return
     try:
-        for index_name in list(streamer_adapter.streamers.keys()):
-            if index_name in streamer_adapter.streamers:
-                state = await asyncio.to_thread(
-                    streamer_adapter.get_current_state,
-                    index_name
-                )
-                if not await manager.send_personal_message(state, websocket):
-                    # Socket died during the initial push — stop building
-                    # state for it; the receive loop below would only blow up.
-                    break
+        with streamer_adapter._stocks_lock:
+            _names = list(streamer_adapter.streamers.keys())
+        for index_name in _names:
+            streamer = streamer_adapter.streamers.get(index_name)
+            if not streamer:
+                continue
+            state = await asyncio.to_thread(
+                streamer.get_current_state
+            )
+            if not await manager.send_personal_message(state, websocket):
+                # Socket died during the initial push — stop building
+                # state for it; the receive loop below would only blow up.
+                break
 
         while True:
             try:

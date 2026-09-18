@@ -266,6 +266,12 @@ class AngelGreeksFeedManager:
 
     # ── registry: THE source of truth for N ──
     def register(self, symbol: str, expiry_provider: Callable, market_hours=None) -> bool:
+        """Track a tier-4 symbol for the optionGreek cycle. Registration is
+        bookkeeping only — with tier4_greeks_enabled=OFF zero Angel requests
+        are made. v3.3: log the registration ONLY when polling is enabled, so
+        an OFF feed stays silent at startup (the health panel's N counter
+        still reports the tracked count). Also fixes a latent NameError when
+        the same symbol registered twice (n was only set on first add)."""
         sym = symbol.strip().upper()
         with self._lock:
             if sym not in self._entries:
@@ -274,8 +280,9 @@ class AngelGreeksFeedManager:
                                  "(registration runaway? this is NOT a tuning knob)", sym, CIRCUIT_BREAKER)
                     return False
                 self._entries[sym] = _Entry(sym, expiry_provider, market_hours)
-                n = len(self._entries)
-        logger.info("[GreeksFeed] %s registered (N=%d, F=%.0fs)", sym, n, self.refresh_interval())
+            n = len(self._entries)
+        if app_settings.get_tier4_greeks_enabled():
+            logger.info("[GreeksFeed] %s registered (N=%d, F=%.0fs)", sym, n, self.refresh_interval())
         return True
 
     def unregister(self, symbol: str):

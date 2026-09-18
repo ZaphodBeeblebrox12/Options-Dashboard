@@ -71,7 +71,7 @@ export default function MobileInstrumentsTab() {
     </div>
   );
 
-  const groups: [number, string][] = [[1, "Tier 1"], [2, "Tier 2"], [3, "Tier 3"]];
+  const groups: [number, string][] = [[1, "Tier 1"], [2, "Tier 2"], [3, "Tier 3"], [4, "Tier 4"]];
 
   return (
     <div className="mc-ins2">

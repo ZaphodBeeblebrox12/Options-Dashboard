@@ -3,8 +3,9 @@ import React, { useMemo, useState } from "react";
 /** Mobile instrument picker — bottom sheet with a current-instrument hero,
  *  sticky search, kind-grouped sections (handles long lists), and an
  *  unmissable selected state. Rendered in a portal by the parent. */
-export default function MobileInstrumentSheet({ list, selected, onPick, analyticalOnly }: {
+export default function MobileInstrumentSheet({ list, selected, onPick, onClose, analyticalOnly }: {
   list: any[]; selected: string; onPick: (name: string) => void;
+  onClose: () => void;
   analyticalOnly?: boolean;
 }) {
   const [q, setQ] = useState("");
@@ -28,7 +29,7 @@ export default function MobileInstrumentSheet({ list, selected, onPick, analytic
       <div className="mc-grab" />
       <div className="mc-sheet-hd">
         <span style={{ fontSize: 16, fontWeight: 700 }}>{analyticalOnly ? "Watch instruments" : "Instruments"}</span>
-        <button className="mc-sheet-x" onClick={() => onPick(selected)}>Close</button>
+        <button className="mc-sheet-x" onClick={onClose}>Close</button>
       </div>
       {current && (
         <div className="mc-curhero">
@@ -36,7 +37,7 @@ export default function MobileInstrumentSheet({ list, selected, onPick, analytic
             <div className="mc-curhero-nm num">{current.name}</div>
             <div className="mc-curhero-meta" style={{ textTransform: "capitalize" }}>{current.kind} · tier {current.tier}</div>
           </div>
-          <span className="mc-badge t{current.tier}">t{current.tier}</span>
+          <span className={`mc-badge t${current.tier}`}>t{current.tier}</span>
           <span className="mc-curhero-tag">current</span>
         </div>
       )}

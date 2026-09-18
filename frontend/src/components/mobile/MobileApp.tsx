@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AlertToastContainer } from "../AlertToast";
-import { WallChart } from "../WallChart";
 import type { AlertFiring } from "../../hooks/useAlerts";
 import { fetchInstruments } from "../../instrumentsCache";
 import MobileChain from "./MobileChain";
@@ -12,8 +11,10 @@ import MobileInstrumentSheet from "./MobileInstrumentSheet";
 import MobileCalendar from "./MobileCalendar";
 import MobileSettings from "./MobileSettings";
 import MobileLevelsRail from "./MobileLevelsRail";
+import MobileWalls from "./MobileWalls";
 import MobileStrikeSheet from "./MobileStrikeSheet";
 import { fmtExpiry, fmtPx, fmtGex, fmtNum } from "./mobileFormat";
+import { nearestStrike } from "../../strikeUtils";
 import "./mobile.css";
 
 const LS_KEY = "chainlens.mobile.selected";
@@ -192,7 +193,7 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
 
   useEffect(() => { if (isScanner && tab === "watch") setTab("scan"); }, [isScanner, tab]);
 
-  const watchList = useMemo(() => instList.filter(i => (i.tier ?? 3) < 3), [instList]);
+  const watchList = useMemo(() => instList.filter(i => (i.tier ?? 3) !== 3), [instList]);
   const scanners = useMemo(() => {
     const names = new Map<string, any>();
     instList.filter(i => (i.tier ?? 3) === 3).forEach(i => names.set(i.name, i));
@@ -240,10 +241,13 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
     if (s == null) { setRecenterTick(t => t + 1); return; } // spot marker → ATM
     setFocusStrike(s); setFocusTickN(t => t + 1);
   };
+  // Single source of truth: backend payload `atm`; shared fallback util only
+  // when the payload lacks it (replay snapshots).
   const atmStrike = useMemo(() => {
+    if (viewData?.atm != null) return viewData.atm;
     const strikes: number[] = (viewData?.options ?? []).map((o: any) => o.strike);
     if (!strikes.length || viewData?.spot == null) return null;
-    return strikes.reduce((b, x) => Math.abs(x - viewData.spot) < Math.abs(b - viewData.spot) ? x : b, strikes[0]);
+    return nearestStrike(viewData.spot, strikes);
   }, [viewData]);
 
   const pick = (name: string) => {
@@ -320,7 +324,7 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
             </div>
           )}
         </>
-      ) : (
+      ) : tab === "walls" ? null : (
         <div className="mc-subhd">
           <span className="mc-subtitle">{SUBTITLES[tab]}</span>
           {tab !== "scan" && tab !== "more" && (
@@ -343,14 +347,19 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
         )}
         {tab === "map" && <MobileMap data={replay ? viewData : data} isScanner={isScanner} />}
         {tab === "walls" && (viewData ? (
-          <WallChart symbol={selected} tier={(viewData as any)?.tier ?? 1}
-                     atm={(viewData as any)?.spot != null ? Math.round((viewData as any).spot) : null}
+          <MobileWalls symbol={selected} spot={(viewData as any)?.spot ?? null}
+                     asof={(viewData as any)?.timestamp ? String((viewData as any).timestamp).slice(11, 16) : null}
+                     live={connected} marketOpen={(viewData as any)?.market_open ?? null}
+                     sessionRange={kind === "commodity" ? "09:00–23:30 IST" : "09:15–15:30 IST"}
+                     tier={(viewData as any)?.tier ?? 1}
+                     atm={atmStrike}
                      ceWall={(viewData as any)?.ce_wall ?? null}
                      peWall={(viewData as any)?.pe_wall ?? null}
                      negGex={(viewData as any)?.max_negative_gex_strike ?? (viewData as any)?.max_gex_strike ?? null}
-                     replayDate={replay?.date ?? null} />
+                     replayDate={replay?.date ?? null}
+                     onSymbolTap={() => setSheet("inst")} />
         ) : <div className="mc-card"><h4>No data yet</h4></div>)}
-        {tab === "alerts" && <MobileAlerts feed={alertFeed} selected={selected} live={connected} />}
+        {tab === "alerts" && <MobileAlerts feed={alertFeed} selected={selected} live={connected} onNavigate={pick} />}
         {tab === "more" && <MobileSettings />}
       </ErrorBoundary></main>
 
@@ -383,7 +392,7 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
       {createPortal(<div className="mc-portal">
         {sheet && <div className="mc-shade on" onClick={() => setSheet(null)} />}
         {sheet === "inst" && (
-          <MobileInstrumentSheet list={tab === "watch" ? watchList : instList} selected={selected} onPick={pick} analyticalOnly={tab === "watch"} />
+          <MobileInstrumentSheet list={tab === "watch" ? watchList : instList} selected={selected} onPick={pick} analyticalOnly={tab === "watch"} onClose={() => setSheet(null)} />
         )}
         {sheet === "strike" && strikePick && (
           <MobileStrikeSheet pick={strikePick} label={selected} expiry={viewData?.expiry} lot={viewData?.contract_multiplier}

@@ -198,6 +198,118 @@ def fetch_scrip_master(max_retries: int = 3, timeout: int = 180, chunk_size: int
     )
 
 
+
+# ── Safe disk cache: temp-file + validate + promote (never clobber good cache) ──
+def _cache_age_hours() -> float:
+    if not os.path.exists(CACHE_FILE):
+        return float("inf")
+    return (time.time() - os.path.getmtime(CACHE_FILE)) / 3600.0
+
+
+def _validate_master_records(data) -> bool:
+    """Structural sanity: a usable master is a non-empty list of dicts with
+    the Angel fields every query relies on."""
+    if not isinstance(data, list) or len(data) < 50_000:
+        return False
+    for item in data[:500]:
+        if not (isinstance(item, dict) and "token" in item
+                and "symbol" in item and "name" in item and "exch_seg" in item):
+            return False
+    return True
+
+
+def _write_cache_safely(data) -> None:
+    """Write to a temp file, fsync, then atomic rename onto the cache.
+    Readers of the old cache are never exposed to a torn file."""
+    tmp = CACHE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, CACHE_FILE)
+
+
+def _read_cached_master() -> Optional[pd.DataFrame]:
+    if not os.path.exists(CACHE_FILE):
+        return None
+    try:
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return pd.DataFrame(data)
+    except Exception as e:
+        print(f"[ScripMaster] Cache read failed: {e}")
+        return None
+
+
+def _download_master_records(max_retries: int = 3, timeout: int = 180,
+                             chunk_size: int = 65536) -> Optional[list]:
+    """Download and FULLY parse the master. Returns records or None.
+    Never returns partial data; never touches the cache file."""
+    all_chunks: List[bytes] = []
+    for attempt in range(1, max_retries + 1):
+        try:
+            print(f"[ScripMaster] Fetching scrip master (attempt {attempt}/{max_retries}, timeout={timeout}s)...")
+            session = requests.Session()
+            session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "application/json",
+            })
+            response = session.get(SCRIP_MASTER_URL, timeout=timeout, stream=True)
+            response.raise_for_status()
+            total_bytes = 0
+            for chunk in response.iter_content(chunk_size=chunk_size):
+                if chunk:
+                    all_chunks.append(chunk)
+                    total_bytes += len(chunk)
+            raw = b"".join(all_chunks)
+            data = json.loads(raw.decode("utf-8"))
+            if not _validate_master_records(data):
+                print(f"[ScripMaster] Downloaded master failed structural validation "
+                      f"({type(data).__name__}, {len(data) if isinstance(data, list) else 'n/a'} records) — keeping existing cache")
+                return None
+            print(f"[ScripMaster] Downloaded {total_bytes:,} bytes, {len(data):,} instruments")
+            return data
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            print(f"[ScripMaster] Attempt {attempt}: connection issue - {e}")
+        except Exception as e:
+            print(f"[ScripMaster] Attempt {attempt}: download/parse failed - {e}")
+        if attempt < max_retries:
+            wait_time = min(2 ** attempt, 30)
+            print(f"[ScripMaster] Waiting {wait_time}s before retry...")
+            time.sleep(wait_time)
+    print("[ScripMaster] All retry attempts exhausted — keeping existing cache")
+    return None
+
+
+def fetch_scrip_master(max_retries: int = 3, timeout: int = 180,
+                       chunk_size: int = 65536) -> pd.DataFrame:
+    """BLOCKING cold-path helper: fresh cached frame if < threshold, else a
+    blocking download (temp-file + validate + promote). Kept for backward
+    compatibility with any external caller; the class load() now prefers the
+    validated stale-while-refresh path."""
+    age = _cache_age_hours()
+    if age < CACHE_MAX_AGE_HOURS:
+        df = _read_cached_master()
+        if df is not None:
+            print(f"[ScripMaster] Loaded {len(df):,} instruments from cache ({age:.1f}h old)")
+            return df
+    data = _download_master_records(max_retries=max_retries, timeout=timeout, chunk_size=chunk_size)
+    if data is not None:
+        try:
+            _write_cache_safely(data)
+            print(f"[ScripMaster] Cached {len(data):,} instruments")
+        except Exception as e:
+            print(f"[ScripMaster] Could not write cache: {e}")
+        return pd.DataFrame(data)
+    # download failed → fall back to whatever cache exists
+    df = _read_cached_master()
+    if df is not None:
+        print(f"[ScripMaster] Using existing cache ({_cache_age_hours():.1f}h old) after failed refresh")
+        return df
+    raise ConnectionError(
+        f"[ScripMaster] Failed to fetch scrip master. No usable cache at {CACHE_FILE}."
+    )
+
 class ScripMasterManager:
     def __init__(self):
         self.df: Optional[pd.DataFrame] = None
@@ -208,22 +320,140 @@ class ScripMasterManager:
         index_upper = index_name.strip().upper()
         return INDEX_EXCHANGES.get(index_upper, {"index": "NSE", "futures": "NFO", "options": "NFO"})
 
-    def load(self, force: bool = False) -> pd.DataFrame:
-        """Idempotent, thread-safe load: parse once, serve from memory after.
+    def _expiry_str_to_date(self, expiry: str):
+        """'20SEP2026'/'20Sep2026' -> date. Returns None on parse failure."""
+        try:
+            return datetime.strptime(str(expiry).strip(), "%d%b%Y").date()
+        except Exception:
+            return None
 
-        Internal accessors call load() only when df is None; the streamer
-        warm-up thread (started before Angel One auth) may race them — the
-        double-checked lock guarantees a single parse regardless. The 12h
-        disk-cache policy inside fetch_scrip_master is unchanged.
-        """
+    def validate_for_today(self, indices=("NIFTY", "SENSEX")) -> bool:
+        """CONTENT gate — is the loaded master usable for TODAY's Tier-1?
+
+        Checks per index: a weekly expiry that is not in the past, a non-empty
+        option chain for it, the index token, and a futures contract. Pure
+        in-memory pandas; no network, no delays. This is what prevents the
+        silent 'expired chain, zero ticks, healthy-looking logs' failure: a
+        cached master whose expiries have all rolled over is INVALID here and
+        forces a blocking refresh."""
+        if self.df is None:
+            return False
+        for name in indices:
+            exp = self.get_nearest_weekly_expiry(name)
+            if not exp:
+                return False
+            exp_dt = self._expiry_str_to_date(exp)
+            if exp_dt is None or exp_dt < datetime.now().date():
+                return False                       # expired chain → invalid for today
+            if self.get_index_options(name, exp) is None or len(self.get_index_options(name, exp)) == 0:
+                return False
+            info = self.get_index_info(name)
+            if not info or not info.get("token"):
+                return False
+            if self.get_futures_info(name) is None:
+                return False
+        return True
+
+    def _refresh_and_swap(self) -> None:
+        """BACKGROUND refresh: download fresh master, validate, atomically swap
+        both in-memory (single assignment under _load_lock — readers always see
+        a complete old or new frame) and on disk (temp file + os.replace, so a
+        failed refresh never destroys the known-good cache)."""
+        try:
+            data = _download_master_records()
+            if data is None:
+                return                              # keep old master + old cache
+            new_df = pd.DataFrame(data)
+            if not self._validate_df_for_today(new_df):
+                print("[ScripMaster] Fresh master failed today-validation — keeping current master")
+                return
+            with self._load_lock:
+                self.df = new_df                   # atomic swap; never in-place mutation
+            self._last_fetch = datetime.now()
+            try:
+                _write_cache_safely(data)
+                print(f"[ScripMaster] Background refresh complete: {len(data):,} instruments swapped in + cached")
+            except Exception as e:
+                print(f"[ScripMaster] In-memory swap done; could not update disk cache: {e}")
+            try:
+                from streamer_integration import streamer_adapter
+                streamer_adapter.rebuild_all_windows()   # adopt new metadata
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[ScripMaster] Background refresh failed, keeping current master: {e}")
+
+    def _validate_df_for_today(self, df: pd.DataFrame) -> bool:
+        saved = self.df
+        try:
+            self.df = df
+            return self.validate_for_today()
+        finally:
+            self.df = saved
+
+    def load(self, force: bool = False) -> pd.DataFrame:
+        """Validated stale-while-refresh load.
+
+        Decision tree:
+          in-memory df present        -> return it (always)
+          cache exists & valid today  -> use immediately; if stale (> threshold)
+                                         kick a background refresh+atomic swap
+          cache missing or invalid    -> blocking cold download
+
+        AGE decides whether refresh is needed; CONTENT decides whether the
+        cache is safe to serve. Readers always see a complete old or new
+        DataFrame — never a partial one."""
         if self.df is not None and not force:
             return self.df
         with self._load_lock:
             if self.df is not None and not force:
                 return self.df
-            self.df = fetch_scrip_master()
-            self._last_fetch = datetime.now()
-            return self.df
+            # 1. Try the existing cache regardless of age — content-gated.
+            df = _read_cached_master()
+            if df is not None:
+                age = _cache_age_hours()
+                self.df = df
+                if self.validate_for_today():
+                    print(f"[ScripMaster] Valid cached master in use "
+                          f"({len(df):,} instruments, {age:.1f}h old)")
+                    self._last_fetch = datetime.now()
+                    if age >= CACHE_MAX_AGE_HOURS:
+                        threading.Thread(target=self._refresh_and_swap, daemon=True,
+                                         name="scrip-refresh").start()
+                        print(f"[ScripMaster] Cache {age:.1f}h old — background refresh started")
+                    return self.df
+                print(f"[ScripMaster] Cached master invalid for today's contracts "
+                      f"({age:.1f}h old) — forcing fresh download")
+            # 2. Cold path: blocking download, temp-file + validate + promote.
+            data = _download_master_records()
+            if data is not None:
+                new_df = pd.DataFrame(data)
+                if self._validate_df_for_today(new_df):
+                    self.df = new_df
+                    self._last_fetch = datetime.now()
+                    try:
+                        _write_cache_safely(data)
+                        print(f"[ScripMaster] Cached {len(data):,} instruments")
+                    except Exception as e:
+                        print(f"[ScripMaster] Could not write cache: {e}")
+                    return self.df
+                print("[ScripMaster] Freshly downloaded master failed today-validation")
+                # fresh data bad but a previous cache existed → serve it rather than die
+                if df is not None:
+                    self.df = df
+                    return self.df
+                self.df = None
+                raise ConnectionError("[ScripMaster] Downloaded master invalid and no usable cache.")
+            # 3. Download failed → serve any cached frame we already loaded.
+            if df is not None:
+                self.df = df
+                print("[ScripMaster] Refresh failed — continuing with existing cache")
+                return self.df
+            self.df = None
+            raise ConnectionError(
+                f"[ScripMaster] Failed to fetch scrip master. No usable cache at {CACHE_FILE}."
+            )
+
 
     # ── INDEX METHODS (unchanged) ────────────────────────────
     def get_index_options(self, index_name: str, expiry_date: Optional[str] = None) -> pd.DataFrame:

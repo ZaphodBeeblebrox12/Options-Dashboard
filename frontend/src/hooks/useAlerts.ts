@@ -232,7 +232,8 @@ export function useSounds() {
       const data = await res.json();
       if (!data.base64) return;
 
-      const audio = new Audio(`data:audio/wav;base64,${data.base64}`);
+      const ct = data.content_type || 'audio/wav';   // backend now reports the real MIME
+      const audio = new Audio(`data:${ct};base64,${data.base64}`);
       audio.volume = volume;
       await audio.play();
     } catch (e) {
@@ -255,12 +256,15 @@ export function useAlertNotifications() {
     setToasts((prev) => [...prev.slice(-4), alert]); // Keep last 5
     // Fallback cleanup — generous enough for any duration up to 15s
     setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.timestamp !== alert.timestamp));
+      const _id = `${alert.timestamp}|${alert.rule_type}`;
+      setToasts((prev) => prev.filter((t) => `${t.timestamp}|${t.rule_type}` !== _id));
     }, 20000);
   }, []);
 
-  const removeToast = useCallback((timestamp: string) => {
-    setToasts((prev) => prev.filter((t) => t.timestamp !== timestamp));
+  const removeToast = useCallback((id: string) => {
+    // `id` is `${timestamp}|${rule_type}` — same-second alerts from different
+    // rules must not dismiss each other.
+    setToasts((prev) => prev.filter((t) => `${t.timestamp}|${t.rule_type}` !== id));
   }, []);
 
   const playAlertSound = useCallback(async (soundId: string, volume: number) => {
@@ -275,7 +279,8 @@ export function useAlertNotifications() {
         audioRef.current = null;
       }
 
-      const audio = new Audio(`data:audio/wav;base64,${data.base64}`);
+      const ct = data.content_type || 'audio/wav';
+      const audio = new Audio(`data:${ct};base64,${data.base64}`);
       audio.volume = volume;
       audioRef.current = audio;
       await audio.play();

@@ -219,7 +219,7 @@ function App() {
       if (lastMessage.data.market_open !== undefined) {
         setMarketOpenMap((prev) => ({ ...prev, [idx]: lastMessage.data.market_open }));
       }
-      setWsErrorMap((prev) => ({ ...prev, [idx]: lastMessage.data.error || lastMessage.data.message || null }));
+      setWsErrorMap((prev) => ({ ...prev, [idx]: lastMessage.data.error || null }));
     }
 
     if (lastMessage.type === 'alert') {
@@ -366,10 +366,12 @@ function App() {
   }, [timestamps.length, toggleLiveMode, handleSeek]);
 
   const atmStrike = React.useMemo(() => {
+    const payloadAtm = (displayData as any)?.atm ?? null;
+    if (payloadAtm != null) return payloadAtm;   // backend source of truth (live ticks)
     if (!spot || normalizedOptions.length === 0) return null;
     const strikes = [...new Set(normalizedOptions.map((o: any) => o.strike))].sort((a: number, b: number) => a - b);
     return strikes.reduce((closest: number, s: number) => Math.abs(s - spot) < Math.abs(closest - spot) ? s : closest);
-  }, [spot, normalizedOptions]);
+  }, [spot, normalizedOptions, displayData]);
 
   const refreshUnseenCount = useCallback(async () => {
     const today = new Date().toISOString().split('T')[0];
@@ -490,7 +492,10 @@ function App() {
         <OptionChain options={normalizedOptions} spot={spot} futures={futures} maxPain={maxPain} gammaFlip={gammaFlip} fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike} />
         {/* §45: GEX bar + Net GEX charts are Tier-1-only */}
           {instrumentTier === 1 && (
-            <GexChart data={gexByStrike} atmStrike={atmStrike} maxPain={maxPain} gammaFlip={gammaFlip} />
+            // v3.10: wall strikes (already computed above for WallChart) are
+            // passed so the GEX plot labels CE/PE walls like ATM/MAX PAIN.
+            <GexChart data={gexByStrike} atmStrike={atmStrike} maxPain={maxPain} gammaFlip={gammaFlip}
+                      ceWall={ceWall} peWall={peWall} />
           )}
           <StrikeChart data={strikeHistory} strike={selectedStrike ?? 0} />
           <WallChart symbol={selectedIndex} tier={instrumentTier} atm={atmStrike}
@@ -521,7 +526,10 @@ function App() {
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <AlertHistoryPanel indexName={selectedIndex} />
+            <AlertHistoryPanel
+              indexName={selectedIndex}
+              onNavigate={(sym) => { setShowAlertHistory(false); handleIndexChange(sym); }}
+            />
           </div>
         </div>
       )}
