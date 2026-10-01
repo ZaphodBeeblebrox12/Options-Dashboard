@@ -13,6 +13,15 @@ def _get_conn():
     conn = sqlite3.connect(ALERT_DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    # v3.12 FIX (production freeze 09:29-09:44): every rule-state read/write
+    # and history insert opens a FRESH connection with no busy_timeout, and up
+    # to 21 snapshot timer threads call these concurrently at the open (Rule 2
+    # fires constantly 09:15-09:30). A single writer hold then turned every
+    # subsequent call into an instant 'database is locked' storm that stalled
+    # captures via the on_snapshot hook. busy_timeout converts contention into
+    # a short wait; synchronous=NORMAL matches the main store's pragmas.
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("PRAGMA synchronous=NORMAL")
     return conn
 
 

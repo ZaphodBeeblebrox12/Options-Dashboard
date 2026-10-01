@@ -19,7 +19,7 @@ import time
 import threading
 import sqlite3
 from datetime import datetime, time as dt_time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from database import get_db_connection, get_daily_baseline, set_daily_baseline, get_yesterday_last_oi
 from calculations import calculate_analytics
 import app_settings
@@ -87,7 +87,26 @@ class SnapshotEngine:
         # equity hours — wrong for mixed equity/MCX fleets)
         self._instrument_open = {}   # index_name -> bool (session-state logging)
 
-        self._analytics_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="analytics")
+        # v3.12 FIX (production freeze 09:29-09:44): a single 4-worker pool
+        # shared by every snapshot instrument could not drain 21 captures per
+        # 30s window at morning tick volumes. The backlog grew without bound,
+        # result(timeout=60) leaked the abandoned futures (never cancelled),
+        # and per-capture queue waits stretched from seconds to minutes —
+        # visible as the NIFTY/SENSEX cadence doubling 30s -> 60s -> silence.
+        # Pool is now sized for the fleet, the queue is bounded by an
+        # in-flight counter (saturated -> skip loudly, never queue forever),
+        # and timed-out futures are cancelled so workers cannot leak.
+        self._analytics_executor = ThreadPoolExecutor(max_workers=16, thread_name_prefix="analytics")
+        self._analytics_inflight = 0
+        self._analytics_inflight_lock = threading.Lock()
+        self._analytics_dropped = 0
+        # Alert evaluation runs on its OWN single worker: the alert DB does
+        # synchronous reads/writes per fired rule, and running that inside the
+        # capture thread let a slow/locked alert_system.db stretch every
+        # capture. Snapshots now never wait on the alert path (order of alert
+        # evaluation is preserved — one worker, FIFO).
+        self._alert_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="alert-hook")
+        self._alert_queued = 0
 
     def _resolve(self, value):
         """Values may be plain or zero-arg callables (resolved fresh each capture)."""
@@ -252,6 +271,19 @@ class SnapshotEngine:
             expiry = self._resolve(expiry_datetime)
             ek = self._resolve(expiry_key)
 
+            # Backlog guard: if the pool is already deep in queued work,
+            # skip THIS capture rather than join a queue measured in minutes.
+            # A skipped 30s snapshot is harmless; a 15-minute silent stretch
+            # (the 09:29->09:44 freeze) is not.
+            with self._analytics_inflight_lock:
+                if self._analytics_inflight >= 32:
+                    self._analytics_dropped += 1
+                    print(f"[SnapshotEngine] {index_name}: analytics pool SATURATED "
+                          f"({self._analytics_inflight} in flight) — snapshot skipped "
+                          f"to protect cadence (dropped so far: {self._analytics_dropped})")
+                    return
+                self._analytics_inflight += 1
+            _future = None
             try:
                 # Active window follows the instrument tier (Tier 1 -> ATM±5,
                 # everything else -> ATM±3). The IV store lives on data_store,
@@ -275,13 +307,21 @@ class SnapshotEngine:
                     _af = lambda d, s, f: calculate_analytics(   # noqa: E731
                         d, s, f, expiry, mult, instrument=index_name,
                         iv_store=_iv_store, active_window=_window, expiry=ek)
-                analytics = self._analytics_executor.submit(
-                    lambda: _af(data, spot, futures)
-                ).result(timeout=60)
-            except TimeoutError:
+                _future = self._analytics_executor.submit(lambda: _af(data, spot, futures))
+                analytics = _future.result(timeout=60)
+            except (TimeoutError, FuturesTimeout):
+                # Cancel so a genuinely stuck task cannot leak its worker
+                # slot forever (the pre-fix behavior: the abandoned future
+                # kept running, draining the 4-worker pool one slot at a time
+                # until every capture queued behind minutes of backlog).
+                if _future is not None:
+                    _future.cancel()
                 print(f"[SnapshotEngine] {index_name}: analytics timed out (>60s) — "
                       f"snapshot skipped, retries next cycle")
                 return
+            finally:
+                with self._analytics_inflight_lock:
+                    self._analytics_inflight -= 1
 
             # v3.9: collect baselines for the writer thread — do NOT open a
             # per-capture connection here. The writer thread owns ALL writes,
@@ -363,20 +403,30 @@ class SnapshotEngine:
 
             # ── Alert hook: the snapshot→alert-engine integration point. ──
             # One evaluation pass per successfully captured snapshot, after
-            # queueing. A hook failure must not retroactively mark this
-            # capture as failed, so it gets its own guard. Injected by
-            # main.py (on_snapshot=...) to avoid a snapshot_engine→main
-            # circular import.
+            # queueing. v3.12: dispatched to a dedicated single worker — the
+            # hook does synchronous SQLite rule-state/history writes, and
+            # running it inline let alert-DB stalls (no busy_timeout, fresh
+            # connection per call, 21 concurrent timer threads) stretch every
+            # capture. FIFO single worker preserves evaluation order; capture
+            # never waits on it. Injected by main.py (on_snapshot=...) to
+            # avoid a snapshot_engine→main circular import.
             if on_snapshot is not None:
                 try:
-                    on_snapshot(snapshot)
+                    self._alert_executor.submit(self._run_alert_hook, on_snapshot, snapshot, index_name)
                 except Exception as e:
-                    print(f"[SnapshotEngine] on_snapshot hook error for {index_name}: {e}")
+                    print(f"[SnapshotEngine] on_snapshot dispatch error for {index_name}: {e}")
 
         except Exception as e:
             print(f"[SnapshotEngine] Error capturing snapshot: {e}")
             import traceback
             traceback.print_exc()
+
+    @staticmethod
+    def _run_alert_hook(on_snapshot, snapshot, index_name):
+        try:
+            on_snapshot(snapshot)
+        except Exception as e:
+            print(f"[SnapshotEngine] on_snapshot hook error for {index_name}: {e}")
 
     def _db_writer_loop(self):
         print("[SnapshotEngine] DB writer started")
@@ -511,13 +561,18 @@ class SnapshotEngine:
                       f"({_fmt_hours(hours)}) — capture will resume when the session opens")
 
             while self.running and not stop_event.is_set():
+                # v3.12 cadence fix: sleep the REMAINDER of the interval after
+                # the capture returns. Pre-fix the loop slept a full interval
+                # ON TOP of capture duration, so every slow capture permanently
+                # stretched the cadence (30s -> 60s -> minutes — the visible
+                # precursor to the 09:29->09:44 NIFTY silence).
+                _cap_t0 = time.perf_counter()
                 self.capture_snapshot(data_store, spot_poller, index_name,
                                     contract_multiplier, expiry_datetime, market_hours,
                                     expiry_key=expiry_key, analytics_fn=analytics_fn,
                                     on_snapshot=on_snapshot)
-                # Rearm interval is user-configurable (Settings > Analytics) and
-                # re-read every cycle — changes apply without restarting timers.
-                for _ in range(_capture_interval()):
+                _remaining = max(1, _capture_interval() - int(time.perf_counter() - _cap_t0))
+                for _ in range(_remaining):
                     if not self.running or stop_event.is_set():
                         break
                     time.sleep(1)
@@ -574,3 +629,4 @@ class SnapshotEngine:
         print("[SnapshotEngine] all snapshot timers stopped")
         self.writer_thread.join(timeout=5)
         self._analytics_executor.shutdown(wait=False)
+        self._alert_executor.shutdown(wait=False)

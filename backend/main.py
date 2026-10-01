@@ -47,6 +47,7 @@ import app_settings
 import app_perf
 from calculations import set_risk_free_rate
 from websocket_manager import manager
+import faulthandler
 
 # ── Alert System Imports ──────────────────────────────────────
 from alert_db import init_alert_db
@@ -115,6 +116,104 @@ def log_startup_status():
     print("=" * 60)
 
 
+# ─────────────────────────────────────────────────────────────
+# FREEZE FORENSICS (v3.12)
+# ─────────────────────────────────────────────────────────────
+# 2026-09-22 production incident (RECURRING, machine awake, user active):
+# ALL pipeline output stopped mid-print (every instrument + DB writer)
+# and self-recovered ~8 minutes later. Sleep ruled out via Event Viewer;
+# console blockage ruled out (occurs while user is active). This recorder
+# writes a LIVENESS LINE to backend/backend_liveness.log every 30s
+# (file, not console - immune to whatever stalls the console), sampling:
+#   - NIFTY/SENSEX WS message counts   (are ticks still flowing?)
+#   - snapshot queue depth + analytics in-flight   (is capture alive?)
+#   - broadcast-loop age               (is the event loop alive?)
+#   - NIFTY snapshot age               (the trigger)
+# If NIFTY snapshots go stale >90s during market hours it dumps EVERY
+# thread's stack to backend/freeze_dump.txt - and keeps logging liveness
+# THROUGH the freeze, so afterwards we can see exactly which subsystem
+# died and which kept running. Rotated at 5 MB.
+_watchdog_stop = threading.Event()
+_LIVENESS_PATH = os.path.join(os.path.dirname(__file__), "backend_liveness.log")
+
+
+def _liveness_sample():
+    """Collect one liveness sample. Never raises."""
+    now = time.time()
+    parts = []
+    for idx in ("NIFTY", "SENSEX"):
+        try:
+            s = streamer_adapter.streamers.get(idx)
+            mc = getattr(s.data_store, "msg_count", None) if s else None
+            parts.append(f"{idx.lower()}_msgs={mc if mc is not None else '?'}")
+        except Exception:
+            parts.append(f"{idx.lower()}_msgs=?")
+    try:
+        parts.append(f"snapq={snapshot_engine.snapshot_queue.qsize()}")
+    except Exception:
+        parts.append("snapq=?")
+    try:
+        parts.append(f"inflight={getattr(snapshot_engine, '_analytics_inflight', '?')}"
+                     f"/dropped={getattr(snapshot_engine, '_analytics_dropped', '?')}")
+    except Exception:
+        parts.append("inflight=?")
+    try:
+        b_age = now - _BROADCAST_LAST if _BROADCAST_LAST else -1
+        parts.append(f"bcast_age={b_age:.0f}s")
+    except Exception:
+        parts.append("bcast_age=?")
+    ts = snapshot_engine.latest_timestamps.get("NIFTY")
+    snap_age = -1
+    if ts:
+        try:
+            snap_age = (datetime.now() - datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")).total_seconds()
+        except Exception:
+            snap_age = -1
+    parts.append(f"nify_snap_age={snap_age:.0f}s")
+    return snap_age, " ".join(parts)
+
+
+def _liveness_write(line):
+    try:
+        if os.path.exists(_LIVENESS_PATH) and os.path.getsize(_LIVENESS_PATH) > 5 * 1024 * 1024:
+            os.replace(_LIVENESS_PATH, _LIVENESS_PATH + ".old")
+        with open(_LIVENESS_PATH, "a") as fh:
+            fh.write(line + "\n")
+    except Exception:
+        pass
+
+
+def _freeze_watchdog():
+    _dumped = False
+    while not _watchdog_stop.is_set():
+        _watchdog_stop.wait(30)
+        try:
+            snap_age, sample = _liveness_sample()
+            stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            _liveness_write(f"{stamp} {sample}")
+            if not is_market_open():
+                _dumped = False
+                continue
+            if snap_age > 90:
+                _liveness_write(f"{stamp} *** STALL DETECTED (nify_snap_age={snap_age:.0f}s) "
+                                f"- dumping all thread stacks to freeze_dump.txt ***")
+                try:
+                    with open(os.path.join(os.path.dirname(__file__), "freeze_dump.txt"), "a") as fh:
+                        fh.write(f"\n===== FREEZE {datetime.now().isoformat()} "
+                                 f"(NIFTY snapshot age {snap_age:.0f}s) =====\n")
+                        faulthandler.dump_traceback(file=fh)
+                except Exception as e:
+                    logging.error(f"[FreezeWatchdog] dump failed: {e}")
+                if not _dumped:
+                    logging.error(f"[FreezeWatchdog] NIFTY snapshot stale {snap_age:.0f}s — "
+                                  f"stack dump written to freeze_dump.txt")
+                    _dumped = True
+            else:
+                _dumped = False
+        except Exception as e:
+            logging.error(f"[FreezeWatchdog] error: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _main_loop
@@ -134,6 +233,9 @@ async def lifespan(app: FastAPI):
     set_risk_free_rate(app_settings.get_risk_free_rate())
     candle_builder.start()   # 1m CASH candles: own sweeper+writer threads
     log_startup_status()
+    _watchdog_thread = threading.Thread(target=_freeze_watchdog, daemon=True,
+                                        name="freeze-watchdog")
+    _watchdog_thread.start()
 
     def _streamer_name(s) -> str:
         # InstrumentStreamer uses .symbol; AngelOneIndexStreamer uses .index_name
@@ -347,6 +449,7 @@ async def lifespan(app: FastAPI):
             pass
     print("[FastAPI] Stopping streamer adapter (sockets, threads, logout)...")
     streamer_adapter.stop()
+    _watchdog_stop.set()
     print("[FastAPI] Server shutting down")
 
 
@@ -446,6 +549,11 @@ async def alert_broadcast_loop():
 # broadcast only once per N×30s). Tier 1 is exempt from the throttle entirely
 # and keeps its 5s cadence.
 _last_throttled_broadcast = {}
+# v3.12 FORENSICS: last time the broadcast loop completed a pass.
+# Written by broadcast_loop, read by the freeze watchdog. Lets the
+# liveness log distinguish "snapshots froze but WS/broadcast lived"
+# from a full process freeze.
+_BROADCAST_LAST = 0.0
 TIER2_BROADCAST_INTERVAL = 30.0   # non-Tier-1 instruments refresh at 30s cadence; Tier 1 stays at 5s
 
 
@@ -457,6 +565,8 @@ async def broadcast_loop():
     while True:
         try:
             await asyncio.sleep(5)
+            global _BROADCAST_LAST
+            _BROADCAST_LAST = time.time()
             if streamer_adapter.mode != "real":
                 continue
             if manager.active_connections:
