@@ -5,13 +5,17 @@ import { ReplayControls } from './components/ReplayControls';
 import { GexChart } from './components/GexChart';
 import { StrikeChart } from './components/StrikeChart';
 import { NetGexChart } from './components/NetGexChart';
-import { AlertSettingsPanel } from './components/AlertSettings';
+import { WallChart } from './components/WallChart';
+import { SettingsModal } from './components/SettingsModal';
 import { AlertHistoryPanel } from './components/AlertHistory';
 import { AlertToastContainer } from './components/AlertToast';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useSnapshots, useSnapshot, useGexHistory, useStrikeHistory, useGexByStrike, useAvailableDates } from './hooks/useApi';
 import { useAlertSettings, useAlertNotifications, AlertFiring } from './hooks/useAlerts';
-import { Eye, EyeOff, Monitor, AlertTriangle, Info, WifiOff, Bell, Settings, X } from 'lucide-react';
+import { Monitor, AlertTriangle, Info, WifiOff, Bell, Settings, X } from 'lucide-react';
+import { hoursForType, isSessionOpen, fmtSessionRange, InstrumentKind, SessionHours } from './session';
+import { useIsMobile } from "./components/mobile/useIsMobile";
+import MobileApp from "./components/mobile/MobileApp";
 
 const STORAGE_KEY = 'option_chain_view_state';
 const HISTORY_LAST_OPENED_KEY = 'history_last_opened_at';
@@ -60,10 +64,14 @@ function App() {
   const [fullMode, setFullMode] = useState(persisted.fullMode ?? false);
   const [selectedStrike, setSelectedStrike] = useState<number | null>(persisted.selectedStrike ?? null);
   const [liveMode, setLiveMode] = useState(persisted.liveMode ?? true);
-  const [marketOpen, setMarketOpen] = useState(true);
+  // market_open is broadcast PER INSTRUMENT — keep a map, not one global bool
+  // (a single bool reflected whichever instrument ticked last).
+  const [marketOpenMap, setMarketOpenMap] = useState<Record<string, boolean>>({});
+  // Instrument kind (index/stock/commodity) per symbol → drives the session.
+  const [indexKinds, setIndexKinds] = useState<Record<string, InstrumentKind>>({});
   const [wsErrorMap, setWsErrorMap] = useState<Record<string, string | null>>({});
   const [showReconnectBanner, setShowReconnectBanner] = useState(false);
-  const [showAlertSettings, setShowAlertSettings] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [showAlertHistory, setShowAlertHistory] = useState(false);
   const [unseenAlertCount, setUnseenAlertCount] = useState(0);
   const playTimerRef = useRef<ReturnType<typeof setInterval>>();
@@ -74,6 +82,9 @@ function App() {
   const wsUrl = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
   const { connected, lastMessage } = useWebSocket(wsUrl);
 
+  // Small screens get the dedicated mobile shell (desktop render below is untouched).
+  const isMobile = useIsMobile();
+
   const timestamps = useSnapshots(selectedDate, selectedIndex, liveMode);
   const currentTimestamp = (currentIndex >= 0 && currentIndex < timestamps.length) ? timestamps[currentIndex] : null;
   const { snapshot, isLoading: snapshotLoading } = useSnapshot(currentTimestamp, selectedIndex, liveMode);
@@ -83,8 +94,54 @@ function App() {
   const availableDates = useAvailableDates(selectedIndex, liveMode);
 
   const [liveDataMap, setLiveDataMap] = useState<Record<string, any>>({});
+  const [alertScope, setAlertScope] = useState<'viewed' | 'all'>('viewed');
   const { settings: alertSettings } = useAlertSettings();
   const { toasts, addToast, removeToast, playAlertSound } = useAlertNotifications();
+
+  // SELECTED instrument's session (equity 09:15–15:30 / MCX 09:00–23:30).
+  const sessionHours: SessionHours = hoursForType(indexKinds[selectedIndex]);
+  // Backend broadcasts market_open per instrument; until the first tick for
+  // this instrument arrives, fall back to the locally computed session.
+  const marketOpen = marketOpenMap[selectedIndex] ?? isSessionOpen(sessionHours);
+
+  // Alert notification scope — user-configurable in Settings > Alerts.
+  // Reloads when the settings modal saves (custom event) or on mount.
+  useEffect(() => {
+    const load = () =>
+      fetch('/api/settings')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => { if (d) setAlertScope(d.alert_scope === 'all' ? 'all' : 'viewed'); })
+        .catch(() => {});
+    load();
+    window.addEventListener('app-settings-changed', load);
+    return () => window.removeEventListener('app-settings-changed', load);
+  }, []);
+
+  // Instrument kinds → per-instrument trading session (equity vs MCX).
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      fetch('/api/instruments')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (!alive || !d) return;
+          const map: Record<string, InstrumentKind> = {};
+          const put = (x: any, fallbackKind: InstrumentKind) => {
+            if (!x) return;
+            const name = typeof x === 'string' ? x : x.name;
+            const kind = (typeof x === 'string' ? fallbackKind : x.kind) || fallbackKind;
+            if (name) map[name] = kind;
+          };
+          (d.tier1 || []).forEach((x: any) => put(x, 'index'));
+          (d.stocks || []).forEach((x: any) => put(x, 'stock'));
+          (d.instruments || []).forEach((x: any) => put(x, 'stock'));
+          if (Object.keys(map).length > 0) setIndexKinds(map);
+        })
+        .catch(() => {});
+    load();
+    const t = setInterval(load, 60000); // pick up instruments added at runtime
+    return () => { alive = false; clearInterval(t); };
+  }, []);
 
   const saveableStateRef = useRef<PersistedState>({
     selectedIndex, selectedDate, currentTimestamp: null,
@@ -159,8 +216,10 @@ function App() {
     if (lastMessage.type === 'tick') {
       const idx = lastMessage.data?.index_name || 'NIFTY';
       setLiveDataMap((prev) => ({ ...prev, [idx]: lastMessage.data }));
-      if (lastMessage.data.market_open !== undefined) setMarketOpen(lastMessage.data.market_open);
-      setWsErrorMap((prev) => ({ ...prev, [idx]: lastMessage.data.error || lastMessage.data.message || null }));
+      if (lastMessage.data.market_open !== undefined) {
+        setMarketOpenMap((prev) => ({ ...prev, [idx]: lastMessage.data.market_open }));
+      }
+      setWsErrorMap((prev) => ({ ...prev, [idx]: lastMessage.data.error || null }));
     }
 
     if (lastMessage.type === 'alert') {
@@ -168,17 +227,26 @@ function App() {
       if (!showAlertHistory) {
         setUnseenAlertCount((c) => c + 1);
       }
-      if (alertData.index_name === selectedIndex) {
-        addToast(alertData);
-        const ruleConfig = alertSettings?.rules.find((r) => r.rule_type === alertData.rule_type);
-        if (ruleConfig?.sound_enabled && alertSettings?.sound.master_enabled) {
-          const soundId = ruleConfig.custom_sound_id || ruleConfig.sound_choice;
+      if (alertScope === 'all' || alertData.index_name === selectedIndex) {
+        // Channel-driven delivery: the engine computes channels_fired per tier,
+        // so a Telegram-only Tier-4 alert never reaches toast/sound.
+        const channels = alertData.channels_fired ?? [];
+        if (channels.includes('toast')) {
+          addToast(alertData);
+        }
+        if (channels.includes('sound') && alertSettings?.sound.master_enabled) {
+          // channels_fired is authoritative: the engine already folded the
+          // rule's sound_enabled in for Tier 1/2/3, and for Tier 4 the
+          // tier4.channels profile alone decides — the shared rule's
+          // sound_enabled must NOT be re-checked here.
+          const ruleConfig = alertSettings?.rules.find((r) => r.rule_type === alertData.rule_type);
+          const soundId = ruleConfig?.custom_sound_id || ruleConfig?.sound_choice || 'alert';
           const volume = (alertSettings.sound.volume_percent || 80) / 100;
           playAlertSound(soundId, volume);
         }
       }
     }
-  }, [lastMessage, selectedIndex, alertSettings, addToast, playAlertSound]);
+  }, [lastMessage, selectedIndex, alertSettings, alertScope, addToast, playAlertSound]);
 
   useEffect(() => {
     if (isPlaying) {
@@ -194,11 +262,11 @@ function App() {
 
   // When playback reaches the end, automatically switch to live mode
   useEffect(() => {
-    if (isPlaying && currentIndex >= timestamps.length - 1 && timestamps.length > 0) {
+    if (isPlaying && currentIndex >= timestamps.length - 1 && timestamps.length > 0 && marketOpen) {
       setIsPlaying(false);
       setLiveMode(true);
     }
-  }, [currentIndex, isPlaying, timestamps.length]);
+  }, [currentIndex, isPlaying, timestamps.length, marketOpen]);
 
   useEffect(() => {
     setCurrentIndex(-1); setIsPlaying(false); setSelectedStrike(null);
@@ -206,7 +274,8 @@ function App() {
   }, [selectedIndex]);
 
   const liveData = liveDataMap[selectedIndex];
-  const displayData = liveMode && liveData ? liveData : snapshot;
+  const hasLiveData = liveData && Array.isArray(liveData.options) && liveData.options.length > 0 && liveData.spot != null;
+  const displayData = liveMode && hasLiveData ? liveData : snapshot;
   const wsError = wsErrorMap[selectedIndex] || null;
 
   const spot = displayData?.spot ?? null;
@@ -219,6 +288,17 @@ function App() {
   const gammaFlip = displayData?.gamma_flip ?? null;
   const timestamp = displayData?.timestamp ?? new Date().toISOString();
   const options = displayData?.options ?? [];
+  // Wall levels for the WallChart (max-OI strikes from the visible chain; §41/42)
+  const { ceWall, peWall } = React.useMemo(() => {
+    let cew: number | null = null, pew: number | null = null, ceo = -1, peo = -1;
+    for (const o of (options as any[])) {
+      if (o?.option_type === 'CE' && (o.oi ?? 0) > ceo) { ceo = o.oi; cew = o.strike; }
+      if (o?.option_type === 'PE' && (o.oi ?? 0) > peo) { peo = o.oi; pew = o.strike; }
+    }
+    return { ceWall: cew, peWall: pew };
+  }, [options]);
+  const instrumentTier = (displayData as any)?.tier ?? (selectedIndex === 'NIFTY' || selectedIndex === 'SENSEX' ? 1 : 2);
+
 
   const normalizedOptions = React.useMemo(() => {
     if (!options) return [];
@@ -239,7 +319,7 @@ function App() {
   const handlePause = useCallback(() => setIsPlaying(false), []);
   const handleSeek = useCallback((index: number) => {
     const isAtEnd = index >= 0 && timestamps.length > 0 && index === timestamps.length - 1;
-    if (isAtEnd) {
+    if (isAtEnd && marketOpen) {
       setLiveMode(true);
       setIsPlaying(false);
       setCurrentIndex(index);
@@ -248,12 +328,12 @@ function App() {
       setIsPlaying(false);
       setCurrentIndex(index);
     }
-  }, [timestamps.length]);
+  }, [timestamps.length, marketOpen]);
   const handleRefresh = useCallback(() => window.location.reload(), []);
   const handleDateChange = useCallback((date: string) => { setSelectedDate(date); setCurrentIndex(-1); setIsPlaying(false); setLiveMode(false); hasRestoredRef.current = false; scrollRestoredRef.current = false; }, []);
   const handleIndexChange = useCallback((index: string) => { setSelectedIndex(index); setCurrentIndex(-1); setIsPlaying(false); setSelectedStrike(null); setLiveMode(true); enteringLiveRef.current = true; hasRestoredRef.current = false; scrollRestoredRef.current = false; }, []);
   const handleSelectStrike = useCallback((strike: number) => setSelectedStrike(strike), []);
-  const toggleFullMode = useCallback(() => setFullMode((p) => !p), []);
+  const handleFullModeChange = useCallback((v: boolean) => setFullMode(v), []);
   const toggleLiveMode = useCallback(() => {
     setLiveMode((prev) => {
       const next = !prev;
@@ -262,10 +342,15 @@ function App() {
     });
   }, []);
 
-  // Keyboard shortcuts: L = toggle live, End = jump to latest
+  // Keyboard: L = toggle live, End = jump to latest, Ctrl+, = settings
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
+      if ((e.ctrlKey || e.metaKey) && e.key === ',') {
+        e.preventDefault();
+        setShowSettings((s) => !s);
+        return;
+      }
       if (e.key === 'l' || e.key === 'L') {
         e.preventDefault();
         toggleLiveMode();
@@ -282,10 +367,66 @@ function App() {
   }, [timestamps.length, toggleLiveMode, handleSeek]);
 
   const atmStrike = React.useMemo(() => {
+    const payloadAtm = (displayData as any)?.atm ?? null;
+    if (payloadAtm != null) return payloadAtm;   // backend source of truth (live ticks)
     if (!spot || normalizedOptions.length === 0) return null;
     const strikes = [...new Set(normalizedOptions.map((o: any) => o.strike))].sort((a: number, b: number) => a - b);
     return strikes.reduce((closest: number, s: number) => Math.abs(s - spot) < Math.abs(closest - spot) ? s : closest);
-  }, [spot, normalizedOptions]);
+  }, [spot, normalizedOptions, displayData]);
+
+  const refreshUnseenCount = useCallback(async () => {
+    const today = new Date().toISOString().split('T')[0];
+    const lastOpened = getLastOpenedHistory();
+    try {
+      const res = await fetch(`/api/alerts/history?date=${today}&page_size=200`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const entries = data.entries || [];
+      const lastOpenedDate = lastOpened ? new Date(lastOpened) : null;
+      const unseen = entries.filter((e: any) => {
+        if (!lastOpenedDate) return true;
+        return new Date(e.timestamp) > lastOpenedDate;
+      }).length;
+      setUnseenAlertCount(unseen);
+    } catch {}
+  }, []);
+
+  const handleTestToast = useCallback(() => {
+    addToast({
+      timestamp: new Date().toISOString(),
+      index_name: selectedIndex,
+      rule_type: 'atm_negative_gex_oi_wall',
+      rule_name: 'ATM + Negative GEX + OI Wall',
+      spot: spot ?? 25142.35,
+      atm_strike: atmStrike ?? 25150,
+      max_ce_oi_strike: atmStrike ?? 25150,
+      max_pe_oi_strike: atmStrike ? atmStrike - 150 : 25000,
+      max_negative_gex_strike: atmStrike ?? 25150,
+      net_gex: netGex ?? -1250000,
+      channels_fired: ['toast', 'sound', 'telegram'],
+    });
+  }, [addToast, selectedIndex, spot, atmStrike, netGex]);
+
+  useEffect(() => {
+    refreshUnseenCount();
+    const interval = setInterval(refreshUnseenCount, 60000);
+    return () => clearInterval(interval);
+  }, [refreshUnseenCount]);
+
+  const toastDuration = alertSettings?.toast_duration_ms ?? 6000;
+
+  // Mobile: small screens get the dedicated mobile shell; desktop tree below is untouched.
+  if (isMobile) {
+    return (
+      <MobileApp
+        connected={connected}
+        lastMessage={lastMessage}
+        toasts={toasts}
+        removeToast={removeToast}
+        onInstrumentChange={(name) => setSelectedIndex(name)}
+      />
+    );
+  }
 
   const refreshUnseenCount = useCallback(async () => {
     const today = new Date().toISOString().split('T')[0];
@@ -346,10 +487,10 @@ function App() {
       {!marketOpen && (
         <div className="bg-slate-800/50 border-b border-slate-700/50 px-4 py-1.5 flex items-center justify-center gap-2">
           <Info className="w-3.5 h-3.5 text-slate-400" />
-          <span className="text-xs font-mono text-slate-400">Market Closed (09:15–15:30 IST, Mon–Fri) — Showing last known data.</span>
+          <span className="text-xs font-mono text-slate-400">Market Closed ({fmtSessionRange(sessionHours)}, Mon–Fri) — Showing last known data.</span>
         </div>
       )}
-      {wsError && liveMode && (
+      {wsError && liveMode && marketOpen && (
         <div className="bg-red-900/30 border-b border-red-700/50 px-4 py-1.5 flex items-center justify-center gap-2">
           <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
           <span className="text-xs font-mono text-red-300">{wsError}</span>
@@ -378,13 +519,9 @@ function App() {
               </span>
             )}
           </button>
-          <button onClick={() => setShowAlertSettings(true)} className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono bg-terminal-bg text-terminal-muted hover:text-terminal-text transition-colors">
+          <button onClick={() => setShowSettings(true)} className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono bg-terminal-bg text-terminal-muted hover:text-terminal-text transition-colors">
             <Settings className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Alerts</span>
-          </button>
-          <button onClick={toggleFullMode} className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono bg-terminal-bg text-terminal-muted hover:text-terminal-text transition-colors">
-            {fullMode ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-            <span className="hidden sm:inline">{fullMode ? 'Compact' : 'Full'}</span>
+            <span className="hidden sm:inline">Settings</span>
           </button>
           <button onClick={toggleLiveMode} className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono font-semibold transition-colors ${liveMode ? 'bg-terminal-pe/20 text-terminal-pe' : 'bg-terminal-bg text-terminal-muted hover:text-terminal-text'}`}>
             <span className={`w-1.5 h-1.5 rounded-full ${liveMode ? 'bg-terminal-pe animate-pulse' : 'bg-terminal-muted'}`} />
@@ -395,39 +532,48 @@ function App() {
 
       <div className="p-2 sm:p-3 space-y-2 sm:space-y-3">
         <AnalyticsHeader indexName={selectedIndex} isFetching={snapshotLoading} spot={spot} futures={futures} futuresSpread={futuresSpread} spreadLabel={spreadLabel} netGex={netGex} maxGexStrike={maxGexStrike} maxPain={maxPain} gammaFlip={gammaFlip} timestamp={timestamp} isLive={liveMode && connected && marketOpen} />
-        <ReplayControls timestamps={timestamps} currentIndex={currentIndex} isFetching={snapshotLoading} isPlaying={isPlaying} onPlay={handlePlay} onPause={handlePause} onSeek={handleSeek} onRefresh={handleRefresh} selectedDate={selectedDate} onDateChange={handleDateChange} selectedIndex={selectedIndex} onIndexChange={handleIndexChange} availableDates={availableDates} />
+        <ReplayControls timestamps={timestamps} currentIndex={currentIndex} isFetching={snapshotLoading} isPlaying={isPlaying} onPlay={handlePlay} onPause={handlePause} onSeek={handleSeek} onRefresh={handleRefresh} selectedDate={selectedDate} onDateChange={handleDateChange} selectedIndex={selectedIndex} onIndexChange={handleIndexChange} availableDates={availableDates} sessionHours={sessionHours} />
         <OptionChain options={normalizedOptions} spot={spot} futures={futures} maxPain={maxPain} gammaFlip={gammaFlip} fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike} />
-        <GexChart data={gexByStrike} atmStrike={atmStrike} maxPain={maxPain} gammaFlip={gammaFlip} />
-        <StrikeChart data={strikeHistory} strike={selectedStrike ?? 0} />
-        <NetGexChart data={gexHistory} />
+        {/* §45: GEX bar + Net GEX charts are Tier-1-only */}
+          {instrumentTier === 1 && (
+            // v3.10: wall strikes (already computed above for WallChart) are
+            // passed so the GEX plot labels CE/PE walls like ATM/MAX PAIN.
+            <GexChart data={gexByStrike} atmStrike={atmStrike} maxPain={maxPain} gammaFlip={gammaFlip}
+                      ceWall={ceWall} peWall={peWall} />
+          )}
+          <StrikeChart data={strikeHistory} strike={selectedStrike ?? 0} />
+          <WallChart symbol={selectedIndex} tier={instrumentTier} atm={atmStrike}
+                     ceWall={ceWall} peWall={peWall}
+                     negGex={(displayData as any)?.max_negative_gex_strike ?? (displayData as any)?.max_gex_strike ?? null}
+                     replayDate={liveMode ? null : selectedDate} />
+          {instrumentTier === 1 && (
+            <NetGexChart data={gexHistory} />
+          )}
       </div>
 
-      {showAlertSettings && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center pt-4 sm:pt-8 px-2 sm:px-4">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowAlertSettings(false)} />
-          <div className="relative w-full max-w-2xl max-h-[90vh] overflow-y-auto terminal-panel">
-            <div className="sticky top-0 bg-terminal-panel border-b border-terminal-border px-4 py-2 flex items-center justify-between z-10">
-              <span className="text-sm font-bold">Alert Settings</span>
-              <button onClick={() => setShowAlertSettings(false)} className="p-1 rounded hover:bg-white/10 text-terminal-muted">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <AlertSettingsPanel onTestToast={handleTestToast} />
-          </div>
-        </div>
+      {showSettings && (
+        <SettingsModal
+          onClose={() => setShowSettings(false)}
+          fullMode={fullMode}
+          onFullModeChange={handleFullModeChange}
+          onTestToast={handleTestToast}
+        />
       )}
 
       {showAlertHistory && (
         <div className="fixed inset-0 z-50 flex items-start justify-center pt-4 sm:pt-8 px-2 sm:px-4">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowAlertHistory(false)} />
-          <div className="relative w-full max-w-3xl max-h-[90vh] overflow-y-auto terminal-panel">
+          <div className="relative w-full max-w-5xl max-h-[90vh] overflow-y-auto terminal-panel">
             <div className="sticky top-0 bg-terminal-panel border-b border-terminal-border px-4 py-2 flex items-center justify-between z-10">
               <span className="text-sm font-bold">Alert History</span>
               <button onClick={() => setShowAlertHistory(false)} className="p-1 rounded hover:bg-white/10 text-terminal-muted">
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <AlertHistoryPanel indexName={selectedIndex} />
+            <AlertHistoryPanel
+              indexName={selectedIndex}
+              onNavigate={(sym) => { setShowAlertHistory(false); handleIndexChange(sym); }}
+            />
           </div>
         </div>
       )}

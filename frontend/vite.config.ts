@@ -7,6 +7,8 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      'lightweight-charts': path.resolve(__dirname, './src/vendor/lightweight-charts'),
+      'fancy-canvas': path.resolve(__dirname, './src/vendor/fancy-canvas'),
     },
   },
   server: {

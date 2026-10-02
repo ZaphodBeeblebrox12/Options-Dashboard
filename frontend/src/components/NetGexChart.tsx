@@ -32,6 +32,14 @@ const CustomTooltip = ({ active, payload, label }: any) => {
 };
 
 const NetGexChartComponent: React.FC<NetGexChartProps> = ({ data }) => {
+  // Hook MUST run before any conditional return (React rules of hooks).
+  const chartData = useMemo(() =>
+    (data || []).map((d) => ({
+      time: d.timestamp.split(' ')[1] || d.timestamp,
+      net_gex: d.net_gex,
+    })),
+  [data]);
+
   if (!data || data.length === 0) {
     return (
       <div className="terminal-panel h-[200px] flex items-center justify-center">
@@ -39,13 +47,6 @@ const NetGexChartComponent: React.FC<NetGexChartProps> = ({ data }) => {
       </div>
     );
   }
-
-  const chartData = useMemo(() =>
-    data.map((d) => ({
-      time: d.timestamp.split(' ')[1] || d.timestamp,
-      net_gex: d.net_gex,
-    })),
-  [data]);
 
   return (
     <div className="terminal-panel">

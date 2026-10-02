@@ -1,0 +1,122 @@
+/* Settings typography scope (v3.2)
+   Modern UI font for text; mono reserved for numbers/symbols/timestamps.
+   Dark terminal aesthetic unchanged — only readability is adjusted. */
+
+.settings-scope {
+  --st-text: #e7ebf3;
+  --st-text-2: #aab4c6;
+  --st-text-3: #8d97ab;
+  --st-dim: #7a8497;
+  --st-ui: "Inter", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --st-num: "JetBrains Mono", "SF Mono", "Cascadia Code", Consolas, "Roboto Mono", monospace;
+
+  font-family: var(--st-ui);
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--st-text);
+  letter-spacing: 0.001em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Hierarchy ─────────────────────────────────────────── */
+.settings-scope .st-title {
+  font-family: var(--st-ui);
+  font-size: 16px; font-weight: 650; letter-spacing: -0.01em;
+  color: var(--st-text);
+}
+.settings-scope .st-section {
+  font-family: var(--st-ui);
+  font-size: 15px; font-weight: 600; letter-spacing: -0.005em;
+  color: var(--st-text);
+}
+.settings-scope .st-card-title {
+  font-family: var(--st-ui);
+  font-size: 13.5px; font-weight: 600;
+  color: var(--st-text);
+}
+
+/* ── Navigation rail ───────────────────────────────────── */
+.settings-scope .st-nav {
+  font-family: var(--st-ui);
+  font-size: 13px; font-weight: 500;
+  color: var(--st-text-2);
+  letter-spacing: 0.01em;
+}
+.settings-scope .st-nav:hover { color: var(--st-text); }
+.settings-scope .st-nav.on { color: var(--st-text); font-weight: 600; }
+.settings-scope .st-nav-group {
+  font-family: var(--st-ui);
+  font-size: 10.5px; font-weight: 650;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--st-text-3);
+}
+
+/* ── Values: mono where it genuinely helps ─────────────── */
+.settings-scope .st-value {
+  font-family: var(--st-num);
+  font-variant-numeric: tabular-nums;
+  font-size: 17px; font-weight: 650; letter-spacing: -0.01em;
+  color: var(--st-text);
+}
+.settings-scope .st-value-sub {
+  font-family: var(--st-num);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px; font-weight: 400;
+  color: var(--st-text-3);
+}
+.settings-scope .st-num {
+  font-family: var(--st-num);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px; font-weight: 500;
+  color: var(--st-text-2);
+}
+.settings-scope .st-sym {
+  font-family: var(--st-num);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px; font-weight: 600; letter-spacing: 0.02em;
+  color: var(--st-text);
+}
+
+/* ── Helper / metadata / footer ────────────────────────── */
+.settings-scope .st-helper {
+  font-family: var(--st-ui);
+  font-size: 12.5px; font-weight: 450;
+  line-height: 1.55;
+  color: var(--st-text-3);
+}
+.settings-scope .st-foot {
+  font-family: var(--st-ui);
+  font-size: 12px; font-weight: 450;
+  color: var(--st-dim);
+}
+
+/* ── Pills, labels, inputs, buttons ────────────────────── */
+.settings-scope .st-pill {
+  font-family: var(--st-ui);
+  font-size: 11.5px; font-weight: 550;
+  padding: 3px 10px; border-radius: 99px;
+  white-space: nowrap;
+}
+.settings-scope .st-label {
+  font-family: var(--st-ui);
+  font-size: 13px; font-weight: 500;
+  color: var(--st-text-2);
+}
+.settings-scope .st-input {
+  font-family: var(--st-num);
+  font-size: 13px;
+}
+.settings-scope .st-btn {
+  font-family: var(--st-ui);
+  font-size: 13px; font-weight: 550;
+}
+.settings-scope .st-seg {
+  font-family: var(--st-ui);
+  font-size: 13px; font-weight: 500;
+}
+.settings-scope .st-live {
+  font-family: var(--st-num);
+  font-size: 11px; font-weight: 500;
+  letter-spacing: 0.02em;
+}

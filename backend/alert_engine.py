@@ -22,6 +22,7 @@ from alert_db import (
     get_today_firing_count, load_settings, save_settings,
     get_all_index_names, get_alert_db,
 )
+import app_settings
 
 
 class AlertEngine:
@@ -69,6 +70,16 @@ class AlertEngine:
                     "custom_sound_id": None,
                     "telegram_enabled": False,
                 },
+                {
+                    "rule_type": AlertRuleType.WALL_REVERSAL.value,
+                    "enabled": True,
+                    "cooldown_seconds": 300,
+                    "channels": [NotificationChannel.TOAST.value],
+                    "sound_enabled": False,
+                    "sound_choice": "alert",
+                    "custom_sound_id": None,
+                    "telegram_enabled": False,
+                },
             ]
             changed = True
         if "telegram" not in settings:
@@ -80,6 +91,63 @@ class AlertEngine:
         if "custom_sounds" not in settings:
             settings["custom_sounds"] = []
             changed = True
+        if "tier4_channels" not in settings:
+            # Legacy Tier 4 destination list — kept in sync with the dedicated
+            # profile below so older clients keep working.
+            settings["tier4_channels"] = ["telegram"]
+            changed = True
+        if "tier4" not in settings:
+            # Dedicated Tier-4 alert profile: routing/configuration is genuinely
+            # tier-aware while detection/rule evaluation stays unified. Migrates
+            # the legacy tier4_channels value into the profile.
+            settings["tier4"] = {
+                "enabled": True,
+                "channels": list(settings.get("tier4_channels") or ["telegram"]),
+                "cooldown_seconds": 300,
+                "telegram": {"enabled": False, "bot_token": "", "chat_id": ""},
+            }
+            changed = True
+        else:
+            # Backfill any missing profile keys (tolerant of older payloads).
+            _t4 = settings["tier4"]
+            if isinstance(_t4, dict):
+                _t4.setdefault("enabled", True)
+                _t4.setdefault("channels", list(settings.get("tier4_channels") or ["telegram"]))
+                _t4.setdefault("cooldown_seconds", 300)
+                _t4.setdefault("telegram", {"enabled": False, "bot_token": "", "chat_id": ""})
+        # v3.8 BACKFILL: ensure every registered AlertRuleType has a config,
+        # even on EXISTING installs where settings["rules"] was already seeded
+        # without newer rule types (e.g. wall_reversal). Without this, the
+        # Settings UI never shows the new rule for users who had settings before.
+        _defaults = {
+            AlertRuleType.RULE_1.value: {
+                "rule_type": AlertRuleType.RULE_1.value, "enabled": True,
+                "cooldown_seconds": 300,
+                "channels": [NotificationChannel.TOAST.value],
+                "sound_enabled": False, "sound_choice": "alert",
+                "custom_sound_id": None, "telegram_enabled": False,
+            },
+            AlertRuleType.RULE_2.value: {
+                "rule_type": AlertRuleType.RULE_2.value, "enabled": True,
+                "cooldown_seconds": 300,
+                "channels": [NotificationChannel.TOAST.value],
+                "sound_enabled": False, "sound_choice": "bell",
+                "custom_sound_id": None, "telegram_enabled": False,
+            },
+            AlertRuleType.WALL_REVERSAL.value: {
+                "rule_type": AlertRuleType.WALL_REVERSAL.value, "enabled": True,
+                "cooldown_seconds": 300,
+                "channels": [NotificationChannel.TOAST.value],
+                "sound_enabled": False, "sound_choice": "alert",
+                "custom_sound_id": None, "telegram_enabled": False,
+            },
+        }
+        _existing = {r.get("rule_type") for r in settings.get("rules", [])}
+        for _rt, _cfg in _defaults.items():
+            if _rt not in _existing:
+                settings["rules"].append(_cfg)
+                changed = True
+                print(f"[AlertEngine] backfilled missing rule config: {_rt}")
         if changed:
             save_settings(settings)
 
@@ -89,6 +157,11 @@ class AlertEngine:
 
     def update_settings(self, settings: Dict[str, Any]):
         self._ensure_initialized()
+        # Keep the legacy tier4_channels key in sync with the dedicated profile
+        # so older clients keep working.
+        _t4 = settings.get("tier4")
+        if isinstance(_t4, dict):
+            settings["tier4_channels"] = list(_t4.get("channels") or [])
         save_settings(settings)
 
     def _get_rule_config(self, rule_type: str, settings: Dict) -> Optional[Dict]:
@@ -153,23 +226,101 @@ class AlertEngine:
             "max_negative_gex": max_neg_gex,
         }
 
+    # ── Rule-state routing (live DB vs. isolated in-memory map) ──────
+    # Backtests must never read or mutate the live alert_rule_state table.
+    # When a caller supplies `state_map`, ALL rule-state reads and writes for
+    # that call go to this in-memory dict (keyed by (rule_type, index_name))
+    # instead of the DB. The write mirrors alert_db.set_rule_state upsert
+    # semantics exactly: every field is overwritten with the value passed.
+    @staticmethod
+    def _default_rule_state() -> Dict[str, Any]:
+        return {"state": "armed", "last_fired_at": None,
+                "cooldown_seconds": 300, "condition_cleared_at": None}
+
+    @classmethod
+    def _read_rule_state(cls, state_map, rule_type: str, index_name: str) -> Dict[str, Any]:
+        if state_map is None:
+            return get_rule_state(rule_type, index_name)
+        key = (rule_type, index_name)
+        if key not in state_map:
+            state_map[key] = cls._default_rule_state()
+        return dict(state_map[key])
+
+    @staticmethod
+    def _write_rule_state(state_map, rule_type: str, index_name: str, state: str,
+                          last_fired_at=None, cooldown_seconds=300,
+                          condition_cleared_at=None):
+        if state_map is None:
+            set_rule_state(rule_type, index_name, state,
+                           last_fired_at=last_fired_at,
+                           cooldown_seconds=cooldown_seconds,
+                           condition_cleared_at=condition_cleared_at)
+            return
+        state_map[(rule_type, index_name)] = {
+            "state": state,
+            "last_fired_at": last_fired_at,
+            "cooldown_seconds": cooldown_seconds,
+            "condition_cleared_at": condition_cleared_at,
+        }
+
     def evaluate_rules(
         self,
         snapshot: Dict[str, Any],
         index_name: str = "NIFTY",
+        rule_types: Optional[List[AlertRuleType]] = None,
+        state_map: Optional[Dict[Any, Dict[str, Any]]] = None,
     ) -> List[AlertTriggerPayload]:
-        """Evaluate all enabled rules against a snapshot. Return fired alerts."""
+        """Evaluate enabled rules against a snapshot. Return fired alerts.
+        rule_types: optional subset (e.g. the Tier-3 scanner evaluates RULE_1
+        only, since it confirms walls with the expensive calc on trigger).
+        state_map: optional isolated rule-state store used INSTEAD of the live
+        alert_rule_state table. Backtests pass a fresh dict per request so they
+        can neither read nor mutate live armed/disarmed state, last_fired_at,
+        cooldown, or rearm-debounce state. Live callers (snapshot writer,
+        Tier-3 scanner) omit it and hit the DB exactly as before."""
         self._ensure_initialized()
         with self.lock:
             self.last_evaluation = datetime.now().isoformat()
             settings = self.get_settings()
             fired: List[AlertTriggerPayload] = []
 
+            # ── Master switch (A1 fix): "Alerts armed/disarmed" gates LIVE
+            # evaluation. Checked at the authoritative decision point so it
+            # applies uniformly to T1/T2 snapshots, the T3 scanner and Tier 4.
+            # Backtests (state_map is not None) are historical replays and are
+            # NOT gated — disarming live alerts must not block analysis.
+            if state_map is None:
+                try:
+                    if not app_settings.get_alerts_armed():
+                        return fired
+                except Exception:
+                    pass  # settings unavailable — fail open, never block live fire
+
             options = snapshot.get("options", [])
             spot = snapshot.get("spot")
             net_gex = snapshot.get("net_gex")
             futures_spread = snapshot.get("futures_spread")
             timestamp = snapshot.get("timestamp", datetime.now().isoformat())
+
+            # ── Tier identification (authoritative registry, no second list) ──
+            # An explicit snapshot["tier"] wins if a caller stamps it; otherwise
+            # resolve from app_settings.instrument_tiers — the SAME registry the
+            # Instruments UI maintains. Tier 3→4 promotions and 4→3 demotions
+            # therefore change alert treatment on the very next evaluation.
+            instrument_tier = snapshot.get("tier")
+            if not isinstance(instrument_tier, int):
+                try:
+                    instrument_tier = app_settings.get_instrument_tier(index_name)
+                except Exception:
+                    instrument_tier = None
+            if instrument_tier not in (1, 2, 3, 4):
+                instrument_tier = None
+
+            # ── Tier-4 profile gate, evaluated BEFORE the state machine so a
+            # disabled profile leaves no rule-state or history residue.
+            t4_profile = settings.get("tier4") or {}
+            if instrument_tier == 4 and not t4_profile.get("enabled", True):
+                return fired
 
             walls = self._calculate_walls(options)
             if not walls:
@@ -180,6 +331,8 @@ class AlertEngine:
                 atm_strike = min(walls["strikes"], key=lambda s: abs(s - spot))
 
             for rule_type in [AlertRuleType.RULE_1, AlertRuleType.RULE_2]:
+                if rule_types and rule_type not in rule_types:
+                    continue
                 config = self._get_rule_config(rule_type.value, settings)
                 if not config or not config.get("enabled", False):
                     continue
@@ -202,10 +355,18 @@ class AlertEngine:
                     )
                     rule_name = "ATM Maximum CE/PE Wall"
 
-                state_info = get_rule_state(rule_type.value, index_name)
+                if instrument_tier == 4:
+                    rule_name = f"TIER 4 | {rule_name}"
+                state_info = self._read_rule_state(state_map, rule_type.value, index_name)
                 current_state = state_info.get("state", AlertState.ARMED.value)
                 last_fired = state_info.get("last_fired_at")
                 cooldown_sec = config.get("cooldown_seconds", 300)
+                if instrument_tier == 4:
+                    # The Tier-4 profile owns its own cadence.
+                    try:
+                        cooldown_sec = int(t4_profile.get("cooldown_seconds", cooldown_sec))
+                    except (TypeError, ValueError):
+                        pass
 
                 if current_state == AlertState.ARMED.value and condition_met:
                     cooldown_ok = True
@@ -215,19 +376,41 @@ class AlertEngine:
                             cooldown_ok = False
 
                     if cooldown_ok:
-                        channels: List[str] = []
-                        if NotificationChannel.TOAST.value in config.get("channels", []):
-                            channels.append(NotificationChannel.TOAST.value)
-                        if config.get("sound_enabled", False) and settings.get("sound", {}).get("master_enabled", True):
-                            channels.append(NotificationChannel.SOUND.value)
-                        if config.get("telegram_enabled", False) and settings.get("telegram", {}).get("enabled", False):
-                            channels.append(NotificationChannel.TELEGRAM.value)
+                        # Channel availability. Tier 1/2/3: the per-rule flags
+                        # decide (unchanged). Tier 4: the dedicated profile owns
+                        # routing — profile channels fire regardless of the
+                        # per-rule channel flags; telegram is available when
+                        # EITHER the shared or the dedicated Tier-4 destination
+                        # is configured; sound still respects the global master.
+                        if instrument_tier == 4:
+                            _t4ch = t4_profile.get("channels") or ["telegram"]
+                            _t4tg = t4_profile.get("telegram") or {}
+                            _tg_available = bool(
+                                _t4tg.get("enabled") and _t4tg.get("bot_token") and _t4tg.get("chat_id")
+                            ) or bool(settings.get("telegram", {}).get("enabled"))
+                            channels: List[str] = []
+                            if NotificationChannel.TOAST.value in _t4ch:
+                                channels.append(NotificationChannel.TOAST.value)
+                            if (NotificationChannel.SOUND.value in _t4ch
+                                    and settings.get("sound", {}).get("master_enabled", True)):
+                                channels.append(NotificationChannel.SOUND.value)
+                            if NotificationChannel.TELEGRAM.value in _t4ch and _tg_available:
+                                channels.append(NotificationChannel.TELEGRAM.value)
+                        else:
+                            channels: List[str] = []
+                            if NotificationChannel.TOAST.value in config.get("channels", []):
+                                channels.append(NotificationChannel.TOAST.value)
+                            if config.get("sound_enabled", False) and settings.get("sound", {}).get("master_enabled", True):
+                                channels.append(NotificationChannel.SOUND.value)
+                            if config.get("telegram_enabled", False) and settings.get("telegram", {}).get("enabled", False):
+                                channels.append(NotificationChannel.TELEGRAM.value)
 
                         payload = AlertTriggerPayload(
                             timestamp=timestamp,
                             index_name=index_name,
                             rule_type=rule_type,
                             rule_name=rule_name,
+                            instrument_tier=instrument_tier,
                             spot=spot,
                             atm_strike=atm_strike,
                             max_ce_oi_strike=walls.get("max_ce_oi_strike"),
@@ -240,7 +423,7 @@ class AlertEngine:
                         )
                         fired.append(payload)
 
-                        set_rule_state(
+                        self._write_rule_state(state_map,
                             rule_type.value, index_name,
                             AlertState.DISARMED.value,
                             last_fired_at=datetime.now().isoformat(),
@@ -252,6 +435,7 @@ class AlertEngine:
                             index_name=index_name,
                             rule_type=rule_type.value,
                             rule_name=rule_name,
+                            instrument_tier=instrument_tier,
                             spot=spot,
                             atm_strike=atm_strike,
                             max_ce_oi_strike=walls.get("max_ce_oi_strike"),
@@ -263,13 +447,55 @@ class AlertEngine:
                             market_state=snapshot,
                         )
 
-                elif current_state == AlertState.DISARMED.value and not condition_met:
-                    set_rule_state(
-                        rule_type.value, index_name,
-                        AlertState.ARMED.value,
-                        last_fired_at=last_fired,
-                        cooldown_seconds=cooldown_sec,
-                    )
+                elif current_state == AlertState.DISARMED.value:
+                    # Correct rearm semantics:
+                    #  - While the condition STILL HOLDS: stay disarmed.
+                    #    Never re-fire for the same condition instance.
+                    #  - Once the condition clears: wait alert_rearm_seconds
+                    #    (user-configurable debounce), then re-arm. A condition
+                    #    that flickers back within the debounce does NOT alert.
+                    # Cooldown still applies independently to the next firing.
+                    rearm_sec = app_settings.get_alert_rearm_seconds()
+                    cleared_at = state_info.get("condition_cleared_at")
+                    now = datetime.now()
+
+                    if condition_met:
+                        if cleared_at is not None:
+                            self._write_rule_state(state_map,
+                                rule_type.value, index_name,
+                                AlertState.DISARMED.value,
+                                last_fired_at=last_fired,
+                                cooldown_seconds=cooldown_sec,
+                                condition_cleared_at=None,
+                            )
+                    else:
+                        if cleared_at is None:
+                            self._write_rule_state(state_map,
+                                rule_type.value, index_name,
+                                AlertState.DISARMED.value,
+                                last_fired_at=last_fired,
+                                cooldown_seconds=cooldown_sec,
+                                condition_cleared_at=now.isoformat(),
+                            )
+                        else:
+                            try:
+                                cleared_dt = datetime.fromisoformat(cleared_at)
+                                if (now - cleared_dt).total_seconds() >= rearm_sec:
+                                    self._write_rule_state(state_map,
+                                        rule_type.value, index_name,
+                                        AlertState.ARMED.value,
+                                        last_fired_at=last_fired,
+                                        cooldown_seconds=cooldown_sec,
+                                        condition_cleared_at=None,
+                                    )
+                            except Exception:
+                                self._write_rule_state(state_map,
+                                    rule_type.value, index_name,
+                                    AlertState.DISARMED.value,
+                                    last_fired_at=last_fired,
+                                    cooldown_seconds=cooldown_sec,
+                                    condition_cleared_at=now.isoformat(),
+                                )
 
             return fired
 

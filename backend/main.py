@@ -1,37 +1,21 @@
-"""FastAPI backend for NIFTY/SENSEX Option Chain Replay Dashboard + Alert System v2.2."""
+"""FastAPI backend for NIFTY/SENSEX + Tier-2 stocks Option Chain Replay Dashboard + Alert System v2.2.
+
+v3.1 startup patch (see README.md in this package):
+- Phased startup: Tier-1 (NIFTY/SENSEX) snapshot timers + broadcasts start as
+  soon as the critical adapter path returns; stock initialization continues on
+  a background thread. Idempotent, lock-guarded timer registry + catch-up pass
+  closes the race between background seeding and hook wiring.
+- Startup banner now reads the settings DB instrument list (the old banner
+  showed the stale .env TIER2_STOCKS value).
+- New GET /api/readiness — per-instrument lifecycle observability.
+"""
 import os
-import asyncio
-import json
-import logging
-from datetime import datetime, date, time as dt_time
-from contextlib import asynccontextmanager
 
+# ── Load .env BEFORE any project imports ─────────────────────
+# streamer_integration parses TIER2_STOCKS at import time; if dotenv
+# runs after the imports, the stocks list is silently empty.
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, UploadFile, File, Form
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
 
-from database import init_db, get_db
-from models import CurrentState, TimestampList
-from snapshot_engine import SnapshotEngine, is_market_open
-from streamer_integration import streamer_adapter, ANGEL_ONE_AVAILABLE, STREAMING_INDICES
-from websocket_manager import manager
-
-# ── Alert System Imports ──────────────────────────────────────
-from alert_db import init_alert_db
-from alert_engine import alert_engine
-from alert_models import (
-    AlertSettings, AlertHistoryResponse, BacktestRequest, BacktestResponse,
-    AlertStatus, AlertTriggerPayload, NotificationChannel,
-)
-from telegram_notifier import send_telegram_alert, test_telegram_connection
-from sound_manager import (
-    get_all_sounds, get_sound_base64, save_uploaded_sound, remove_custom_sound,
-    BUILT_IN_SOUNDS,
-)
-
-# Load .env before anything else
 env_path = os.path.join(os.path.dirname(__file__), ".env")
 if os.path.exists(env_path):
     load_dotenv(env_path, override=True)
@@ -40,14 +24,60 @@ else:
     print(f"[ENV] Warning: {env_path} not found. Create it from .env.example")
     print("[ENV] The server will start with historical replay only (live streaming unavailable).")
 
+import asyncio
+import json
+import logging
+import threading
+import time
+from datetime import datetime, date, timedelta, time as dt_time
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse
+
+from database import init_db, get_db
+from models import CurrentState, TimestampList
+from snapshot_engine import SnapshotEngine, is_market_open
+from streamer_integration import streamer_adapter, ANGEL_ONE_AVAILABLE, STREAMING_INDICES, TIER1_INDICES, TIER2_STOCKS
+from candle_builder import candle_builder
+from wall_scanner import wall_scanner
+import app_settings
+import app_perf
+from calculations import set_risk_free_rate
+from websocket_manager import manager
+import faulthandler
+
+# ── Alert System Imports ──────────────────────────────────────
+from alert_db import init_alert_db
+from alert_engine import alert_engine
+from alert_models import (
+    AlertSettings, AlertHistoryResponse, BacktestRequest, BacktestResponse,
+    AlertStatus, AlertTriggerPayload, NotificationChannel,
+)
+from telegram_notifier import send_telegram_alert, test_telegram_connection, resolve_telegram_destination
+from sound_manager import (
+    get_all_sounds, get_sound_base64, save_uploaded_sound, remove_custom_sound,
+    BUILT_IN_SOUNDS,
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S"
 )
 
-# Global state
+# Console-noise reduction: the uvicorn ACCESS logger only emits per-request
+# "GET /api/... 200 OK" lines (the frontend polling flood). Silencing it does
+# NOT affect application logging — Greeks feed, alerts, WebSocket, startup/
+# shutdown, warnings and errors all flow through other loggers and stay at
+# INFO. (Belt-and-braces for launches that bypass the __main__ block below.)
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
 snapshot_engine = SnapshotEngine()
+alert_broadcast_queue: asyncio.Queue = asyncio.Queue()
+_main_loop: asyncio.AbstractEventLoop | None = None
 
 # In-memory queue for alert firings to broadcast via WebSocket
 alert_broadcast_queue: asyncio.Queue = asyncio.Queue()
@@ -63,8 +93,8 @@ def log_startup_status():
     time_str = now.strftime("%H:%M:%S IST")
 
     print("=" * 60)
-    print(f"  {'/'.join(STREAMING_INDICES)} Option Chain Replay Dashboard")
-    print(f"  Alert System v2.2")
+    print(f"  Multi-Instrument Option Chain Replay Dashboard")
+    print(f"  Alert System v2.2 + Tier-2 Stocks (Subscription Manager v3.0)")
     print("=" * 60)
     print(f"  Local Time: {day_name}, {time_str}")
     print(f"  Market Status: {'OPEN' if market_open else 'CLOSED'}")
@@ -74,34 +104,324 @@ def log_startup_status():
         else:
             print("  Reason: Outside trading hours (09:15-15:30 IST)")
     print(f"  SmartApi: {'✓ INSTALLED' if ANGEL_ONE_AVAILABLE else '✗ NOT INSTALLED'}")
-    if not ANGEL_ONE_AVAILABLE:
-        print("  Fix: pip install smartapi-python pyotp")
+    print(f"  Tier 1: {', '.join(TIER1_INDICES)}")
+    # v3.1 FIX: the old banner read streamer_adapter.configured_stocks (still
+    # the env-parsed value at this point) and labelled it "Tier 2 stocks",
+    # which contradicted the settings DB. The authoritative instrument list
+    # and its per-instrument tiers come from app_settings.
+    _all = app_settings.get_stocks()
+    _tiers = app_settings.get_all().get("instrument_tiers", {})
+    print(f"  Configured instruments ({len(_all)}): "
+          f"{', '.join(_all) if _all else '(none — add via Settings > Instruments)'}")
+    if _tiers:
+        _by_tier: dict = {}
+        for _s in _all:
+            _by_tier.setdefault(_tiers.get(_s, 3), []).append(_s)
+        for _t in sorted(_by_tier):
+            print(f"    tier {_t}: {len(_by_tier[_t])} instrument(s)")
     print("=" * 60)
+
+
+# ─────────────────────────────────────────────────────────────
+# FREEZE FORENSICS (v3.12)
+# ─────────────────────────────────────────────────────────────
+# 2026-09-22 production incident (RECURRING, machine awake, user active):
+# ALL pipeline output stopped mid-print (every instrument + DB writer)
+# and self-recovered ~8 minutes later. Sleep ruled out via Event Viewer;
+# console blockage ruled out (occurs while user is active). This recorder
+# writes a LIVENESS LINE to backend/backend_liveness.log every 30s
+# (file, not console - immune to whatever stalls the console), sampling:
+#   - NIFTY/SENSEX WS message counts   (are ticks still flowing?)
+#   - snapshot queue depth + analytics in-flight   (is capture alive?)
+#   - broadcast-loop age               (is the event loop alive?)
+#   - NIFTY snapshot age               (the trigger)
+# If NIFTY snapshots go stale >90s during market hours it dumps EVERY
+# thread's stack to backend/freeze_dump.txt - and keeps logging liveness
+# THROUGH the freeze, so afterwards we can see exactly which subsystem
+# died and which kept running. Rotated at 5 MB.
+_watchdog_stop = threading.Event()
+_LIVENESS_PATH = os.path.join(os.path.dirname(__file__), "backend_liveness.log")
+
+
+def _liveness_sample():
+    """Collect one liveness sample. Never raises."""
+    now = time.time()
+    parts = []
+    for idx in ("NIFTY", "SENSEX"):
+        try:
+            s = streamer_adapter.streamers.get(idx)
+            mc = getattr(s.data_store, "msg_count", None) if s else None
+            parts.append(f"{idx.lower()}_msgs={mc if mc is not None else '?'}")
+        except Exception:
+            parts.append(f"{idx.lower()}_msgs=?")
+    try:
+        parts.append(f"snapq={snapshot_engine.snapshot_queue.qsize()}")
+    except Exception:
+        parts.append("snapq=?")
+    try:
+        parts.append(f"inflight={getattr(snapshot_engine, '_analytics_inflight', '?')}"
+                     f"/dropped={getattr(snapshot_engine, '_analytics_dropped', '?')}")
+    except Exception:
+        parts.append("inflight=?")
+    try:
+        b_age = now - _BROADCAST_LAST if _BROADCAST_LAST else -1
+        parts.append(f"bcast_age={b_age:.0f}s")
+    except Exception:
+        parts.append("bcast_age=?")
+    ts = snapshot_engine.latest_timestamps.get("NIFTY")
+    snap_age = -1
+    if ts:
+        try:
+            snap_age = (datetime.now() - datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")).total_seconds()
+        except Exception:
+            snap_age = -1
+    parts.append(f"nify_snap_age={snap_age:.0f}s")
+    return snap_age, " ".join(parts)
+
+
+def _liveness_write(line):
+    try:
+        if os.path.exists(_LIVENESS_PATH) and os.path.getsize(_LIVENESS_PATH) > 5 * 1024 * 1024:
+            os.replace(_LIVENESS_PATH, _LIVENESS_PATH + ".old")
+        with open(_LIVENESS_PATH, "a") as fh:
+            fh.write(line + "\n")
+    except Exception:
+        pass
+
+
+def _freeze_watchdog():
+    _dumped = False
+    while not _watchdog_stop.is_set():
+        _watchdog_stop.wait(30)
+        try:
+            snap_age, sample = _liveness_sample()
+            stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            _liveness_write(f"{stamp} {sample}")
+            if not is_market_open():
+                _dumped = False
+                continue
+            if snap_age > 90:
+                _liveness_write(f"{stamp} *** STALL DETECTED (nify_snap_age={snap_age:.0f}s) "
+                                f"- dumping all thread stacks to freeze_dump.txt ***")
+                try:
+                    with open(os.path.join(os.path.dirname(__file__), "freeze_dump.txt"), "a") as fh:
+                        fh.write(f"\n===== FREEZE {datetime.now().isoformat()} "
+                                 f"(NIFTY snapshot age {snap_age:.0f}s) =====\n")
+                        faulthandler.dump_traceback(file=fh)
+                except Exception as e:
+                    logging.error(f"[FreezeWatchdog] dump failed: {e}")
+                if not _dumped:
+                    logging.error(f"[FreezeWatchdog] NIFTY snapshot stale {snap_age:.0f}s — "
+                                  f"stack dump written to freeze_dump.txt")
+                    _dumped = True
+            else:
+                _dumped = False
+        except Exception as e:
+            logging.error(f"[FreezeWatchdog] error: {e}")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _main_loop
     _main_loop = asyncio.get_running_loop()
-    init_db()
+    init_db()   # tables/schema only — never builds indexes (v3.11)
+    # Startup-safe perf-index bookkeeping: existence check only (microseconds).
+    # A MISSING index never blocks startup; run backend/build_perf_index.py
+    # before market hours to build it once. The endpoint is correct either way.
+    try:
+        from database import perf_index_exists
+        _pi = "present" if perf_index_exists() else "MISSING — run build_perf_index.py before market hours (endpoint remains correct, just slower)"
+        print(f"[DB] perf index idx_option_snapshots_strike_snap: {_pi}")
+    except Exception as _e:
+        print(f"[DB] perf index check skipped: {_e}")
     init_alert_db()
+    app_settings.init_settings()
+    set_risk_free_rate(app_settings.get_risk_free_rate())
+    candle_builder.start()   # 1m CASH candles: own sweeper+writer threads
     log_startup_status()
+    _watchdog_thread = threading.Thread(target=_freeze_watchdog, daemon=True,
+                                        name="freeze-watchdog")
+    _watchdog_thread.start()
 
-    # Start streamers (real mode only — safe fallback to unavailable)
+    def _streamer_name(s) -> str:
+        # InstrumentStreamer uses .symbol; AngelOneIndexStreamer uses .index_name
+        return getattr(s, "symbol", None) or getattr(s, "index_name", "UNKNOWN")
+
+    # v3.1: idempotent, thread-safe timer registry. _start_timer may be called
+    # from (a) the lifespan catch-up pass, (b) the adapter's on_stock_added
+    # hook (fires on the background init thread), and (c) on_tier_changed.
+    # The lock + set guarantee exactly-once timer startup regardless of which
+    # thread wins the race between background seeding and hook wiring.
+    _timers_started: set = set()
+    _timers_lock = threading.Lock()
+
+    def _start_timer(s):
+        """Tier 1/2(/4) get 30s analytics snapshots; Tier 3 scanners skip the
+        snapshot pipeline entirely (their own lightweight loop + triggers).
+        Idempotent per instrument — safe to call from any thread."""
+        name = _streamer_name(s)
+        with _timers_lock:
+            if name in _timers_started:
+                return
+            _timers_started.add(name)
+        if getattr(s, "tier", 2) == 3:
+            print(f"[Startup] {name}: Tier 3 scanner — no snapshot timer")
+            return
+        snapshot_engine.start_snapshot_timer(
+            s.data_store, s.spot_poller, index_name=name,
+            contract_multiplier=lambda: s.contract_multiplier,
+            expiry_datetime=lambda: s.expiry_datetime,
+            expiry_key=lambda: getattr(s, "expiry_str", None),
+            market_hours=lambda: getattr(s, "market_hours", None),
+            analytics_fn=getattr(s, "compute_snapshot_analytics", None),
+            # T1/T2(/T4) snapshot → alert engine integration: evaluate the
+            # completed snapshot through the existing engine + dispatch path.
+            on_snapshot=lambda snap, inst=name: _evaluate_snapshot_alerts(snap, inst),
+        )
+
+    def _register_scanner_streamer(sym, s):
+        """Wall-scanner provider per streamer (spec sections 16/18/30)."""
+        kind = getattr(s, "kind", "INDEX")
+        tier = getattr(s, "tier", 1)
+        def get_data():
+            return s.data_store.get_data()
+        if hasattr(s, "index_name"):      # AngelOneIndexStreamer
+            def get_strikes():
+                return sorted({int(v["strike"]) for v in s.token_map.values()})
+        else:                              # InstrumentStreamer
+            def get_strikes():
+                return list(s.strikes)
+        def get_spot():
+            return s.spot_poller.get_spot()
+        def get_neggex():
+            a = getattr(s, "_analytics_cache", None)
+            if not a:
+                return None
+            best = None; bestv = 0.0
+            for stk, d in (a.get("strikes_data") or {}).items():
+                g = (d.get("CE", {}).get("gex") or 0) + (d.get("PE", {}).get("gex") or 0)
+                if g < bestv:
+                    bestv, best = g, stk
+            return best
+        wall_scanner.register(sym, kind, tier, get_data, get_strikes,
+                              get_spot, get_neggex)
+
+    def _dispatch_scanner_alert(meta):
+        """Route scanner alerts through the EXISTING channel infrastructure.
+        meta["channels_fired"] was set by wall_scanner from the shared rule
+        config (registered as AlertRuleType.WALL_REVERSAL). Sound and Telegram
+        reuse the exact same paths as Rule 1 / Rule 2 alerts."""
+        if _main_loop is None or not _main_loop.is_running():
+            return
+        channels = meta.get("channels_fired", ["toast"])
+
+        # Sound — existing SoundManager path
+        if "sound" in channels:
+            try:
+                from sound_manager import get_sound_base64
+                cfg = alert_engine.get_settings()
+                rule_cfg = next((r for r in cfg.get("rules", [])
+                                 if r.get("rule_type") == "wall_reversal"), {})
+                sound_id = rule_cfg.get("custom_sound_id") or rule_cfg.get("sound_choice", "alert")
+                data = get_sound_base64(sound_id)
+                if data:
+                    asyncio.run_coroutine_threadsafe(
+                        manager.broadcast({"type": "alert_sound", "base64": data}),
+                        _main_loop)
+            except Exception as e:
+                logging.error(f"[Scanner] sound dispatch: {e}")
+
+        # Telegram — existing notifier (shared + Tier-4 destination resolution)
+        if "telegram" in channels:
+            try:
+                tg = resolve_telegram_destination(alert_engine.get_settings(),
+                                                  meta.get("instrument_tier"))
+                if tg.get("enabled"):
+                    asyncio.run_coroutine_threadsafe(
+                        asyncio.to_thread(send_telegram_alert,
+                                          tg.get("bot_token", ""), tg.get("chat_id", ""), meta),
+                        _main_loop)
+                else:
+                    # Silent-failure guard: the channel was requested but every
+                    # destination is disabled/unconfigured.
+                    logging.warning(
+                        "[Scanner] telegram channel requested but destination disabled "
+                        "or unconfigured (symbol=%s tier=%s)",
+                        meta.get("index_name"), meta.get("instrument_tier"))
+            except Exception as e:
+                logging.error(f"[Scanner] telegram dispatch: {e}")
+
+        # Toast — existing alert broadcast queue
+        asyncio.run_coroutine_threadsafe(
+            alert_broadcast_queue.put(meta), _main_loop)
+
+    # ── CRITICAL PHASE: Tier 1 only (returns in seconds, not minutes) ──
     try:
         streamer_adapter.start()
-        for index_name in STREAMING_INDICES:
+        wall_scanner.on_alert = _dispatch_scanner_alert
+        candle_builder.subscribe_1m(wall_scanner.on_1m_close)
+        wall_scanner.start()
+        for index_name in list(streamer_adapter.streamers.keys()):
             streamer = streamer_adapter.get_streamer(index_name)
             if streamer:
-                snapshot_engine.start_snapshot_timer(
-                    streamer.data_store,
-                    streamer.spot_poller,
-                    index_name=index_name,
-                    contract_multiplier=streamer.contract_multiplier,
-                    expiry_datetime=streamer.expiry_datetime
-                )
+                try:
+                    _start_timer(streamer)
+                    _register_scanner_streamer(index_name, streamer)
+                except Exception as e:
+                    # one streamer's timer failure must never suppress the hooks
+                    print(f"[Startup] Snapshot timer failed for {index_name}: {e}")
+
+        # Live add/remove/tier hooks (Settings > Instruments, no restart)
+        def _on_stock_added(s):
+            _start_timer(s)
+            try:
+                _register_scanner_streamer(_streamer_name(s), s)
+            except Exception as e:
+                print(f"[Startup] Scanner registration failed: {e}")
+
+        def _on_stock_removed(symbol):
+            with _timers_lock:
+                _timers_started.discard(symbol)
+            snapshot_engine.stop_snapshot_timer(symbol)
+
+        def _on_tier_changed(s):
+            if getattr(s, "tier", 2) == 3:
+                with _timers_lock:
+                    _timers_started.discard(_streamer_name(s))
+                snapshot_engine.stop_snapshot_timer(_streamer_name(s))
+            else:
+                _start_timer(s)
+
+        streamer_adapter.on_stock_added = _on_stock_added
+        streamer_adapter.on_stock_removed = _on_stock_removed
+        streamer_adapter.on_scanner_alerts = lambda fired: _dispatch_fired_alerts(fired)
+        streamer_adapter.on_tier_changed = _on_tier_changed
+
+        # RACE CLOSURE (verified): the adapter's background thread may have
+        # seeded some or all stocks BEFORE the hooks above were assigned, and
+        # seeded stocks do not fire on_stock_added. Run the same idempotent
+        # path over whatever exists — _timers_started makes this exactly-once
+        # no matter which side won the race.
+        with streamer_adapter._stocks_lock:
+            _seeded = list(streamer_adapter.stock_streamers.values())
+        for s in _seeded:
+            _on_stock_added(s)
+        # Fix 2: release the adapter's background thread so it can reconcile
+        # any stock seeded after the catch-up snapshot above (bounded wait).
+        streamer_adapter._hooks_ready.set()
     except Exception as e:
         print(f"[Startup] Streamer error: {e}")
+
+    # Tier 4 Angel Greeks feed + Part 1 validation sampler (isolated; sampler
+    # off unless VALIDATION_ENABLE=1). Both stop with the lifespan below.
+    from greeks_feed import greeks_feed_manager
+    if streamer_adapter.mode == "real" and getattr(streamer_adapter, "auth_manager", None):
+        greeks_feed_manager.configure(streamer_adapter.auth_manager)
+        greeks_feed_manager.start()
+    from greeks_validation import validation_sampler
+    validation_sampler.configure(streamer_adapter)
+    if validation_sampler.enabled:
+        validation_sampler.start()
 
     broadcast_task = asyncio.create_task(broadcast_loop())
     alert_broadcast_task = asyncio.create_task(alert_broadcast_loop())
@@ -112,17 +432,37 @@ async def lifespan(app: FastAPI):
         print("[FastAPI] Historical replay from DB is still available.")
     yield
 
-    snapshot_engine.stop()
-    streamer_adapter.stop()
+    # Orderly shutdown: async broadcast tasks -> snapshot workers -> WS
+    # reconnect loops & sockets (manager.stop) -> streamer threads -> logout.
+    print("[FastAPI] Shutdown initiated — stopping broadcast tasks...")
     broadcast_task.cancel()
     alert_broadcast_task.cancel()
+    try:
+        await asyncio.gather(broadcast_task, alert_broadcast_task, return_exceptions=True)
+    except Exception:
+        pass
+    print("[FastAPI] Stopping snapshot engine (timers + DB writer)...")
+    snapshot_engine.stop()
+    print("[FastAPI] Stopping wall scanner + candle builder (flush + drain)...")
+    wall_scanner.stop()
+    candle_builder.stop()
+    print("[FastAPI] Stopping Tier 4 feed + validation sampler...")
+    for _m in ("greeks_feed", "greeks_validation"):
+        try:
+            _mod = __import__(_m)
+            getattr(_mod, "greeks_feed_manager" if _m == "greeks_feed" else "validation_sampler").stop()
+        except Exception:
+            pass
+    print("[FastAPI] Stopping streamer adapter (sockets, threads, logout)...")
+    streamer_adapter.stop()
+    _watchdog_stop.set()
     print("[FastAPI] Server shutting down")
 
 
 app = FastAPI(
-    title="Multi-Index Option Chain Replay Dashboard",
-    description="Live intraday options forensic dashboard with replay capability + Alert System v2.2",
-    version="2.2.0",
+    title="Multi-Instrument Option Chain Replay Dashboard",
+    description="Live intraday options forensic dashboard with replay capability + Alert System v2.2 + Tier-2 stocks",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
@@ -139,54 +479,59 @@ app.add_middleware(
 # Alert Evaluation Hook (called by snapshot engine)
 # ─────────────────────────────────────────────────────────────
 
-def on_snapshot_for_alerts(snapshot: dict, index_name: str):
-    """Callback invoked after every snapshot is written to DB.
-    Evaluates alert rules and queues firings for broadcast.
+def _dispatch_fired_alerts(fired) -> None:
+    """Shared dispatch for fired alerts — the snapshot pipeline AND Tier 3
+    scanner triggers both land here.
 
-    NOTE: This runs on the DB writer thread, so all asyncio operations
-    must be scheduled via run_coroutine_threadsafe().
-    """
-    try:
-        fired = alert_engine.evaluate_rules(snapshot, index_name)
-        for alert in fired:
-            settings = alert_engine.get_settings()
-            telegram_cfg = settings.get("telegram", {})
+    Routing is tier-aware: Tier-4 alerts use their dedicated Telegram
+    destination when configured (falling back to the shared one). Toast/sound
+    delivery is decided frontend-side from channels_fired, which the engine
+    computes per tier — a Telegram-only Tier-4 alert arrives with toast/sound
+    already filtered out, so it can never produce a normal notification."""
+    for alert in fired:
+        settings = alert_engine.get_settings()
 
-            # Telegram (thread-safe)
-            if telegram_cfg.get("enabled", False) and NotificationChannel.TELEGRAM.value in [c.value for c in alert.channels_fired]:
-                if _main_loop is not None and _main_loop.is_running():
-                    asyncio.run_coroutine_threadsafe(
-                        asyncio.to_thread(
-                            send_telegram_alert,
-                            telegram_cfg.get("bot_token", ""),
-                            telegram_cfg.get("chat_id", ""),
-                            alert.model_dump(),
-                        ),
-                        _main_loop,
-                    )
-
-            # WebSocket broadcast (thread-safe via main loop)
-            if _main_loop is not None and _main_loop.is_running():
+        if NotificationChannel.TELEGRAM.value in [c.value for c in alert.channels_fired]:
+            telegram_cfg = resolve_telegram_destination(settings, alert.instrument_tier)
+            if telegram_cfg.get("enabled", False) and _main_loop is not None and _main_loop.is_running():
                 asyncio.run_coroutine_threadsafe(
-                    alert_broadcast_queue.put(alert.model_dump()),
+                    asyncio.to_thread(
+                        send_telegram_alert,
+                        telegram_cfg.get("bot_token", ""),
+                        telegram_cfg.get("chat_id", ""),
+                        alert.model_dump(),
+                    ),
                     _main_loop,
                 )
+
+        if _main_loop is not None and _main_loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                alert_broadcast_queue.put(alert.model_dump()),
+                _main_loop,
+            )
+
+
+def _evaluate_snapshot_alerts(snapshot: dict, index_name: str) -> None:
+    """THE live alert-evaluation entry point for snapshot-driven instruments
+    (Tier 1/2, and Tier 4 subject to its existing profile gate).
+
+    One pass per successfully captured snapshot: the existing engine evaluates
+    with live rule state (armed/disarmed, cooldown, rearm debounce, tier
+    resolution from the app-settings registry — all unchanged), and any fired
+    alerts go through the SAME _dispatch_fired_alerts path the Tier-3 scanner
+    uses (Telegram tier-aware routing + alert broadcast queue). No second
+    engine, dispatcher, or state machine. Tier-3 scanners evaluate from their
+    own trigger path and never come through here."""
+    try:
+        fired = alert_engine.evaluate_rules(snapshot, index_name)
     except Exception as e:
-        logging.error(f"[AlertEngine] Evaluation error: {e}")
-
-
-# Patch snapshot engine to trigger alerts
-_original_write = snapshot_engine._write_snapshot_to_db
-
-def _write_snapshot_to_db_with_alerts(conn, snapshot):
-    _original_write(conn, snapshot)
-    on_snapshot_for_alerts(snapshot, snapshot.get("index_name", "NIFTY"))
-
-snapshot_engine._write_snapshot_to_db = _write_snapshot_to_db_with_alerts
+        logging.error(f"[Alerts] Snapshot evaluation failed for {index_name}: {e}")
+        return
+    if fired:
+        _dispatch_fired_alerts(fired)
 
 
 async def alert_broadcast_loop():
-    """Broadcast alert firings to all WebSocket clients."""
     while True:
         try:
             alert = await alert_broadcast_queue.get()
@@ -201,27 +546,66 @@ async def alert_broadcast_loop():
 
 
 # ─────────────────────────────────────────────────────────────
-# Broadcast Loop (existing)
+# Broadcast Loop
 # ─────────────────────────────────────────────────────────────
 
+# Per-instrument last-broadcast times for the non-Tier-1 throttle. This MUST be
+# per instrument: a single shared timestamp lets the FIRST non-Tier-1 instrument
+# consume the 30s slot and starves every other one (with N stocks, each would
+# broadcast only once per N×30s). Tier 1 is exempt from the throttle entirely
+# and keeps its 5s cadence.
+_last_throttled_broadcast = {}
+# v3.12 FORENSICS: last time the broadcast loop completed a pass.
+# Written by broadcast_loop, read by the freeze watchdog. Lets the
+# liveness log distinguish "snapshots froze but WS/broadcast lived"
+# from a full process freeze.
+_BROADCAST_LAST = 0.0
+TIER2_BROADCAST_INTERVAL = 30.0   # non-Tier-1 instruments refresh at 30s cadence; Tier 1 stays at 5s
+
+
 async def broadcast_loop():
-    """Broadcast live data every 5 seconds to all connected clients."""
+    """Broadcast live data to all connected clients.
+    Tier 1 (indices): every 5 seconds.
+    Tier 2/3/4:       every 30 seconds PER INSTRUMENT — their analytics run on
+    the 30s cadence, so faster broadcasting would only re-send cached state."""
     while True:
         try:
             await asyncio.sleep(5)
+            global _BROADCAST_LAST
+            _BROADCAST_LAST = time.time()
             if streamer_adapter.mode != "real":
                 continue
             if manager.active_connections:
-                for index_name in STREAMING_INDICES:
-                    if index_name in streamer_adapter.streamers:
-                        state = await asyncio.to_thread(
-                            streamer_adapter.get_current_state,
-                            index_name
-                        )
-                        # Skip error-only states
-                        if state.get("data", {}).get("error"):
+                now = time.time()
+                # Snapshot the key view once — the background init thread may
+                # mutate adapter.streamers concurrently.
+                with streamer_adapter._stocks_lock:
+                    names = list(streamer_adapter.streamers.keys())
+                for index_name in names:
+                    streamer = streamer_adapter.streamers.get(index_name)
+                    if not streamer:
+                        continue
+                    # Tier classification. InstrumentStreamer carries .tier; the Tier-1
+                    # index streamers don't define it, and NIFTY/SENSEX are always
+                    # Tier 1 — so the getattr default must be 1. (A default of 2
+                    # silently throttled the indices into the Tier-2 bucket and
+                    # broke the intended 5s Tier-1 cadence.)
+                    is_tier1 = getattr(streamer, "tier", 1) == 1
+                    if not is_tier1:
+                        last = _last_throttled_broadcast.get(index_name, 0.0)
+                        if now - last < TIER2_BROADCAST_INTERVAL:
                             continue
-                        await manager.broadcast(state)
+                    _bt0 = time.perf_counter()
+                    state = await asyncio.to_thread(
+                        streamer_adapter.get_current_state,
+                        index_name
+                    )
+                    app_perf.record_broadcast(index_name, time.perf_counter() - _bt0)
+                    if state.get("data", {}).get("error"):
+                        continue
+                    await manager.broadcast(state)
+                    if not is_tier1:
+                        _last_throttled_broadcast[index_name] = now
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -233,7 +617,7 @@ async def broadcast_loop():
 # ─────────────────────────────────────────────────────────────
 
 @app.get("/api/current")
-async def get_current_state(index: str = Query(default="NIFTY", description="Index name: NIFTY or SENSEX")):
+async def get_current_state(index: str = Query(default="NIFTY", description="Instrument name: NIFTY, SENSEX, or a Tier-2 stock symbol")):
     latest = snapshot_engine.get_latest_snapshot(index)
     if latest:
         return CurrentState(**latest, is_live=True)
@@ -260,10 +644,290 @@ async def get_current_state(index: str = Query(default="NIFTY", description="Ind
         return CurrentState(**snapshot, is_live=False)
 
 
+@app.get("/api/instruments")
+async def get_instruments():
+    """Searchable dropdown source: fixed Tier-1 indices + all configured
+    instruments (any kind, any tier)."""
+    with streamer_adapter._stocks_lock:
+        configured = list(streamer_adapter.configured_stocks or TIER2_STOCKS)
+    stocks_running = [s for s in configured if s in streamer_adapter.streamers]
+    instruments = [{
+        "name": s,
+        "kind": app_settings.get_instrument_kind(s).lower(),
+        "tier": app_settings.get_instrument_tier(s),
+    } for s in configured]
+    return {
+        "tier1": [{"name": n, "tier": 1, "kind": "index"} for n in TIER1_INDICES],
+        "stocks": [{"name": n, "tier": 2, "kind": "stock"} for n in configured],
+        "instruments": instruments,
+        "stocks_running": stocks_running,
+        "ws": streamer_adapter.manager.stats() if streamer_adapter.manager else None,
+    }
+
+
+@app.get("/api/readiness")
+async def api_readiness():
+    """Per-instrument lifecycle observability (v3.1).
+
+    Answers 'when did each instrument become usable': active_at (subscription
+    registered), msg_count (ticks flowing), last_snapshot_at (first/last
+    snapshot captured), plus WS slot stats. Read-only, cheap, no locks held
+    across awaits (dict snapshot taken under the adapter lock)."""
+    with streamer_adapter._stocks_lock:
+        names = list(streamer_adapter.streamers.keys())
+    instruments: dict = {}
+    for name in names:
+        s = streamer_adapter.streamers.get(name)
+        if not s:
+            continue
+        try:
+            instruments[name] = {
+                **streamer_adapter.readiness.get(name, {}),
+                "msg_count": getattr(s.data_store, "msg_count", 0),
+                "last_snapshot_at": snapshot_engine.latest_timestamps.get(name),
+                "tier": getattr(s, "tier", 1),
+            }
+        except Exception:
+            pass
+    return {
+        "market_open": is_market_open(),
+        "mode": streamer_adapter.mode,
+        "ws": streamer_adapter.manager.stats() if streamer_adapter.manager else None,
+        "instruments": instruments,
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# SETTINGS API (v3.1)
+# ─────────────────────────────────────────────────────────────
+
+@app.get("/api/settings")
+async def get_settings():
+    """App settings: stocks, risk-free rate, window half-width, alerts arm."""
+    return app_settings.get_all()
+
+
+@app.put("/api/settings")
+async def put_settings(body: dict):
+    allowed = {}
+    for k in ("risk_free_rate", "window_half_width", "alerts_armed",
+              "alert_scope", "snapshot_interval_seconds", "alert_rearm_seconds",
+              "tier4_greeks_enabled"):
+        if k in body:
+            allowed[k] = body[k]
+    if "tier3_window_half_width" in body:
+        # clamp: scanner window must stay a sane, narrow band
+        try:
+            allowed["tier3_window_half_width"] = max(2, min(20, int(body["tier3_window_half_width"])))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="tier3_window_half_width must be an integer")
+    updated = app_settings.update(allowed)
+    if "risk_free_rate" in allowed:
+        set_risk_free_rate(float(updated["risk_free_rate"]))
+    if "window_half_width" in allowed or "tier3_window_half_width" in allowed:
+        # rebuild_window picks the per-tier width at build time (tier 3 uses
+        # the scanner width, tier 2 the full-analytics width)
+        streamer_adapter.rebuild_all_windows()
+    return updated
+
+
+@app.get("/api/stocks")
+async def list_stocks():
+    """Per-stock live status for Settings > Stocks."""
+    return {"stocks": streamer_adapter.stocks_status()}
+
+
+@app.post("/api/stocks")
+async def add_stock(body: dict):
+    symbol = (body.get("symbol") or "").strip().upper()
+    if not symbol:
+        raise HTTPException(status_code=400, detail="symbol is required")
+    kind = (body.get("kind") or "").strip().upper() or None
+    result = await asyncio.to_thread(streamer_adapter.add_stock, symbol, kind=kind)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "failed to add stock"))
+    return result
+
+
+@app.delete("/api/stocks/{symbol}")
+async def remove_stock(symbol: str):
+    result = await asyncio.to_thread(streamer_adapter.remove_stock, symbol)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "not found"))
+    return result
+
+
+@app.post("/api/stocks/{symbol}/pause")
+async def pause_stock(symbol: str):
+    result = await asyncio.to_thread(streamer_adapter.pause_stock, symbol)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "not found"))
+    return result
+
+
+@app.post("/api/stocks/{symbol}/resume")
+async def resume_stock(symbol: str):
+    result = await asyncio.to_thread(streamer_adapter.resume_stock, symbol)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "not found"))
+    return result
+
+
+@app.get("/api/stocks/search")
+async def search_stocks(q: str = Query(default="")):
+    """Typeahead source for the Add-stock bar (searches scrip master OPTSTK names)."""
+    from scrip_master import scrip_master
+    try:
+        matches = scrip_master.search_stock_names(q)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"matches": matches}
+
+
+@app.get("/api/instruments/search")
+async def search_instruments(q: str = Query(default="")):
+    """Kind-aware typeahead: [{symbol, kind}] across INDEX / STOCK / COMMODITY."""
+    from scrip_master import scrip_master
+    try:
+        matches = scrip_master.search_instruments(q)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"matches": matches}
+
+
+@app.post("/api/instruments")
+async def add_instrument(body: dict):
+    """Add an instrument of any kind. Kind auto-detected when omitted.
+    New instruments default to Tier 2 — promote via /api/instruments/{sym}/tier."""
+    symbol = (body.get("symbol") or "").strip().upper()
+    if not symbol:
+        raise HTTPException(status_code=400, detail="symbol is required")
+    kind = (body.get("kind") or "").strip().upper() or None
+    tier = body.get("tier", 2)
+    result = await asyncio.to_thread(streamer_adapter.add_instrument, symbol, kind=kind, tier=tier)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "failed to add instrument"))
+    return result
+
+
+@app.post("/api/instruments/{symbol}/tier")
+async def set_instrument_tier(symbol: str, body: dict):
+    """Promote (tier=1) or demote (tier=2) a tracked instrument."""
+    tier = body.get("tier", 2)
+    result = await asyncio.to_thread(streamer_adapter.set_instrument_tier, symbol, tier)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "not found"))
+    return result
+
+
+@app.get("/api/ws/usage")
+async def ws_usage():
+    """WebSocket slot stats + per-instrument token usage (Settings > Connections)."""
+    if not streamer_adapter.manager:
+        return {"ws": None, "usage_by_instrument": {}}
+    return {
+        "ws": streamer_adapter.manager.stats(),
+        "usage_by_instrument": streamer_adapter.manager.usage_by_instrument(),
+    }
+
+
+@app.get("/api/app-health")
+async def app_health():
+    """Application-specific performance — Settings > Connections > App health.
+
+    Answers 'can I add more Tier-2 stocks?' with real pipeline timings:
+    analytics / broadcast / snapshot cycle durations (avg + p95), freshness,
+    and DB write queue depth. Status: Healthy / Warning / Degraded / Idle.
+    """
+    from snapshot_engine import is_market_open as _market_open
+
+    perf = app_perf.snapshot()
+    interval = app_settings.get_snapshot_interval()
+    stocks_tracked = len(streamer_adapter.stock_streamers)
+    queue_depth = snapshot_engine.snapshot_queue.qsize()
+    market_open = _market_open()
+
+    def grade(p95_ms, ok_ms, warn_ms):
+        if p95_ms is None:
+            return "idle"
+        return "ok" if p95_ms < ok_ms else ("warning" if p95_ms < warn_ms else "degraded")
+
+    # Underlying feed staleness (worst across all streamers) — catches a
+    # stalled index/underlying token while option ticks keep flowing.
+    ages = []
+    with streamer_adapter._stocks_lock:
+        streamer_items = list(streamer_adapter.streamers.items())
+    for name, s in streamer_items:
+        try:
+            a = s.spot_poller.spot_age_sec()
+            if a is not None:
+                ages.append((a, name))
+        except Exception:
+            pass
+    max_age = max(ages)[0] if ages else None
+    if not market_open or max_age is None:
+        g_underlying = "idle"
+    else:
+        g_underlying = "ok" if max_age <= 120 else ("warning" if max_age <= 300 else "degraded")
+
+    g_analytics = grade(perf["analytics_tier2"]["p95_ms"], 500, 2000)
+    g_broadcast = grade(perf["broadcast_tier2"]["p95_ms"], 1000, 3000)
+    g_queue = "ok" if queue_depth == 0 else ("warning" if queue_depth <= 3 else "degraded")
+
+    # Freshness: newest snapshot among instruments that actually produce
+    # snapshots (Tier 3 scanners skip the snapshot pipeline). The old filter
+    # matched tier==2 only, so a fleet of Tier-4 instruments — or even just
+    # the Tier-1 indices with no Tier-2 stocks — reported a false "Degraded".
+    SNAPSHOT_TIERS = (1, 2, 4)
+    last_snap = max(
+        (ts for name, ts in perf["last"]["snapshot"].items()
+         if app_settings.get_instrument_tier(name) in SNAPSHOT_TIERS),
+        default=None,
+    )
+    age = (time.time() - last_snap) if last_snap else None
+    if not market_open:
+        g_fresh = "idle"
+    elif age is None:
+        g_fresh = "idle"   # no snapshot-producing instruments configured — not an error
+    else:
+        g_fresh = "ok" if age <= 2 * interval else ("warning" if age <= 4 * interval else "degraded")
+
+    if stocks_tracked == 0:
+        overall = "idle"
+    else:
+        order = {"idle": 0, "ok": 1, "warning": 2, "degraded": 3}
+        overall = max([g_analytics, g_broadcast, g_queue, g_fresh], key=lambda g: order[g])
+
+    try:
+        from greeks_feed import greeks_feed_manager
+        greeks_health = greeks_feed_manager.health()
+    except Exception:
+        greeks_health = None
+
+    return {
+        "overall": overall,
+        "grades": {"analytics": g_analytics, "broadcast": g_broadcast,
+                   "queue": g_queue, "freshness": g_fresh, "underlying": g_underlying},
+        "greeks": greeks_health,
+        "max_spot_age_sec": max_age,
+        "oldest_feed": (max(ages)[1] if ages else None),
+        "stocks_tracked": stocks_tracked,
+        "queue_depth": queue_depth,
+        "snapshot_interval": interval,
+        "market_open": market_open,
+        "last_snapshot_at": last_snap,
+        "last_snapshot_age_sec": round(age) if age is not None else None,
+        # legacy aliases — the existing ConnectionsTab reads these names
+        "last_tier2_snapshot_at": last_snap,
+        "last_tier2_snapshot_age_sec": round(age) if age is not None else None,
+        **perf,
+    }
+
+
 @app.get("/api/snapshots")
 async def get_snapshots(
     date_str: str = Query(..., alias="date"),
-    index: str = Query(default="NIFTY", description="Index name: NIFTY or SENSEX")
+    index: str = Query(default="NIFTY", description="Instrument name")
 ):
     with get_db() as conn:
         rows = conn.execute(
@@ -278,7 +942,7 @@ async def get_snapshots(
 @app.get("/api/snapshot/{timestamp}")
 async def get_snapshot_by_timestamp(
     timestamp: str,
-    index: str = Query(default="NIFTY", description="Index name: NIFTY or SENSEX")
+    index: str = Query(default="NIFTY", description="Instrument name")
 ):
     with get_db() as conn:
         row = conn.execute(
@@ -302,33 +966,100 @@ async def get_snapshot_by_timestamp(
         return snapshot
 
 
+# ── v3.11 PERF: strike-history hot cache ──────────────────────────────
+# During market hours the desktop StrikeChart and mobile strike sheet poll
+# GET /api/history/{strike} every 30s for the SELECTED strike. A 5s TTL
+# collapses those repeats (and re-clicks on the same strike) without ever
+# serving data older than one poll tick. Keyed by (index, strike, date);
+# bounded; cleared wholesale past 500 entries (strike picks churn fast).
+_STRIKE_HISTORY_CACHE: dict = {}
+_STRIKE_HISTORY_CACHE_TTL = 5.0
+
+
 @app.get("/api/history/{strike}")
 async def get_strike_history(
     strike: int,
     date_str: str = Query(default=None, alias="date"),
-    index: str = Query(default="NIFTY", description="Index name: NIFTY or SENSEX")
+    index: str = Query(default="NIFTY", description="Instrument name")
 ):
+    """Per-strike intraday timeseries (OI / LTP / Gamma charts).
+
+    v3.11 PERF REWRITE — the previous plan drove the join from snapshot_id
+    and therefore index-scanned EVERY option row of EVERY snapshot for the
+    day (~380 snapshots x 300-800 rows = 150k-300k rows) to keep 2 rows per
+    snapshot. During market hours that fought the per-instrument snapshot
+    writers (commits every 30s x 38 instruments) and, because the handler is
+    async, the whole FastAPI event loop stalled with it — which is why the
+    charts crawled at 10:00 and were merely slow at 18:00.
+
+    Replacement (two-step, index-driven):
+      1) snapshot ids for (index, day) via idx_snapshots_index — ~380 rows.
+      2) ONE lookup: strike = ? AND snapshot_id IN (ids) against the new
+         composite idx_option_snapshots_strike_snap (strike, snapshot_id) —
+         one B-tree seek per snapshot -> ~2 rows per snapshot (~760 total),
+         regardless of how large the DB or the day has grown.
+    Also moved to asyncio.to_thread so a slow read can never block the loop.
+    Ordering: snapshot ids are AUTOINCREMENT and inserted in timestamp
+    order, so ORDER BY snapshot_id == ORDER BY timestamp for one instrument.
+    """
     if not date_str:
         date_str = date.today().isoformat()
 
-    with get_db() as conn:
-        rows = conn.execute("""
-            SELECT s.timestamp, o.option_type, o.oi, o.oi_change, o.oi_change_pct, o.volume,
-                   o.ltp, o.iv, o.delta, o.gamma, o.theta, o.vega, o.gex
-            FROM snapshots s
-            JOIN option_snapshots o ON s.id = o.snapshot_id
-            WHERE date(s.timestamp) = ? AND o.strike = ? AND s.index_name = ?
-            ORDER BY s.timestamp, o.option_type
-        """, (date_str, strike, index)).fetchall()
+    cache_key = (index, strike, date_str)
+    now_mono = time.monotonic()
+    hit = _STRIKE_HISTORY_CACHE.get(cache_key)
+    if hit is not None and now_mono - hit[0] < _STRIKE_HISTORY_CACHE_TTL:
+        return {"strike": strike, "index_name": index, "timeseries": hit[1]}
 
-    timeseries = [dict(row) for row in rows]
+    def _query():
+        with get_db() as conn:
+            next_day = (datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+            # Step 1: the day's snapshot ids for this instrument.
+            snap_rows = conn.execute(
+                "SELECT id, timestamp FROM snapshots "
+                "WHERE index_name = ? AND timestamp >= ? AND timestamp < ? "
+                "ORDER BY id",
+                (index, f"{date_str} 00:00:00", f"{next_day} 00:00:00"),
+            ).fetchall()
+            if not snap_rows:
+                return []
+            ids = [r["id"] for r in snap_rows]
+            ts_by_id = {r["id"]: r["timestamp"] for r in snap_rows}
+            # Step 2: only this strike's rows, one index seek per snapshot.
+            marks = ",".join("?" * len(ids))
+            rows = conn.execute(
+                f"SELECT o.snapshot_id, o.option_type, o.oi, o.oi_change, "
+                f"o.oi_change_pct, o.volume, o.ltp, o.iv, o.delta, o.gamma, "
+                f"o.theta, o.vega, o.gex "
+                f"FROM option_snapshots o "
+                f"WHERE o.strike = ? AND o.snapshot_id IN ({marks}) "
+                f"ORDER BY o.snapshot_id, o.option_type",
+                (strike, *ids),
+            ).fetchall()
+            return [
+                {
+                    "timestamp": ts_by_id[r["snapshot_id"]],
+                    "option_type": r["option_type"],
+                    "oi": r["oi"], "oi_change": r["oi_change"],
+                    "oi_change_pct": r["oi_change_pct"], "volume": r["volume"],
+                    "ltp": r["ltp"], "iv": r["iv"], "delta": r["delta"],
+                    "gamma": r["gamma"], "theta": r["theta"], "vega": r["vega"],
+                    "gex": r["gex"],
+                }
+                for r in rows
+            ]
+
+    timeseries = await asyncio.to_thread(_query)
+    if len(_STRIKE_HISTORY_CACHE) >= 500:
+        _STRIKE_HISTORY_CACHE.clear()
+    _STRIKE_HISTORY_CACHE[cache_key] = (now_mono, timeseries)
     return {"strike": strike, "index_name": index, "timeseries": timeseries}
 
 
 @app.get("/api/gex-history")
 async def get_gex_history(
     date_str: str = Query(default=None, alias="date"),
-    index: str = Query(default="NIFTY", description="Index name: NIFTY or SENSEX")
+    index: str = Query(default="NIFTY", description="Instrument name")
 ):
     if not date_str:
         date_str = date.today().isoformat()
@@ -346,7 +1077,7 @@ async def get_gex_history(
 @app.get("/api/gex-by-strike")
 async def get_gex_by_strike(
     timestamp: str,
-    index: str = Query(default="NIFTY", description="Index name: NIFTY or SENSEX")
+    index: str = Query(default="NIFTY", description="Instrument name")
 ):
     with get_db() as conn:
         snapshot = conn.execute(
@@ -369,7 +1100,6 @@ async def get_gex_by_strike(
         s = row["strike"]
         if s not in gex_data:
             gex_data[s] = {"ce_gex": 0, "pe_gex": 0, "net_gex": 0}
-
         gex_val = row["gex"] or 0
         if row["option_type"] == "CE":
             gex_data[s]["ce_gex"] = gex_val
@@ -382,7 +1112,7 @@ async def get_gex_by_strike(
 
 
 @app.get("/api/available-dates")
-async def get_available_dates(index: str = Query(default="NIFTY", description="Index name: NIFTY or SENSEX")):
+async def get_available_dates(index: str = Query(default="NIFTY", description="Instrument name")):
     with get_db() as conn:
         rows = conn.execute(
             "SELECT DISTINCT date(timestamp) as dt FROM snapshots WHERE index_name = ? ORDER BY dt DESC",
@@ -395,7 +1125,7 @@ async def get_available_dates(index: str = Query(default="NIFTY", description="I
 @app.get("/api/strikes")
 async def get_strikes(
     timestamp: str = Query(default=None),
-    index: str = Query(default="NIFTY", description="Index name: NIFTY or SENSEX")
+    index: str = Query(default="NIFTY", description="Instrument name")
 ):
     with get_db() as conn:
         if timestamp:
@@ -438,26 +1168,22 @@ async def get_market_status():
 
 @app.get("/api/alerts/settings")
 async def get_alert_settings():
-    """Get current alert system settings."""
     return alert_engine.get_settings()
 
 
 @app.post("/api/alerts/settings")
 async def update_alert_settings(settings: dict):
-    """Update alert system settings."""
     alert_engine.update_settings(settings)
     return {"status": "saved"}
 
 
 @app.get("/api/alerts/status")
 async def get_alert_status() -> AlertStatus:
-    """Get current alert engine status."""
     return AlertStatus(**alert_engine.get_status())
 
 
 @app.post("/api/alerts/reset")
 async def reset_alert_states(index: str = Query(default=None)):
-    """Reset all rule states to ARMED. Optionally filter by index."""
     alert_engine.reset_states(index)
     return {"status": "reset", "index": index}
 
@@ -470,27 +1196,37 @@ async def get_alert_history(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
 ):
-    """Get paginated alert history."""
     from alert_db import get_alert_history
     result = get_alert_history(index, date, rule_type, page, page_size)
     return AlertHistoryResponse(**result)
 
 
+@app.get("/api/alerts/history/dates")
+async def get_alert_history_dates(index: str = Query(default=None)):
+    """Lightweight per-day alert counts for the history calendar.
+    Returns {"dates": [{"date": "2026-09-04", "count": 7}, ...]} newest first."""
+    from alert_db import get_alert_date_counts
+    return {"dates": get_alert_date_counts(index)}
+
+
 @app.post("/api/alerts/backtest")
 async def run_backtest(req: BacktestRequest):
-    """Backtest alert rules on historical snapshot data."""
     from database import get_db
+    # Isolated scratch state for this backtest run: evaluate_rules reads and
+    # writes THIS map instead of the live alert_rule_state table, so a
+    # backtest can neither see nor mutate live armed/disarmed state,
+    # last_fired_at, cooldown, or rearm-debounce state. Live evaluations
+    # (snapshot writer / Tier-3 scanner) pass no state_map and are unaffected.
+    bt_rule_state: dict = {}
     triggers = []
 
     with get_db() as conn:
-        # Get all snapshots for the date
         snap_rows = conn.execute(
             "SELECT * FROM snapshots WHERE date(timestamp) = ? AND index_name = ? ORDER BY timestamp",
             (req.date_str, req.index_name)
         ).fetchall()
 
         for snap in snap_rows:
-            # Load options for this snapshot
             opt_rows = conn.execute(
                 """SELECT strike, option_type, oi, oi_change, oi_change_pct, volume, ltp,
                           iv, delta, gamma, theta, vega, gex
@@ -502,8 +1238,7 @@ async def run_backtest(req: BacktestRequest):
             snapshot = dict(snap)
             snapshot["options"] = [dict(opt) for opt in opt_rows]
 
-            # Temporarily reset states for clean backtest
-            fired = alert_engine.evaluate_rules(snapshot, req.index_name)
+            fired = alert_engine.evaluate_rules(snapshot, req.index_name, state_map=bt_rule_state)
             for alert in fired:
                 if alert.rule_type in req.rule_types:
                     triggers.append({
@@ -527,13 +1262,11 @@ async def run_backtest(req: BacktestRequest):
 
 @app.get("/api/alerts/sounds")
 async def list_sounds():
-    """List all available sounds (built-in + custom)."""
     return {"sounds": get_all_sounds()}
 
 
 @app.get("/api/alerts/sounds/{sound_id}")
 async def get_sound_data(sound_id: str):
-    """Get base64-encoded sound data."""
     data = get_sound_base64(sound_id)
     if data is None:
         raise HTTPException(status_code=404, detail="Sound not found")
@@ -545,7 +1278,6 @@ async def upload_sound(
     file: UploadFile = File(...),
     name: str = Form(...),
 ):
-    """Upload a custom sound file."""
     if not file.content_type or not file.content_type.startswith("audio/"):
         raise HTTPException(status_code=400, detail="File must be an audio file")
 
@@ -559,19 +1291,69 @@ async def upload_sound(
 
 @app.delete("/api/alerts/sounds/{sound_id}")
 async def delete_sound(sound_id: str):
-    """Delete a custom sound."""
     remove_custom_sound(sound_id)
     return {"status": "deleted"}
 
 
 @app.post("/api/alerts/telegram/test")
 async def test_telegram(cfg: dict):
-    """Test Telegram connection."""
     success, msg = test_telegram_connection(
         cfg.get("bot_token", ""),
         cfg.get("chat_id", ""),
     )
     return {"success": success, "message": msg}
+
+
+@app.get("/api/scanner/candles")
+async def scanner_candles(symbol: str = Query(...), tf: str = Query(...),
+                          date: str = Query(default=None)):
+    """HTF candles for the chart, derived from persisted candles_1m
+    (market-open anchored 15m/30m/1H; clock-aligned 5m)."""
+    from wall_scanner import htf_bucket_minutes, five_m_bucket_minutes, _aggregate, _label
+    if tf not in ("5m", "15m", "30m", "1H"):
+        raise HTTPException(status_code=400, detail="tf must be one of 5m|15m|30m|1H")
+    if not date:
+        date = datetime.now().strftime("%Y-%m-%d")
+    ones = candle_builder.load_1m(symbol.strip().upper(),
+                                  since_ts_minute=f"{date} 00:00:00")
+    out, cur, part = [], None, []
+    for c in ones:
+        b = (five_m_bucket_minutes(c["ts_minute"]) if tf == "5m"
+             else htf_bucket_minutes(tf, c["ts_minute"]))
+        if b is None:
+            continue
+        if cur is None:
+            cur, part = b, [c]
+        elif b == cur:
+            part.append(c)
+        else:
+            agg = _aggregate(symbol.upper(), part)
+            agg["ts_minute"] = _label(date, cur)
+            out.append(agg)
+            cur, part = b, [c]
+    if part:
+        agg = _aggregate(symbol.upper(), part)
+        agg["ts_minute"] = _label(date, cur)
+        out.append(agg)
+    return {"symbol": symbol.upper(), "tf": tf, "date": date, "candles": out}
+
+
+@app.get("/api/scanner/alerts")
+async def scanner_alerts(symbol: str = Query(default=None),
+                         date: str = Query(default=None)):
+    """Persisted wall_reversal alerts (markers queried, never recomputed)."""
+    from alert_db import get_alert_history
+    res = get_alert_history(index_name=symbol, date_str=date,
+                            rule_type="wall_reversal", page=1, page_size=200)
+    entries = []
+    for e in res["entries"]:
+        try:
+            meta = json.loads(e["market_state"])
+        except Exception:
+            meta = {}
+        entries.append({**meta, "id": e["id"], "timestamp": e["timestamp"],
+                        "rule_name": e["rule_name"]})
+    return {"alerts": entries, "total": res["total"]}
 
 
 @app.get("/api/health")
@@ -589,6 +1371,7 @@ async def health_check():
             }
             for name, s in streamer_adapter.streamers.items()
         },
+        "ws_slots": streamer_adapter.manager.stats() if streamer_adapter.manager else None,
         "alerts": {
             "engine_running": True,
             "total_firings_today": alert_engine.get_status()["total_firings_today"],
@@ -597,23 +1380,137 @@ async def health_check():
 
 
 # ─────────────────────────────────────────────────────────────
-# WebSocket Endpoint (updated with alert support)
+# DIAGNOSTIC: AG8004 REST-auth triage (read-only, session-safe)
+# ─────────────────────────────────────────────────────────────
+
+def _diagnose_angel_rest() -> dict:
+    """Classify the AG8004 failure using the RUNNING session — deliberately
+    NO fresh login here: a new generateSession would invalidate the live
+    feed's JWT. Two read-only probes:
+      1. ordinary REST market data (LTP) via the SDK
+      2. the optionGreek endpoint, byte-identical to the Tier-4 feed's call
+    Verdicts:
+      CASE_C both ok        -> earlier failure was request-specific; feed recovers alone
+      CASE_A LTP ok         -> optionGreek-SPECIFIC authorization/entitlement issue
+      CASE_B LTP also AG8004-> ALL REST market-data unauthorized for this app
+                               (portal migration / IP-binding / entitlement),
+                               NOT the key string — check the app's registered
+                               static IP + permissions on the Angel portal.
+    Never returns the JWT or API key."""
+    import requests
+    out = {"mode": streamer_adapter.mode, "tests": {}}
+    auth = getattr(streamer_adapter, "auth_manager", None)
+    if streamer_adapter.mode != "real" or auth is None:
+        out["error"] = "live streaming unavailable — diagnostic needs real mode"
+        return out
+    try:
+        jwt = auth.get_valid_jwt()
+    except Exception as e:
+        out["error"] = f"jwt unavailable: {e}"
+        return out
+
+    ltp = {"attempted": True}
+    try:
+        fn = getattr(auth.smart_api, "getLtpData", None) or getattr(auth.smart_api, "ltpData", None)
+        if fn is None:
+            ltp = {"attempted": False, "reason": "SDK has no LTP method"}
+        else:
+            r = fn("NSE", "RELIANCE-EQ", "2885")
+            ltp["ok"] = bool(isinstance(r, dict) and r.get("status"))
+            ltp["message"] = (str(r.get("message", ""))[:200] if isinstance(r, dict) else str(r)[:200])
+            ltp["errorcode"] = (str(r.get("errorcode", "")) if isinstance(r, dict) else "")
+    except Exception as e:
+        ltp["ok"] = False
+        ltp["message"] = f"exception: {e}"
+    out["tests"]["ltp"] = ltp
+
+    grk = {"attempted": True}
+    try:
+        st = streamer_adapter.streamers.get("NIFTY")
+        expiry = getattr(st, "expiry_str", None) if st else None
+        if not expiry:
+            grk = {"attempted": False, "reason": "NIFTY streamer/expiry unavailable"}
+        else:
+            headers = {
+                "Content-Type": "application/json", "Accept": "application/json",
+                "X-SourceID": "WEB",
+                "X-ClientLocalIP": os.getenv("CLIENT_LOCAL_IP", "192.168.1.1"),
+                "X-MACAddress": os.getenv("CLIENT_MAC", "aa:bb:cc:dd:ee:ff"),
+                "X-UserType": "USER",
+                "Authorization": jwt,
+                "X-PrivateKey": auth.api_key,
+            }
+            resp = requests.post(
+                "https://apiconnect.angelone.in/rest/secure/angelbroking/marketData/v1/optionGreek",
+                headers=headers,
+                data=json.dumps({"name": "NIFTY", "expirydate": expiry}),
+                timeout=15)
+            try:
+                data = resp.json()
+            except Exception:
+                data = {}
+            grk["http_status"] = resp.status_code
+            grk["ok"] = bool(data.get("status"))
+            grk["message"] = str(data.get("message", ""))[:200]
+            grk["errorcode"] = str(data.get("errorcode", ""))
+            grk["rows"] = len(data.get("data") or []) if data.get("status") else 0
+    except Exception as e:
+        grk["ok"] = False
+        grk["message"] = f"exception: {e}"
+    out["tests"]["option_greek"] = grk
+
+    lo, go = out["tests"].get("ltp", {}), out["tests"].get("option_greek", {})
+    if lo.get("ok") and go.get("ok"):
+        out["verdict"] = ("CASE_C: both REST probes work — the AG8004 was request-specific; "
+                          "the Tier-4 feed should recover on its own next probe")
+    elif lo.get("ok") and not go.get("ok"):
+        out["verdict"] = ("CASE_A: ordinary REST market data WORKS but optionGreek is rejected "
+                          "(AG8004) — optionGreek-SPECIFIC authorization/entitlement. Check the "
+                          "app's service permissions on the Angel portal / raise with Angel support.")
+    elif not lo.get("ok"):
+        out["verdict"] = ("CASE_B: ALL REST market data rejected (AG8004) while login+WS work — "
+                          "app-level REST authorization issue (portal migration / static-IP binding "
+                          "/ app entitlement), NOT the API-key string. Check the app's registered "
+                          "static IP and permissions on the Angel portal.")
+    return out
+
+
+@app.post("/api/diagnose/angel-rest")
+async def diagnose_angel_rest():
+    """DIAGNOSTIC ONLY: AG8004 triage using the live session. Read-only; no secrets."""
+    return await asyncio.to_thread(_diagnose_angel_rest)
+
+
+# ─────────────────────────────────────────────────────────────
+# WebSocket Endpoint
 # ─────────────────────────────────────────────────────────────
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
+    peer = f"{websocket.client.host}:{websocket.client.port}" if websocket.client else "?"
     try:
-        # Send initial state for all indices
-        for index_name in STREAMING_INDICES:
-            if index_name in streamer_adapter.streamers:
-                state = await asyncio.to_thread(
-                    streamer_adapter.get_current_state,
-                    index_name
-                )
-                await manager.send_personal_message(state, websocket)
+        await manager.connect(websocket)
+    except RuntimeError:
+        # Client vanished mid-handshake (dev-mode StrictMode orphan or
+        # reconnect race) — nothing is un-accepted on our side; the socket
+        # simply no longer exists. Not an error; close quietly.
+        logging.info(f"[WS] {peer} vanished before accept completed — closing quietly")
+        return
+    try:
+        with streamer_adapter._stocks_lock:
+            _names = list(streamer_adapter.streamers.keys())
+        for index_name in _names:
+            streamer = streamer_adapter.streamers.get(index_name)
+            if not streamer:
+                continue
+            state = await asyncio.to_thread(
+                streamer.get_current_state
+            )
+            if not await manager.send_personal_message(state, websocket):
+                # Socket died during the initial push — stop building
+                # state for it; the receive loop below would only blow up.
+                break
 
-        # Keep connection alive
         while True:
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=60.0)
@@ -624,13 +1521,19 @@ async def websocket_endpoint(websocket: WebSocket):
                 except json.JSONDecodeError:
                     pass
             except asyncio.TimeoutError:
-                logging.info("[WS] Client silent for 60s, closing connection")
+                logging.info(f"[WS] {peer} silent for 60s, closing connection")
                 break
 
     except WebSocketDisconnect:
-        logging.info("[WS] Client disconnected")
+        logging.info(f"[WS] {peer} disconnected")
+    except RuntimeError as e:
+        # Starlette raises RuntimeError('WebSocket is not connected. Need to
+        # call "accept" first.') when a dead StrictMode/reconnect-race socket
+        # is used post-close. For a server-side data push this is a normal
+        # client-gone event, not a handler bug — log at INFO with the peer.
+        logging.info(f"[WS] {peer} closed mid-session ({e}) — cleaned up")
     except Exception as e:
-        logging.error(f"[WS] Handler error: {e}")
+        logging.error(f"[WS] Handler error [{peer}]: {e}")
     finally:
         manager.disconnect(websocket)
 
@@ -655,12 +1558,15 @@ else:
         return {
             "status": "API only — no frontend build found",
             "endpoints": [
-                "/api/current", "/api/snapshots", "/api/alerts/settings",
-                "/api/alerts/history", "/api/health",
+                "/api/current", "/api/snapshots", "/api/instruments",
+                "/api/alerts/settings", "/api/alerts/history", "/api/health",
             ],
         }
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Native uvicorn switch: suppress per-request access lines only.
+    # Startup/shutdown INFO ("Uvicorn running on...", "Application startup
+    # complete") comes from the uvicorn.error logger and is unaffected.
+    uvicorn.run(app, host="0.0.0.0", port=8000, access_log=False)

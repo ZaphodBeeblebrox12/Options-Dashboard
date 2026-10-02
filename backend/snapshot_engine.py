@@ -1,29 +1,67 @@
 """Snapshot engine: captures market state every 30s during market hours and queues for DB write.
 
-FIXES APPLIED (v2.1):
-1. Daily OI baseline tracking — oi_change = current_oi - day_baseline_oi
-   (matches broker: change from market open / previous close)
-2. Removed tick-level prev_oi usage that caused near-zero erratic replay values
-3. Baselines persist to DB and load on restart (with yesterday's last OI fallback)
-4. Added oi_change_pct for percentage display
+v3.1 (settings upgrade):
+- Per-index timer handles: stop_snapshot_timer(index_name) enables live stock removal
+  without restarting the server.
+- contract_multiplier / expiry_datetime may be zero-arg callables, resolved at each
+  capture — required because a stock's lot size and expiry are only known after its
+  option window bootstraps (post-first-spot-tick).
+Everything else identical to v2.1 (daily OI baseline tracking).
+
+Session handling (v3.5 fix):
+- ALL market-open/closed decisions inside this engine go through market_open_for()
+  with the instrument's own market_hours (equity, MCX, or any future provider session).
+  The module-level is_market_open() is a legacy EQUITY-ONLY helper kept for other
+  modules — the generic engine never uses it.
 """
 import queue
 import time
 import threading
 import sqlite3
 from datetime import datetime, time as dt_time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from database import get_db_connection, get_daily_baseline, set_daily_baseline, get_yesterday_last_oi
 from calculations import calculate_analytics
+import app_settings
 
 
-def is_market_open() -> bool:
-    """Check if Indian equity markets are currently open."""
+def _capture_interval() -> int:
+    """Snapshot timer rearm interval — read live from settings each cycle."""
+    try:
+        return app_settings.get_snapshot_interval()
+    except Exception:
+        return 30
+
+
+def market_open_for(hours) -> bool:
+    """Per-instrument session check: hours = ((start_h, start_m), (end_h, end_m)).
+    Equity 09:15–15:30, MCX commodities ~09:00–23:30 — the caller decides via the
+    market_hours it supplies. This is the ONLY session gate the engine uses."""
     now = datetime.now()
     if now.weekday() > 4:
         return False
-    current_time = now.time()
-    return dt_time(9, 15, 0) <= current_time <= dt_time(15, 30, 0)
+    (h1, m1), (h2, m2) = hours
+    return dt_time(h1, m1, 0) <= now.time() <= dt_time(h2, m2, 0)
+
+
+def is_market_open() -> bool:
+    """LEGACY equity-only check (09:15–15:30 IST).
+
+    Retained for external modules (main.py health endpoints, index streamer
+    bootstrap messages). The SnapshotEngine itself must NEVER call this — every
+    engine decision uses market_open_for() with the instrument-supplied
+    market_hours so non-equity sessions (MCX, future providers) are respected.
+    """
+    return market_open_for(((9, 15), (15, 30)))
+
+
+_DEFAULT_HOURS = ((9, 15), (15, 30))  # fallback only when a caller supplies no session
+
+
+def _fmt_hours(hours) -> str:
+    """'((9, 0), (23, 30))' -> '09:00–23:30' (en dash, per-instrument messages)."""
+    (h1, m1), (h2, m2) = hours
+    return f"{h1:02d}:{m1:02d}–{h2:02d}:{m2:02d}"
 
 
 class SnapshotEngine:
@@ -37,52 +75,175 @@ class SnapshotEngine:
         self.running = True
         self.writer_thread = threading.Thread(target=self._db_writer_loop, daemon=True)
         self.writer_thread.start()
-        self.market_was_open = False
 
-        # v2.1: Daily OI baselines per index — {(strike, option_type): baseline_oi}
+        # v2.1: Daily OI baselines per index
         self.daily_baselines = {}
         self.baseline_loaded_for_index = set()
 
-        # Safety net: offload heavy analytics so timer thread never blocks
-        self._analytics_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="analytics")
+        # v3.1: per-index timer handles for live add/remove of instruments
+        self._timer_events = {}
+        self._timer_threads = {}
+        # v3.5: per-instrument session state (was a single global flag keyed to
+        # equity hours — wrong for mixed equity/MCX fleets)
+        self._instrument_open = {}   # index_name -> bool (session-state logging)
+
+        # v3.12 FIX (production freeze 09:29-09:44): a single 4-worker pool
+        # shared by every snapshot instrument could not drain 21 captures per
+        # 30s window at morning tick volumes. The backlog grew without bound,
+        # result(timeout=60) leaked the abandoned futures (never cancelled),
+        # and per-capture queue waits stretched from seconds to minutes —
+        # visible as the NIFTY/SENSEX cadence doubling 30s -> 60s -> silence.
+        # Pool is now sized for the fleet, the queue is bounded by an
+        # in-flight counter (saturated -> skip loudly, never queue forever),
+        # and timed-out futures are cancelled so workers cannot leak.
+        self._analytics_executor = ThreadPoolExecutor(max_workers=16, thread_name_prefix="analytics")
+        self._analytics_inflight = 0
+        self._analytics_inflight_lock = threading.Lock()
+        self._analytics_dropped = 0
+        # Alert evaluation runs on its OWN single worker: the alert DB does
+        # synchronous reads/writes per fired rule, and running that inside the
+        # capture thread let a slow/locked alert_system.db stretch every
+        # capture. Snapshots now never wait on the alert path (order of alert
+        # evaluation is preserved — one worker, FIFO).
+        self._alert_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="alert-hook")
+        self._alert_queued = 0
+
+    def _resolve(self, value):
+        """Values may be plain or zero-arg callables (resolved fresh each capture)."""
+        return value() if callable(value) else value
+
+    def _resolve_hours(self, market_hours):
+        """Instrument session, resolved fresh (callables supported). Callers that
+        don't supply a session get the equity default — never the other way round."""
+        return self._resolve(market_hours) or _DEFAULT_HOURS
 
     def _get_or_create_baseline(self, conn, index_name, strike, option_type, current_oi):
-        """Get the daily OI baseline for a contract. Creates from DB/yesterday/current if not exists."""
         today_str = datetime.now().strftime("%Y-%m-%d")
         key = (index_name, strike, option_type)
 
         if key in self.daily_baselines:
             return self.daily_baselines[key]
 
-        # 1. Try today's DB baseline
         baseline = get_daily_baseline(conn, today_str, index_name, strike, option_type)
         if baseline is not None:
             self.daily_baselines[key] = baseline
             return baseline
 
-        # 2. Try yesterday's last snapshot OI (most accurate for restarts)
         baseline = get_yesterday_last_oi(conn, index_name, strike, option_type)
         if baseline is not None:
             self.daily_baselines[key] = baseline
-            set_daily_baseline(conn, today_str, index_name, strike, option_type, baseline, source="yesterday_close")
+            set_daily_baseline(conn, today_str, index_name, strike, option_type,
+                               baseline, source="yesterday_close", commit=False)
             return baseline
 
-        # 3. Fallback: current OI becomes baseline (first-ever sighting)
         baseline = current_oi
         self.daily_baselines[key] = baseline
-        set_daily_baseline(conn, today_str, index_name, strike, option_type, baseline, source="first_reading")
+        set_daily_baseline(conn, today_str, index_name, strike, option_type,
+                           baseline, source="first_reading", commit=False)
         return baseline
 
-    def capture_snapshot(self, data_store, spot_poller, index_name="NIFTY",
-                        contract_multiplier=50, expiry_datetime=None):
-        """Create a snapshot from current market state and queue it."""
-        if not is_market_open():
-            if self.market_was_open:
-                print(f"[SnapshotEngine] Market closed at {datetime.now().strftime('%H:%M:%S IST')}. Snapshot capture paused.")
-                self.market_was_open = False
-            return
+    def _preload_baselines(self, index_name):
+        """One-time, single-query preload of yesterday's closing OI for an
+        instrument into self.daily_baselines — so the capture loop never
+        touches the DB per contract. Same two-step indexed lookup as the
+        Tier-1 streamer fix (MAX via idx_snapshots_index, then one snapshot's
+        rows via idx_option_snapshots_snapshot).
 
-        self.market_was_open = True
+        v3.3: without this, the first capture per instrument ran
+        get_yesterday_last_oi per contract — an index-defeating full
+        scan+sort each time (382 sequential calls for SENSEX) — which
+        wedged NIFTY/SENSEX silently for the whole session once the
+        36-stock first-capture burst hit at startup."""
+        if index_name in self.baseline_loaded_for_index:
+            return
+        self.baseline_loaded_for_index.add(index_name)   # once, even on failure
+        try:
+            from database import get_db_connection
+            conn = get_db_connection()
+            try:
+                row = conn.execute(
+                    "SELECT MAX(timestamp) FROM snapshots "
+                    "WHERE index_name = ? AND timestamp < date('now')",
+                    (index_name,)).fetchone()
+                last_ts = row[0] if row else None
+                if not last_ts:
+                    return
+                cur = conn.execute(
+                    "SELECT o.strike, o.option_type, o.oi "
+                    "FROM option_snapshots o JOIN snapshots s ON o.snapshot_id = s.id "
+                    "WHERE s.index_name = ? AND s.timestamp = ?",
+                    (index_name, last_ts))
+                n = 0
+                for r in cur.fetchall():
+                    self.daily_baselines[(index_name, r["strike"], r["option_type"])] = r["oi"]
+                    n += 1
+                if n:
+                    print(f"[SnapshotEngine] {index_name}: preloaded {n} OI baselines "
+                          f"from {last_ts[:10]} close (one query)")
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"[SnapshotEngine] {index_name}: baseline preload failed ({e}) — "
+                  f"per-contract fallback active")
+        # Bound the per-contract DB fallback: after 3s of misses, new
+        # contracts simply baseline to current OI (oi_change=0) instead of
+        # opening DB connections per contract.
+        self._baseline_db_budget_until = time.monotonic() + 3.0
+
+    def _get_or_create_baseline_readonly(self, index_name, strike, option_type, current_oi):
+        """Determine the baseline value WITHOUT a DB connection.
+        Mirrors _get_or_create_baseline logic but returns the value only;
+        the caller queues it for the writer thread to persist."""
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        key = (index_name, strike, option_type)
+        if key in self.daily_baselines:
+            return self.daily_baselines[key]
+        # check yesterday's close ONCE per contract, cache in memory
+        if not hasattr(self, '_baseline_cache'):
+            self._baseline_cache = {}
+        ck = (index_name, strike, option_type)
+        if ck in self._baseline_cache:
+            return self._baseline_cache[ck]
+        # budget guard: after preload + 3s grace, never open per-contract DB
+        # connections here (new intraday contracts baseline to current OI)
+        if time.monotonic() > getattr(self, '_baseline_db_budget_until', 0.0):
+            self._baseline_cache[ck] = current_oi
+            return current_oi
+        try:
+            from database import get_db_connection, get_yesterday_last_oi
+            conn = get_db_connection()
+            baseline = get_yesterday_last_oi(conn, index_name, strike, option_type)
+            conn.close()
+            if baseline is not None:
+                self._baseline_cache[ck] = baseline
+                return baseline
+        except Exception:
+            pass
+        self._baseline_cache[ck] = current_oi
+        return current_oi
+
+    def capture_snapshot(self, data_store, spot_poller, index_name="NIFTY",
+                        contract_multiplier=50, expiry_datetime=None, market_hours=None,
+                        expiry_key=None, analytics_fn=None, on_snapshot=None):
+        """Create a snapshot from current market state and queue it.
+        market_hours: ((h,m),(h,m)) or callable — per-instrument session (commodities).
+        expiry_key: cache-key expiry string (e.g. "11SEP2026"), plain or callable.
+        on_snapshot: optional callable(snapshot) invoked EXACTLY ONCE after a
+        SUCCESSFUL capture (alert-evaluation hook). All failure paths — no data,
+        missing spot, analytics timeout/exception — return before this is called."""
+        hours = self._resolve_hours(market_hours)
+        if not market_open_for(hours):
+            # Session-transition logging only (per instrument, actual session).
+            if self._instrument_open.get(index_name):
+                print(f"[SnapshotEngine] {index_name}: session closed "
+                      f"({_fmt_hours(hours)}) — capture paused")
+            self._instrument_open[index_name] = False
+            return
+        if not self._instrument_open.get(index_name, False):
+            print(f"[SnapshotEngine] {index_name}: session open "
+                  f"({_fmt_hours(hours)}) — capture active")
+        self._instrument_open[index_name] = True
+        _cycle_t0 = time.perf_counter()
 
         try:
             data, prev_oi = data_store.get_snapshot()
@@ -101,18 +262,72 @@ class SnapshotEngine:
 
             futures = spot_poller.get_futures()
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # Trading date for the queued baseline writes — the SAME local date
+            # as the snapshot itself (one clock read; matches the established
+            # convention and the daily_oi_baseline key).
+            today_str = timestamp[:10]
 
-            analytics = self._analytics_executor.submit(
-                calculate_analytics,
-                data, spot, futures, expiry_datetime, contract_multiplier
-            ).result(timeout=20)  # 20s cap — vectorized is <1s, this catches edge cases
+            mult = self._resolve(contract_multiplier)
+            expiry = self._resolve(expiry_datetime)
+            ek = self._resolve(expiry_key)
 
-            # v2.1: Get a DB connection for baseline management
-            baseline_conn = None
+            # Backlog guard: if the pool is already deep in queued work,
+            # skip THIS capture rather than join a queue measured in minutes.
+            # A skipped 30s snapshot is harmless; a 15-minute silent stretch
+            # (the 09:29->09:44 freeze) is not.
+            with self._analytics_inflight_lock:
+                if self._analytics_inflight >= 32:
+                    self._analytics_dropped += 1
+                    print(f"[SnapshotEngine] {index_name}: analytics pool SATURATED "
+                          f"({self._analytics_inflight} in flight) — snapshot skipped "
+                          f"to protect cadence (dropped so far: {self._analytics_dropped})")
+                    return
+                self._analytics_inflight += 1
+            _future = None
             try:
-                baseline_conn = get_db_connection()
-            except Exception as e:
-                print(f"[SnapshotEngine] Baseline DB connection failed: {e}")
+                # Active window follows the instrument tier (Tier 1 -> ATM±5,
+                # everything else -> ATM±3). The IV store lives on data_store,
+                # so this 30s path and the 5s broadcast path share one
+                # persistent cache per instrument.
+                # analytics_fn (per-streamer provider) overrides the default
+                # local path — Tier 4 passes an Angel-fed provider with NO
+                # local Black-Scholes. Default: unchanged Tier 1/2/3 behavior.
+                # analytics_fn is the provider itself: invoked as
+                # _af(data, spot, futures) below. Do NOT route through
+                # _resolve — that unwraps zero-arg callables and would call a
+                # bound method with no arguments.
+                _af = analytics_fn
+                if _af is None:
+                    try:
+                        _tier = app_settings.get_instrument_tier(index_name)
+                    except Exception:
+                        _tier = 1 if index_name in ("NIFTY", "SENSEX") else 2
+                    _window = 5 if _tier == 1 else 3
+                    _iv_store = getattr(data_store, "iv_cache", None)
+                    _af = lambda d, s, f: calculate_analytics(   # noqa: E731
+                        d, s, f, expiry, mult, instrument=index_name,
+                        iv_store=_iv_store, active_window=_window, expiry=ek)
+                _future = self._analytics_executor.submit(lambda: _af(data, spot, futures))
+                analytics = _future.result(timeout=60)
+            except (TimeoutError, FuturesTimeout):
+                # Cancel so a genuinely stuck task cannot leak its worker
+                # slot forever (the pre-fix behavior: the abandoned future
+                # kept running, draining the 4-worker pool one slot at a time
+                # until every capture queued behind minutes of backlog).
+                if _future is not None:
+                    _future.cancel()
+                print(f"[SnapshotEngine] {index_name}: analytics timed out (>60s) — "
+                      f"snapshot skipped, retries next cycle")
+                return
+            finally:
+                with self._analytics_inflight_lock:
+                    self._analytics_inflight -= 1
+
+            # v3.9: collect baselines for the writer thread — do NOT open a
+            # per-capture connection here. The writer thread owns ALL writes,
+            # eliminating the per-capture connections that caused the lock
+            # storms (36 instruments × 30s all hitting the same file).
+            baselines_to_write = []
 
             snapshot = {
                 "timestamp": timestamp,
@@ -132,17 +347,15 @@ class SnapshotEngine:
                     opt = data[strike].get(opt_type, {})
                     current_oi = opt.get("oi", 0)
 
-                    # v2.1 FIX: Use daily baseline instead of tick-level prev_oi
-                    if baseline_conn:
-                        baseline = self._get_or_create_baseline(
-                            baseline_conn, index_name, strike, opt_type, current_oi
-                        )
-                    else:
-                        # Fallback if DB unavailable
-                        key = (index_name, strike, opt_type)
-                        if key not in self.daily_baselines:
-                            self.daily_baselines[key] = current_oi
+                    key = (index_name, strike, opt_type)
+                    if key in self.daily_baselines:
                         baseline = self.daily_baselines[key]
+                    else:
+                        baseline = self._get_or_create_baseline_readonly(
+                            index_name, strike, opt_type, current_oi)
+                        self.daily_baselines[key] = baseline
+                        baselines_to_write.append(
+                            (today_str, index_name, strike, opt_type, baseline))
 
                     oi_change = current_oi - baseline
                     oi_change_pct = round((oi_change / baseline) * 100, 2) if baseline > 0 else 0.0
@@ -165,8 +378,7 @@ class SnapshotEngine:
                     }
                     snapshot["options"].append(opt_snapshot)
 
-            if baseline_conn:
-                baseline_conn.close()
+            snapshot["_baselines"] = baselines_to_write
 
             with self.lock:
                 self.latest_snapshots[index_name] = snapshot
@@ -183,10 +395,38 @@ class SnapshotEngine:
                 except queue.Empty:
                     pass
 
+            try:
+                import app_perf
+                app_perf.record_snapshot_cycle(index_name, time.perf_counter() - _cycle_t0)
+            except Exception:
+                pass
+
+            # ── Alert hook: the snapshot→alert-engine integration point. ──
+            # One evaluation pass per successfully captured snapshot, after
+            # queueing. v3.12: dispatched to a dedicated single worker — the
+            # hook does synchronous SQLite rule-state/history writes, and
+            # running it inline let alert-DB stalls (no busy_timeout, fresh
+            # connection per call, 21 concurrent timer threads) stretch every
+            # capture. FIFO single worker preserves evaluation order; capture
+            # never waits on it. Injected by main.py (on_snapshot=...) to
+            # avoid a snapshot_engine→main circular import.
+            if on_snapshot is not None:
+                try:
+                    self._alert_executor.submit(self._run_alert_hook, on_snapshot, snapshot, index_name)
+                except Exception as e:
+                    print(f"[SnapshotEngine] on_snapshot dispatch error for {index_name}: {e}")
+
         except Exception as e:
             print(f"[SnapshotEngine] Error capturing snapshot: {e}")
             import traceback
             traceback.print_exc()
+
+    @staticmethod
+    def _run_alert_hook(on_snapshot, snapshot, index_name):
+        try:
+            on_snapshot(snapshot)
+        except Exception as e:
+            print(f"[SnapshotEngine] on_snapshot hook error for {index_name}: {e}")
 
     def _db_writer_loop(self):
         print("[SnapshotEngine] DB writer started")
@@ -212,6 +452,27 @@ class SnapshotEngine:
     def _write_snapshot_to_db(self, conn, snapshot):
         print(f"[SnapshotEngine] DB WRITE: {snapshot['index_name']} at {snapshot['timestamp']} — spot={snapshot['spot']}, options={len(snapshot['options'])}")
         cursor = conn.cursor()
+        # v3.9: persist queued baselines in the SAME transaction as the
+        # snapshot — single write path, no per-capture connections.
+        for (date_s, idx, strike, opt_type, oi) in snapshot.get("_baselines", []):
+            cursor.execute(
+                "INSERT OR REPLACE INTO daily_oi_baseline"
+                " (date, index_name, strike, option_type, baseline_oi, source)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (date_s, idx, strike, opt_type, oi, "first_reading"))
+
+        # ── A2 fix: delete the previous row for this (timestamp, index_name)
+        # FIRST, inside the same transaction. INSERT OR REPLACE on `snapshots`
+        # is a DELETE+INSERT that mints a NEW rowid, so the old snapshot row's
+        # option_snapshots (keyed by the OLD snapshot_id) would be orphaned
+        # forever. Removing both up front keeps replacement truly replacing.
+        cursor.execute(
+            """DELETE FROM option_snapshots WHERE snapshot_id IN
+               (SELECT id FROM snapshots WHERE timestamp = ? AND index_name = ?)""",
+            (snapshot["timestamp"], snapshot["index_name"]))
+        cursor.execute(
+            "DELETE FROM snapshots WHERE timestamp = ? AND index_name = ?",
+            (snapshot["timestamp"], snapshot["index_name"]))
 
         cursor.execute("""
             INSERT OR REPLACE INTO snapshots
@@ -265,28 +526,107 @@ class SnapshotEngine:
             return self.latest_timestamps.get(index_name)
 
     def start_snapshot_timer(self, data_store, spot_poller, index_name="NIFTY",
-                            contract_multiplier=50, expiry_datetime=None):
-        def timer_loop():
-            if is_market_open():
-                print(f"[SnapshotEngine] Market is OPEN. {index_name} snapshot capture active.")
-                self.market_was_open = True
-            else:
-                print(f"[SnapshotEngine] Market is CLOSED. {index_name} snapshot capture will resume at 09:15 IST.")
+                            contract_multiplier=50, expiry_datetime=None, market_hours=None,
+                            expiry_key=None, analytics_fn=None, on_snapshot=None):
+        """Start (or restart) the 30s capture timer for one instrument.
+        contract_multiplier / expiry_datetime / market_hours may be plain values
+        or zero-arg callables. market_hours is the instrument's OWN session
+        (equity default only when the caller supplies none).
+        on_snapshot: optional per-capture callback (see capture_snapshot) —
+        injected by main.py for alert evaluation; never imported here directly."""
 
-            while self.running:
-                self.capture_snapshot(data_store, spot_poller, index_name, contract_multiplier, expiry_datetime)
-                for _ in range(30):
-                    if not self.running:
+        self.stop_snapshot_timer(index_name)
+        self._preload_baselines(index_name)   # one query; replaces per-contract DB scans
+        stop_event = threading.Event()
+        self._timer_events[index_name] = stop_event
+
+        def timer_loop():
+            # De-phase timers: instruments started together would otherwise all
+            # fire at the same :00/:30 mark and flood the analytics pool.
+            stagger = sum(ord(c) for c in index_name) % 6
+            for _ in range(stagger):
+                if not self.running or stop_event.is_set():
+                    return
+                time.sleep(1)
+
+            # v3.5: session verdict from the INSTRUMENT's hours — never the
+            # equity-only is_market_open(). Log uses the actual session.
+            hours = self._resolve_hours(market_hours)
+            if market_open_for(hours):
+                print(f"[SnapshotEngine] {index_name}: session open "
+                      f"({_fmt_hours(hours)}) — capture active")
+                self._instrument_open[index_name] = True
+            else:
+                print(f"[SnapshotEngine] {index_name}: session closed "
+                      f"({_fmt_hours(hours)}) — capture will resume when the session opens")
+
+            while self.running and not stop_event.is_set():
+                # v3.12 cadence fix: sleep the REMAINDER of the interval after
+                # the capture returns. Pre-fix the loop slept a full interval
+                # ON TOP of capture duration, so every slow capture permanently
+                # stretched the cadence (30s -> 60s -> minutes — the visible
+                # precursor to the 09:29->09:44 NIFTY silence).
+                _cap_t0 = time.perf_counter()
+                self.capture_snapshot(data_store, spot_poller, index_name,
+                                    contract_multiplier, expiry_datetime, market_hours,
+                                    expiry_key=expiry_key, analytics_fn=analytics_fn,
+                                    on_snapshot=on_snapshot)
+                _remaining = max(1, _capture_interval() - int(time.perf_counter() - _cap_t0))
+                for _ in range(_remaining):
+                    if not self.running or stop_event.is_set():
                         break
                     time.sleep(1)
 
-        self.timer_thread = threading.Thread(target=timer_loop, daemon=True)
-        self.timer_thread.start()
-        print(f"[SnapshotEngine] {index_name} snapshot timer started (30s, market hours only)")
+        t = threading.Thread(target=timer_loop, daemon=True, name=f"snapshot-{index_name}")
+        self._timer_threads[index_name] = t
+        t.start()
+        print(f"[SnapshotEngine] {index_name} snapshot timer started "
+              f"({_fmt_hours(self._resolve_hours(market_hours))} session, market hours only)")
+
+    def stop_snapshot_timer(self, index_name="NIFTY"):
+        """Stop the capture timer for one instrument (live removal of stocks)."""
+        ev = self._timer_events.pop(index_name, None)
+        if ev:
+            ev.set()
+        t = self._timer_threads.pop(index_name, None)
+        if t:
+            t.join(timeout=5)
+            print(f"[SnapshotEngine] {index_name} snapshot timer stopped")
+        self._instrument_open.pop(index_name, None)
 
     def stop(self):
+        """Stop all capture timers + the DB writer.
+
+        v3.3 fix for slow one-by-one shutdown: signal EVERY timer's stop
+        event first, then join against ONE shared deadline. The old loop
+        called stop_snapshot_timer() per instrument — a serial join with a
+        5s timeout each — so timers caught mid-capture under load made
+        shutdown burn up to 5s per instrument (~38 × 5s ≈ 190s worst case,
+        observed as 'snapshot timer stopped' lines appearing one by one).
+        In-flight captures run to completion on their own (they cannot be
+        safely interrupted); setting all events at once stops NEW captures
+        from starting and lets all threads exit CONCURRENTLY. Total wait is
+        bounded by the shared deadline, not by the instrument count."""
         self.running = False
-        if hasattr(self, "timer_thread"):
-            self.timer_thread.join(timeout=5)
+        # 1. Signal every timer at once — no new captures start after this.
+        for ev in list(self._timer_events.values()):
+            ev.set()
+        # 2. Drain registrations; join with a single shared deadline instead
+        #    of timeout=5 per thread. Threads past their deadline are daemon
+        #    threads and finish their current capture harmlessly (data_store
+        #    is lock-guarded; the DB queue put has its own timeout).
+        deadline = time.monotonic() + 10
+        for name in list(self._timer_events.keys()):
+            self._timer_events.pop(name, None)
+            t = self._timer_threads.pop(name, None)
+            self._instrument_open.pop(name, None)
+            if t:
+                t.join(timeout=max(0.0, deadline - time.monotonic()))
+        for name in list(self._timer_threads.keys()):
+            t = self._timer_threads.pop(name, None)
+            if t:
+                t.join(timeout=max(0.0, deadline - time.monotonic()))
+        print("[SnapshotEngine] all snapshot timers stopped")
         self.writer_thread.join(timeout=5)
         self._analytics_executor.shutdown(wait=False)
+        self._alert_executor.shutdown(wait=False)

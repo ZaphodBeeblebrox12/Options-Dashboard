@@ -13,6 +13,15 @@ def _get_conn():
     conn = sqlite3.connect(ALERT_DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    # v3.12 FIX (production freeze 09:29-09:44): every rule-state read/write
+    # and history insert opens a FRESH connection with no busy_timeout, and up
+    # to 21 snapshot timer threads call these concurrently at the open (Rule 2
+    # fires constantly 09:15-09:30). A single writer hold then turned every
+    # subsequent call into an instant 'database is locked' storm that stalled
+    # captures via the on_snapshot hook. busy_timeout converts contention into
+    # a short wait; synchronous=NORMAL matches the main store's pragmas.
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("PRAGMA synchronous=NORMAL")
     return conn
 
 
@@ -41,7 +50,7 @@ def init_alert_db():
         )
     """)
 
-    # Rule state tracking (ARMED/DISARMED + last fired + cooldown)
+    # Rule state tracking (ARMED/DISARMED + last fired + cooldown + rearm debounce)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS alert_rule_state (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,9 +59,22 @@ def init_alert_db():
             state TEXT NOT NULL DEFAULT 'armed',
             last_fired_at TEXT,
             cooldown_seconds INTEGER DEFAULT 300,
+            condition_cleared_at TEXT,
             UNIQUE(rule_type, index_name)
         )
     """)
+
+    # v3.4 migration: add rearm-debounce column to existing databases
+    try:
+        conn.execute("ALTER TABLE alert_rule_state ADD COLUMN condition_cleared_at TEXT")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
+    # Tier 4 migration: instrument tier on history rows (NULL = legacy)
+    try:
+        conn.execute("ALTER TABLE alert_history ADD COLUMN instrument_tier INTEGER")
+    except sqlite3.OperationalError:
+        pass  # column already exists
 
     # Settings storage (JSON blob)
     conn.execute("""
@@ -117,23 +139,48 @@ def save_alert_history(
     futures_spread: Optional[float],
     channels_fired: List[str],
     market_state: Dict,
+    instrument_tier: Optional[int] = None,
 ) -> int:
     with get_alert_db() as conn:
         cursor = conn.execute("""
             INSERT INTO alert_history
             (timestamp, index_name, rule_type, rule_name, spot, atm_strike,
              max_ce_oi_strike, max_pe_oi_strike, max_negative_gex_strike,
-             net_gex, futures_spread, channels_fired, market_state)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             net_gex, futures_spread, channels_fired, market_state, instrument_tier)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             timestamp, index_name, rule_type, rule_name, spot, atm_strike,
             max_ce_oi_strike, max_pe_oi_strike, max_negative_gex_strike,
             net_gex, futures_spread,
             json.dumps(channels_fired),
             json.dumps(market_state),
+            instrument_tier,
         ))
         conn.commit()
         return cursor.lastrowid
+
+
+def get_alert_date_counts(index_name: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Per-day alert counts for the calendar picker.
+
+    Returns [{"date": "2026-09-04", "count": 7}, ...] newest first.
+    `timestamp` is stored as ISO text, so SQLite's date() normalizes both
+    'YYYY-MM-DD HH:MM:SS' snapshot stamps and full ISO-8601 stamps.
+    """
+    with get_alert_db() as conn:
+        if index_name:
+            rows = conn.execute(
+                """SELECT date(timestamp) AS d, COUNT(*) AS c
+                   FROM alert_history WHERE index_name = ?
+                   GROUP BY d ORDER BY d DESC""",
+                (index_name,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT date(timestamp) AS d, COUNT(*) AS c
+                   FROM alert_history GROUP BY d ORDER BY d DESC"""
+            ).fetchall()
+        return [{"date": r["d"], "count": r["c"]} for r in rows]
 
 
 def get_alert_history(
@@ -209,7 +256,8 @@ def get_rule_state(rule_type: str, index_name: str = "NIFTY") -> Dict[str, Any]:
         if row:
             return dict(row)
         # Default: armed, never fired
-        return {"state": "armed", "last_fired_at": None, "cooldown_seconds": 300}
+        return {"state": "armed", "last_fired_at": None, "cooldown_seconds": 300,
+                "condition_cleared_at": None}
 
 
 def set_rule_state(
@@ -218,16 +266,19 @@ def set_rule_state(
     state: str,
     last_fired_at: Optional[str] = None,
     cooldown_seconds: int = 300,
+    condition_cleared_at: Optional[str] = None,
 ):
     with get_alert_db() as conn:
         conn.execute("""
-            INSERT INTO alert_rule_state (rule_type, index_name, state, last_fired_at, cooldown_seconds)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO alert_rule_state
+                (rule_type, index_name, state, last_fired_at, cooldown_seconds, condition_cleared_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(rule_type, index_name) DO UPDATE SET
                 state = excluded.state,
                 last_fired_at = excluded.last_fired_at,
-                cooldown_seconds = excluded.cooldown_seconds
-        """, (rule_type, index_name, state, last_fired_at, cooldown_seconds))
+                cooldown_seconds = excluded.cooldown_seconds,
+                condition_cleared_at = excluded.condition_cleared_at
+        """, (rule_type, index_name, state, last_fired_at, cooldown_seconds, condition_cleared_at))
         conn.commit()
 
 
@@ -235,11 +286,11 @@ def reset_all_rule_states(index_name: Optional[str] = None):
     with get_alert_db() as conn:
         if index_name:
             conn.execute(
-                "UPDATE alert_rule_state SET state = 'armed', last_fired_at = NULL WHERE index_name = ?",
+                "UPDATE alert_rule_state SET state = 'armed', last_fired_at = NULL, condition_cleared_at = NULL WHERE index_name = ?",
                 (index_name,)
             )
         else:
-            conn.execute("UPDATE alert_rule_state SET state = 'armed', last_fired_at = NULL")
+            conn.execute("UPDATE alert_rule_state SET state = 'armed', last_fired_at = NULL, condition_cleared_at = NULL")
         conn.commit()
 
 

@@ -32,12 +32,39 @@ export interface CustomSound {
   size_bytes: number;
 }
 
+/** Dedicated Tier-4 alert profile — routing/config is tier-aware while the
+ *  detection/rule engine stays unified. Mirrors backend settings["tier4"]. */
+export interface Tier4TelegramConfig {
+  enabled: boolean;
+  bot_token: string;
+  chat_id: string;
+}
+
+export interface Tier4Profile {
+  enabled: boolean;
+  channels: string[];
+  cooldown_seconds: number;
+  telegram: Tier4TelegramConfig;
+}
+
+export const DEFAULT_TIER4_PROFILE: Tier4Profile = {
+  enabled: true,
+  channels: ['telegram'],
+  cooldown_seconds: 300,
+  telegram: { enabled: false, bot_token: '', chat_id: '' },
+};
+
 export interface AlertSettings {
   rules: AlertRuleConfig[];
   telegram: TelegramConfig;
   sound: SoundSettings;
   custom_sounds: CustomSound[];
   toast_duration_ms: number;  // ← NEW
+  /** Default Alert Type for the History view on open. Absent/undefined/invalid
+   *  = All Alerts. Canonical rule_type strings only. */
+  history_default_rule_type?: string | null;
+  tier4_channels?: string[];  // legacy mirror of tier4.channels (kept in sync backend-side)
+  tier4?: Tier4Profile;       // dedicated Tier-4 alert profile
 }
 
 export interface AlertHistoryEntry {
@@ -56,6 +83,7 @@ export interface AlertHistoryEntry {
   channels_fired: string;
   market_state: string;
   created_at: string;
+  instrument_tier?: number | null;
 }
 
 export interface AlertFiring {
@@ -70,6 +98,7 @@ export interface AlertFiring {
   max_negative_gex_strike: number | null;
   net_gex: number | null;
   channels_fired: string[];
+  instrument_tier?: number | null;
 }
 
 export function useAlertSettings() {
@@ -85,6 +114,10 @@ export function useAlertSettings() {
         const data = await res.json();
         // Ensure default if backend doesn't send it yet
         if (data.toast_duration_ms === undefined) data.toast_duration_ms = 6000;
+        if (data.tier4_channels === undefined) data.tier4_channels = ['telegram'];
+        if (data.tier4 === undefined) {
+          data.tier4 = { ...DEFAULT_TIER4_PROFILE, channels: data.tier4_channels ?? ['telegram'] };
+        }
         setSettings(data);
       }
     } finally {
@@ -117,7 +150,7 @@ export function useAlertSettings() {
   return { settings, loading, saving, fetchSettings, saveSettings };
 }
 
-export function useAlertHistory(index?: string, date?: string, page: number = 1) {
+export function useAlertHistory(index?: string, date?: string, page: number = 1, ruleType?: string) {
   const [history, setHistory] = useState<AlertHistoryEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -130,6 +163,7 @@ export function useAlertHistory(index?: string, date?: string, page: number = 1)
       params.set('page_size', '50');
       if (index) params.set('index', index);
       if (date) params.set('date', date);
+      if (ruleType) params.set('rule_type', ruleType);   // existing backend param
       const res = await fetch(`${API_BASE}/api/alerts/history?${params}`);
       if (res.ok) {
         const data = await res.json();
@@ -139,7 +173,7 @@ export function useAlertHistory(index?: string, date?: string, page: number = 1)
     } finally {
       setLoading(false);
     }
-  }, [index, date, page]);
+  }, [index, date, page, ruleType]);
 
   useEffect(() => {
     fetchHistory();
@@ -198,7 +232,8 @@ export function useSounds() {
       const data = await res.json();
       if (!data.base64) return;
 
-      const audio = new Audio(`data:audio/wav;base64,${data.base64}`);
+      const ct = data.content_type || 'audio/wav';   // backend now reports the real MIME
+      const audio = new Audio(`data:${ct};base64,${data.base64}`);
       audio.volume = volume;
       await audio.play();
     } catch (e) {
@@ -221,12 +256,15 @@ export function useAlertNotifications() {
     setToasts((prev) => [...prev.slice(-4), alert]); // Keep last 5
     // Fallback cleanup — generous enough for any duration up to 15s
     setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.timestamp !== alert.timestamp));
+      const _id = `${alert.timestamp}|${alert.rule_type}`;
+      setToasts((prev) => prev.filter((t) => `${t.timestamp}|${t.rule_type}` !== _id));
     }, 20000);
   }, []);
 
-  const removeToast = useCallback((timestamp: string) => {
-    setToasts((prev) => prev.filter((t) => t.timestamp !== timestamp));
+  const removeToast = useCallback((id: string) => {
+    // `id` is `${timestamp}|${rule_type}` — same-second alerts from different
+    // rules must not dismiss each other.
+    setToasts((prev) => prev.filter((t) => `${t.timestamp}|${t.rule_type}` !== id));
   }, []);
 
   const playAlertSound = useCallback(async (soundId: string, volume: number) => {
@@ -241,7 +279,8 @@ export function useAlertNotifications() {
         audioRef.current = null;
       }
 
-      const audio = new Audio(`data:audio/wav;base64,${data.base64}`);
+      const ct = data.content_type || 'audio/wav';
+      const audio = new Audio(`data:${ct};base64,${data.base64}`);
       audio.volume = volume;
       audioRef.current = audio;
       await audio.play();

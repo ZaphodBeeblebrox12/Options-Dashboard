@@ -1,22 +1,24 @@
 import React, { useState, useRef } from 'react';
 import { Upload, Trash2, FileAudio } from 'lucide-react';
+import { ConfirmDialog } from './ConfirmDialog';
 import { useSounds } from '../hooks/useAlerts';
 
 export const SoundUploader: React.FC = () => {
   const { sounds, uploadSound, deleteSound } = useSounds();
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const customSounds = sounds.filter((s) => s.type === 'custom');
 
   const handleFile = async (file: File) => {
     if (!file.type.startsWith('audio/')) {
-      alert('Please upload an audio file (MP3, WAV, OGG)');
+      setUploadError('Please upload an audio file (MP3, WAV, OGG)');
       return;
     }
     if (file.size > 5 * 1024 * 1024) {
-      alert('File too large (max 5MB)');
+      setUploadError('File too large (max 5MB)');
       return;
     }
     setUploading(true);
@@ -72,6 +74,19 @@ export const SoundUploader: React.FC = () => {
           </>
         )}
       </div>
+
+      {/* Upload error (app-native, replaces window.alert) */}
+      <ConfirmDialog
+        open={uploadError !== null}
+        danger
+        alert
+        dontShowAgainKey="sound_upload_error"
+        title="Cannot upload sound"
+        confirmLabel="OK"
+        onClose={() => setUploadError(null)}
+      >
+        <p>{uploadError}</p>
+      </ConfirmDialog>
 
       {customSounds.length > 0 && (
         <div className="space-y-1">
