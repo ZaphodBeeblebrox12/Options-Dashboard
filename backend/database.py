@@ -1,4 +1,12 @@
-"""SQLite database setup with WAL mode for concurrent reads/writes."""
+"""SQLite database setup with WAL mode for concurrent reads/writes.
+
+v3.15: futures_oi column on snapshots — stores the index-futures open
+interest captured from Angel mode-3 futures ticks (previously mode 1,
+which carries no OI). Powers the true Long/Short Buildup classification
+(price change x FUTURES OI change) in buildup_status.py. Existing DBs are
+migrated in _migrate_db(); old rows keep NULL futures_oi and the buildup
+script falls back to summed option OI for those dates.
+"""
 import sqlite3
 import time
 import os
@@ -32,6 +40,13 @@ def _migrate_db(conn):
     if not _column_exists(conn, "option_snapshots", "oi_change_pct"):
         print("[DB] Migrating: adding oi_change_pct to option_snapshots...")
         conn.execute("ALTER TABLE option_snapshots ADD COLUMN oi_change_pct REAL DEFAULT 0")
+        conn.commit()
+
+    # v3.15: futures OI for true buildup screens. NULL for historical rows;
+    # buildup_status.py falls back to summed option OI when NULL.
+    if not _column_exists(conn, "snapshots", "futures_oi"):
+        print("[DB] Migrating: adding futures_oi to snapshots...")
+        conn.execute("ALTER TABLE snapshots ADD COLUMN futures_oi INTEGER")
         conn.commit()
 
     # Check if old unique index exists (without index_name) and drop it
@@ -93,6 +108,7 @@ def init_db():
             index_name TEXT NOT NULL DEFAULT 'NIFTY',
             spot REAL,
             futures REAL,
+            futures_oi INTEGER,
             futures_spread REAL,
             net_gex REAL,
             max_gex_strike INTEGER,

@@ -13,6 +13,12 @@ Session handling (v3.5 fix):
   with the instrument's own market_hours (equity, MCX, or any future provider session).
   The module-level is_market_open() is a legacy EQUITY-ONLY helper kept for other
   modules — the generic engine never uses it.
+
+Holiday handling (v3.13 fix):
+- market_open_for() additionally checks the official NSE trading calendar
+  (exchange_calendars, "XNSE"): on market holidays NO session of any kind runs
+  (MCX observes the same national holiday calendar). Lookup cached once per
+  calendar day; fail-open with a warning if the library is unavailable.
 """
 import queue
 import time
@@ -33,15 +39,112 @@ def _capture_interval() -> int:
         return 30
 
 
+# ── NSE trading calendar (v3.14 — multi-source holiday fix) ──
+# v3.13 used exchange_calendars' XNSE alone; its community-maintained holiday
+# data did NOT flag 2026-10-02 (Gandhi Jayanti) and snapshots ran on a market
+# holiday. v3.14 checks THREE independent sources and treats a day as a
+# holiday if ANY source says so:
+#   1. _NSE_HOLIDAYS_BUILTIN — official NSE 2026 list embedded below (works
+#      offline, guaranteed correct for 2026).
+#   2. pandas_market_calendars "NSE" — explicit, maintained NSE holiday lists
+#      (shipped 2026 + 2027 holidays in v5.3.0, Jan 2026).
+#   3. exchange_calendars "XNSE" — kept as a third vote.
+# Fail-open ONLY if every source is unusable for the date AND the builtin
+# list doesn't cover the year: a pip problem must never cost a trading day.
+_NSE_HOLIDAYS_BUILTIN = frozenset({
+    # Official NSE 2026 trading holidays (nseindia.com / niftyindices.com).
+    # 2026-11-08 (Muhurat trading, Sunday) is a SPECIAL SESSION — not listed.
+    "2026-01-15",  # Municipal Corporation Election - Maharashtra
+    "2026-01-26",  # Republic Day
+    "2026-03-03",  # Holi
+    "2026-03-26",  # Shri Ram Navami
+    "2026-03-31",  # Shri Mahavir Jayanti
+    "2026-04-03",  # Good Friday
+    "2026-04-14",  # Dr. Baba Saheb Ambedkar Jayanti
+    "2026-05-01",  # Maharashtra Day
+    "2026-05-28",  # Bakri Id
+    "2026-06-26",  # Muharram
+    "2026-09-14",  # Ganesh Chaturthi
+    "2026-10-02",  # Mahatma Gandhi Jayanti
+    "2026-10-20",  # Dussehra
+    "2026-11-10",  # Diwali-Balipratipada
+    "2026-11-24",  # Prakash Gurpurb Sri Guru Nanak Dev
+    "2026-12-25",  # Christmas
+})
+
+_holiday_cache = {"date": None, "holiday": None}
+
+
+def _is_trading_holiday() -> bool:
+    """True if today is NOT an NSE trading session (any-source vote, cached
+    once per calendar day, fail-open)."""
+    today = datetime.now().date()
+    if _holiday_cache["date"] == today and _holiday_cache["holiday"] is not None:
+        return _holiday_cache["holiday"]
+
+    today_str = today.isoformat()
+    votes = []          # True/False per usable source
+    reasons = []
+
+    # Source 1: embedded official NSE 2026 list
+    if today_str in _NSE_HOLIDAYS_BUILTIN:
+        votes.append(True)
+        reasons.append("builtin NSE 2026 list")
+
+    # Source 2: pandas_market_calendars (explicit maintained NSE holidays)
+    try:
+        import pandas as pd
+        import pandas_market_calendars as mcal
+        cal = mcal.get_calendar("NSE")
+        days = cal.valid_days(start_date=pd.Timestamp(today_str),
+                              end_date=pd.Timestamp(today_str))
+        votes.append(len(days) == 0)
+        reasons.append("pandas_market_calendars NSE")
+    except Exception:
+        pass
+
+    # Source 3: exchange_calendars XNSE (kept as a third vote)
+    try:
+        import pandas as pd
+        import exchange_calendars as xcals
+        cal = xcals.get_calendar("XNSE")
+        votes.append(not bool(cal.is_session(pd.Timestamp(today_str))))
+        reasons.append("exchange_calendars XNSE")
+    except Exception:
+        pass
+
+    if votes:
+        # any-source vote: one holiday declaration is enough
+        holiday = any(votes)
+        if holiday:
+            print(f"[SnapshotEngine] {today_str}: NSE holiday confirmed by: "
+                  f"{[r for r, v in zip(reasons, votes) if v]}")
+    else:
+        # nothing usable AND builtin list doesn't cover this year -> fail-open
+        holiday = False
+        print(f"[SnapshotEngine] No holiday source usable for {today_str} and builtin "
+              f"list only covers 2026 — assuming trading day "
+              f"(pip install pandas-market-calendars exchange-calendars)")
+
+    _holiday_cache["date"] = today
+    _holiday_cache["holiday"] = holiday
+    return holiday
+
+
 def market_open_for(hours) -> bool:
     """Per-instrument session check: hours = ((start_h, start_m), (end_h, end_m)).
     Equity 09:15–15:30, MCX commodities ~09:00–23:30 — the caller decides via the
-    market_hours it supplies. This is the ONLY session gate the engine uses."""
+    market_hours it supplies. This is the ONLY session gate the engine uses.
+    Holiday-aware: on NSE holidays no session runs (v3.13/v3.14)."""
     now = datetime.now()
     if now.weekday() > 4:
         return False
     (h1, m1), (h2, m2) = hours
-    return dt_time(h1, m1, 0) <= now.time() <= dt_time(h2, m2, 0)
+    if not (dt_time(h1, m1, 0) <= now.time() <= dt_time(h2, m2, 0)):
+        return False
+    if _is_trading_holiday():   # MCX shares the national holiday calendar
+        return False
+    return True
 
 
 def is_market_open() -> bool:
@@ -261,6 +364,10 @@ class SnapshotEngine:
                 return
 
             futures = spot_poller.get_futures()
+            # v3.15: futures OI for buildup classification (mode-3 tick field).
+            # getattr guard: stock streamers' pollers may lack the getter.
+            _get_foi = getattr(spot_poller, "get_futures_oi", None)
+            futures_oi = _get_foi() if callable(_get_foi) else None
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             # Trading date for the queued baseline writes — the SAME local date
             # as the snapshot itself (one clock read; matches the established
@@ -334,6 +441,7 @@ class SnapshotEngine:
                 "index_name": index_name,
                 "spot": spot,
                 "futures": futures,
+                "futures_oi": futures_oi,
                 "futures_spread": analytics["futures_spread"],
                 "net_gex": analytics["net_gex"],
                 "max_gex_strike": analytics["max_gex_strike"],
@@ -476,13 +584,14 @@ class SnapshotEngine:
 
         cursor.execute("""
             INSERT OR REPLACE INTO snapshots
-            (timestamp, index_name, spot, futures, futures_spread, net_gex, max_gex_strike, max_pain, gamma_flip)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (timestamp, index_name, spot, futures, futures_oi, futures_spread, net_gex, max_gex_strike, max_pain, gamma_flip)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             snapshot["timestamp"],
             snapshot["index_name"],
             snapshot["spot"],
             snapshot["futures"],
+            snapshot.get("futures_oi"),
             snapshot["futures_spread"],
             snapshot["net_gex"],
             snapshot["max_gex_strike"],

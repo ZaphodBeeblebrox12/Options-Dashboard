@@ -6,10 +6,6 @@ v3.1 changes (production startup patch — verified against repository + schema)
   serially blocking NIFTY then SENSEX streamer construction. Replaced with two
   indexed lookups (MAX(timestamp) via idx_snapshots_index, then a single-
   snapshot join via idx_option_snapshots_snapshot) — milliseconds.
-  Schema verification (database.py): snapshots has UNIQUE(timestamp, index_name)
-  and INDEX index_name; option_snapshots has INDEX snapshot_id; timestamps are
-  '%Y-%m-%d %H:%M:%S' so `timestamp < date('now')` is a valid, index-friendly
-  string comparison that excludes today and keeps all prior days.
 - PHASED STARTUP: start() now brings up auth + SubscriptionManager + NIFTY +
   SENSEX only (critical path) and returns; ALL stock/Tier-2/3/4 initialization
   moved to _start_background() on a daemon thread. The FastAPI lifespan, event
@@ -22,6 +18,10 @@ v3.1 changes (production startup patch — verified against repository + schema)
 - Everything else identical to v3.0: public interface unchanged
   (streamer_adapter, STREAMING_INDICES, ANGEL_ONE_AVAILABLE, get_streamer(),
   get_current_state(), LiveDataStore, SpotPricePoller, is_market_open()).
+
+v3.13 (holiday fix): this module's local is_market_open() now also checks the
+NSE trading calendar via snapshot_engine._is_trading_holiday() — status
+messages and bootstrap logs no longer claim the market is open on a holiday.
 """
 import os
 import copy
@@ -65,11 +65,17 @@ except ImportError as e:
 
 
 def is_market_open() -> bool:
+    """Equity session check (09:15–15:30 IST, Mon–Fri) + NSE holiday calendar
+    (v3.13). Delegates the holiday lookup to snapshot_engine so there is ONE
+    cached calendar per process, not two."""
+    from snapshot_engine import _is_trading_holiday
     now = datetime.now()
     if now.weekday() > 4:
         return False
     current_time = now.time()
-    return dt_time(9, 15, 0) <= current_time <= dt_time(15, 30, 0)
+    if not (dt_time(9, 15, 0) <= current_time <= dt_time(15, 30, 0)):
+        return False
+    return not _is_trading_holiday()
 
 
 # =====================================================================
@@ -220,6 +226,8 @@ class SpotPricePoller:
         self.spot_source = None
         self.futures_price = None
         self.futures_source = None
+        self.futures_oi = None       # v3.15: from mode-3 futures ticks
+        self.futures_volume = None   # v3.15: from mode-3 futures ticks
         self.last_ws_update = 0
         self.last_futures_ws_update = 0
         self.spot_lock = threading.Lock()
@@ -231,6 +239,12 @@ class SpotPricePoller:
     def get_futures(self):
         with self.spot_lock:
             return self.futures_price
+
+    def get_futures_oi(self):
+        """v3.15: futures open interest (mode-3 tick field), None until the
+        first futures tick arrives."""
+        with self.spot_lock:
+            return self.futures_oi
 
     def get_premium_discount(self):
         with self.spot_lock:
@@ -253,11 +267,15 @@ class SpotPricePoller:
                 return None
             return round(time.time() - self.last_ws_update)
 
-    def update_futures_from_ws(self, ltp):
+    def update_futures_from_ws(self, ltp, oi=None, volume=None):
         with self.spot_lock:
             self.futures_price = ltp
             self.futures_source = "WS"
             self.last_futures_ws_update = time.time()
+            if oi is not None:
+                self.futures_oi = oi
+            if volume is not None:
+                self.futures_volume = volume
 
 
 # =====================================================================
@@ -427,10 +445,13 @@ if ANGEL_ONE_AVAILABLE:
 
             if self.futures_info and self.futures_info.get("token"):
                 fut_exch = 4 if self.index_name == "SENSEX" else 2
+                # v3.15: mode 3 (was 1) — mode-1 ticks carry only LTP; the
+                # futures OI needed for buildup classification arrives on
+                # mode 2/3. One token per index, negligible bandwidth cost.
                 group_tokens.append(TokenRequirement(
                     token=self.futures_info["token"], exchange_type=fut_exch,
                     instrument_name=self.index_name, tier=Tier.TIER_1,
-                    group_id=gid, mode=1, metadata={"type": "futures"},
+                    group_id=gid, mode=3, metadata={"type": "futures"},
                 ))
                 manager.bind_handler(self.futures_info["token"], self._handle_futures_tick)
                 logger.info(f"[{self.index_name}] Futures token {self.futures_info['token']} on {'BFO' if fut_exch == 4 else 'NFO'}")
@@ -466,7 +487,13 @@ if ANGEL_ONE_AVAILABLE:
         def _handle_futures_tick(self, message: dict):
             try:
                 ltp = float(message.get("last_traded_price", 0) or 0) / 100.0
-                self.spot_poller.update_futures_from_ws(ltp)
+                # v3.15: open_interest / volume only arrive on mode-2/3 ticks;
+                # parse defensively (None when absent, e.g. pre-mode-change rows).
+                raw_oi = message.get("open_interest")
+                raw_vol = message.get("volume_trade_for_the_day")
+                oi = int(raw_oi) if raw_oi not in (None, "") else None
+                vol = int(raw_vol) if raw_vol not in (None, "") else None
+                self.spot_poller.update_futures_from_ws(ltp, oi=oi, volume=vol)
             except Exception as e:
                 logger.error(f"[{self.index_name}] Futures tick error: {e}")
 

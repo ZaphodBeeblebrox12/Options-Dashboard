@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { AnalyticsHeader } from './components/AnalyticsHeader';
+import { BuildupCard } from './components/BuildupCard';
 import { OptionChain } from './components/OptionChain';
 import { ReplayControls } from './components/ReplayControls';
 import { GexChart } from './components/GexChart';
 import { StrikeChart } from './components/StrikeChart';
 import { NetGexChart } from './components/NetGexChart';
-import { WallChart } from './components/WallChart';
+// [WallChart disabled] import { WallChart } from './components/WallChart';   (re-enable: python tools/toggle_wallchart.py --restore)
 import { SettingsModal } from './components/SettingsModal';
 import { AlertHistoryPanel } from './components/AlertHistory';
 import { AlertToastContainer } from './components/AlertToast';
@@ -428,49 +429,7 @@ function App() {
     );
   }
 
-  const refreshUnseenCount = useCallback(async () => {
-    const today = new Date().toISOString().split('T')[0];
-    const lastOpened = getLastOpenedHistory();
-    try {
-      const res = await fetch(`/api/alerts/history?date=${today}&page_size=200`);
-      if (!res.ok) return;
-      const data = await res.json();
-      const entries = data.entries || [];
-      const lastOpenedDate = lastOpened ? new Date(lastOpened) : null;
-      const unseen = entries.filter((e: any) => {
-        if (!lastOpenedDate) return true;
-        return new Date(e.timestamp) > lastOpenedDate;
-      }).length;
-      setUnseenAlertCount(unseen);
-    } catch {}
-  }, []);
-
-  const handleTestToast = useCallback(() => {
-    addToast({
-      timestamp: new Date().toISOString(),
-      index_name: selectedIndex,
-      rule_type: 'atm_negative_gex_oi_wall',
-      rule_name: 'ATM + Negative GEX + OI Wall',
-      spot: spot ?? 25142.35,
-      atm_strike: atmStrike ?? 25150,
-      max_ce_oi_strike: atmStrike ?? 25150,
-      max_pe_oi_strike: atmStrike ? atmStrike - 150 : 25000,
-      max_negative_gex_strike: atmStrike ?? 25150,
-      net_gex: netGex ?? -1250000,
-      channels_fired: ['toast', 'sound', 'telegram'],
-    });
-  }, [addToast, selectedIndex, spot, atmStrike, netGex]);
-
-  // Fetch unseen alert count on mount and every 60s
-  useEffect(() => {
-    refreshUnseenCount();
-    const interval = setInterval(refreshUnseenCount, 60000);
-    return () => clearInterval(interval);
-  }, [refreshUnseenCount]);
-
-  // ── Pass configurable duration to toast container ──
-  const toastDuration = alertSettings?.toast_duration_ms ?? 6000;
-
+  
   return (
     <div className="min-h-screen bg-terminal-bg">
       <AlertToastContainer alerts={toasts} onDismiss={removeToast} duration={toastDuration} />
@@ -532,6 +491,7 @@ function App() {
 
       <div className="p-2 sm:p-3 space-y-2 sm:space-y-3">
         <AnalyticsHeader indexName={selectedIndex} isFetching={snapshotLoading} spot={spot} futures={futures} futuresSpread={futuresSpread} spreadLabel={spreadLabel} netGex={netGex} maxGexStrike={maxGexStrike} maxPain={maxPain} gammaFlip={gammaFlip} timestamp={timestamp} isLive={liveMode && connected && marketOpen} />
+        <BuildupCard indexName={selectedIndex} date={selectedDate} live={liveMode} />
         <ReplayControls timestamps={timestamps} currentIndex={currentIndex} isFetching={snapshotLoading} isPlaying={isPlaying} onPlay={handlePlay} onPause={handlePause} onSeek={handleSeek} onRefresh={handleRefresh} selectedDate={selectedDate} onDateChange={handleDateChange} selectedIndex={selectedIndex} onIndexChange={handleIndexChange} availableDates={availableDates} sessionHours={sessionHours} />
         <OptionChain options={normalizedOptions} spot={spot} futures={futures} maxPain={maxPain} gammaFlip={gammaFlip} fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike} />
         {/* §45: GEX bar + Net GEX charts are Tier-1-only */}
@@ -542,10 +502,12 @@ function App() {
                       ceWall={ceWall} peWall={peWall} />
           )}
           <StrikeChart data={strikeHistory} strike={selectedStrike ?? 0} />
+{/* [WallChart disabled] 2026-10-02 — re-enable with: python tools/toggle_wallchart.py --restore
           <WallChart symbol={selectedIndex} tier={instrumentTier} atm={atmStrike}
                      ceWall={ceWall} peWall={peWall}
                      negGex={(displayData as any)?.max_negative_gex_strike ?? (displayData as any)?.max_gex_strike ?? null}
                      replayDate={liveMode ? null : selectedDate} />
+          */}
           {instrumentTier === 1 && (
             <NetGexChart data={gexHistory} />
           )}

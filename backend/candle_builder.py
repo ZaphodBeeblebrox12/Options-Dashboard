@@ -153,14 +153,18 @@ class CandleBuilder:
 
     # ── tick path (must stay O(1) and never block) ───────────
     def _session_open(self) -> bool:
-        """Equity/index session gate (09:15–15:30 IST, Mon–Fri). Pre-open ticks
-        (09:00–09:08) must never form candles (Drop 1 §3); commodities are not
-        hooked at all."""
+        """Equity/index session gate (09:15–15:30 IST, Mon–Fri) + NSE holiday
+        calendar (v3.13). Pre-open ticks (09:00–09:08) must never form candles
+        (Drop 1 §3); holidays are excluded via snapshot_engine's cached XNSE
+        lookup (one calendar per process)."""
         now = datetime.now()
         if now.weekday() > 4:
             return False
         from datetime import time as _dt_time
-        return _dt_time(9, 15) <= now.time() <= _dt_time(15, 30)
+        if not (_dt_time(9, 15) <= now.time() <= _dt_time(15, 30)):
+            return False
+        from snapshot_engine import _is_trading_holiday
+        return not _is_trading_holiday()
 
     def on_tick(self, symbol: str, message: dict):
         try:

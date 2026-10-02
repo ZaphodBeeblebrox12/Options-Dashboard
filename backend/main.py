@@ -8,6 +8,8 @@ v3.1 startup patch (see README.md in this package):
 - Startup banner now reads the settings DB instrument list (the old banner
   showed the stale .env TIER2_STOCKS value).
 - New GET /api/readiness — per-instrument lifecycle observability.
+- v3.13: startup banner + /api/market-status now report "NSE holiday today"
+  on trading-calendar holidays (via snapshot_engine._is_trading_holiday).
 """
 import os
 
@@ -102,7 +104,11 @@ def log_startup_status():
         if now.weekday() > 4:
             print("  Reason: Weekend (markets closed Sat-Sun)")
         else:
-            print("  Reason: Outside trading hours (09:15-15:30 IST)")
+            from snapshot_engine import _is_trading_holiday
+            if _is_trading_holiday():
+                print("  Reason: NSE holiday today (per trading calendar)")
+            else:
+                print("  Reason: Outside trading hours (09:15-15:30 IST)")
     print(f"  SmartApi: {'✓ INSTALLED' if ANGEL_ONE_AVAILABLE else '✗ NOT INSTALLED'}")
     print(f"  Tier 1: {', '.join(TIER1_INDICES)}")
     # v3.1 FIX: the old banner read streamer_adapter.configured_stocks (still
@@ -460,7 +466,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Multi-Instrument Option Chain Replay Dashboard",
+    title="Multi-Index Option Chain Replay Dashboard",
     description="Live intraday options forensic dashboard with replay capability + Alert System v2.2 + Tier-2 stocks",
     version="3.0.0",
     lifespan=lifespan,
@@ -969,8 +975,8 @@ async def get_snapshot_by_timestamp(
 # ── v3.11 PERF: strike-history hot cache ──────────────────────────────
 # During market hours the desktop StrikeChart and mobile strike sheet poll
 # GET /api/history/{strike} every 30s for the SELECTED strike. A 5s TTL
-# collapses those repeats (and re-clicks on the same strike) without ever
-# serving data older than one poll tick. Keyed by (index, strike, date);
+# cache collapses those repeats (and re-clicks on the same strike) without
+# ever serving data older than one poll tick. Keyed by (index, strike, date);
 # bounded; cleared wholesale past 500 entries (strike picks churn fast).
 _STRIKE_HISTORY_CACHE: dict = {}
 _STRIKE_HISTORY_CACHE_TTL = 5.0
@@ -1054,7 +1060,6 @@ async def get_strike_history(
         _STRIKE_HISTORY_CACHE.clear()
     _STRIKE_HISTORY_CACHE[cache_key] = (now_mono, timeseries)
     return {"strike": strike, "index_name": index, "timeseries": timeseries}
-
 
 @app.get("/api/gex-history")
 async def get_gex_history(
@@ -1153,10 +1158,106 @@ async def get_strikes(
     return {"strikes": [row["strike"] for row in rows]}
 
 
+# ── v3.15: futures-OI buildup classification (Long/Short Buildup cards) ──
+
+def _classify_buildup(px_chg: float, oi_chg: float) -> str:
+    if px_chg >= 0 and oi_chg >= 0:
+        return "LONG BUILDUP"
+    if px_chg >= 0:
+        return "SHORT COVERING"
+    if oi_chg >= 0:
+        return "SHORT BUILDUP"
+    return "LONG UNWINDING"
+
+
+@app.get("/api/buildup")
+async def get_buildup(
+    index: str = Query(default=None, description="Instrument name (default: NIFTY + SENSEX)"),
+    date: str = Query(default=None, description="Trading date (default: latest available)"),
+):
+    """Futures-OI buildup status: price change x FUTURES OI change since the
+    day's first snapshot. OI source: futures_oi (mode-3 ticks, v3.15+); falls
+    back to summed option OI for dates recorded before futures OI existed."""
+    targets = [index.strip().upper()] if index else ["NIFTY", "SENSEX"]
+    out = {}
+    with get_db() as conn:
+        for idx in targets:
+            day = date
+            if not day:
+                r = conn.execute(
+                    "SELECT date(MAX(timestamp)) AS d FROM snapshots WHERE index_name = ?",
+                    (idx,)).fetchone()
+                day = r["d"] if r else None
+            if not day:
+                continue
+            first = conn.execute(
+                "SELECT * FROM snapshots WHERE index_name = ? AND date(timestamp) = ? "
+                "ORDER BY timestamp LIMIT 1", (idx, day)).fetchone()
+            if not first:
+                continue
+
+            # latest reading: live in-memory snapshot when it belongs to this day
+            live = snapshot_engine.get_latest_snapshot(idx)
+            if live and str(live.get("timestamp", "")).startswith(day):
+                last_px = live.get("spot")
+                foi = live.get("futures_oi")
+                oi_sum = sum(o.get("oi", 0) for o in live.get("options", [])) or None
+                last_ts = live.get("timestamp")
+                is_live = True
+            else:
+                last = conn.execute(
+                    "SELECT * FROM snapshots WHERE index_name = ? AND date(timestamp) = ? "
+                    "ORDER BY timestamp DESC LIMIT 1", (idx, day)).fetchone()
+                if not last:
+                    continue
+                last_px, foi, last_ts = last["spot"], last["futures_oi"], last["timestamp"]
+                r = conn.execute(
+                    "SELECT COALESCE(SUM(oi),0) FROM option_snapshots WHERE snapshot_id = ?",
+                    (last["id"],)).fetchone()
+                oi_sum = r[0] or None
+                is_live = False
+
+            f0 = first["futures_oi"]
+            if f0 is not None and foi is not None:
+                oi0, oi1, oi_src = f0, foi, "futures"
+            else:
+                r0 = conn.execute(
+                    "SELECT COALESCE(SUM(oi),0) FROM option_snapshots WHERE snapshot_id = ?",
+                    (first["id"],)).fetchone()
+                oi0, oi1, oi_src = (r0[0] or None), oi_sum, "options"
+
+            if not last_px or not first["spot"] or not oi0 or oi1 is None:
+                out[idx] = {"date": day, "label": "NO DATA", "error": "insufficient data"}
+                continue
+
+            px_chg = (last_px - first["spot"]) / first["spot"] * 100
+            oi_chg = (oi1 - oi0) / oi0 * 100
+            out[idx] = {
+                "date": day, "label": _classify_buildup(px_chg, oi_chg),
+                "px": last_px, "px_chg": round(px_chg, 2),
+                "futures_oi": foi, "oi_chg": round(oi_chg, 2), "oi_source": oi_src,
+                "baseline_ts": first["timestamp"], "last_ts": last_ts, "live": is_live,
+            }
+    return out
+
+
 @app.get("/api/market-status")
 async def get_market_status():
+    # v3.13: reason field — "NSE holiday today" on holidays, not just false
+    now = datetime.now()
+    reason = ""
+    if not is_market_open():
+        if now.weekday() > 4:
+            reason = "Weekend (markets closed Sat-Sun)"
+        else:
+            from snapshot_engine import _is_trading_holiday
+            if _is_trading_holiday():
+                reason = "NSE holiday today (per trading calendar)"
+            else:
+                reason = "Outside trading hours (09:15-15:30 IST)"
     return {
         "market_open": is_market_open(),
+        "reason": reason,
         "live_available": streamer_adapter.mode == "real",
         "timestamp": datetime.now().isoformat(),
     }
