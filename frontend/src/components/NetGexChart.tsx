@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef } from 'react';
 import {
   AreaChart,
   Area,
@@ -9,6 +9,7 @@ import {
   ResponsiveContainer,
   ReferenceLine,
 } from 'recharts';
+import { ScreenshotButton } from './ScreenshotButton';
 
 interface GexPoint {
   timestamp: string;
@@ -17,6 +18,8 @@ interface GexPoint {
 
 interface NetGexChartProps {
   data: GexPoint[];
+  indexName?: string;
+  timestamp?: string;
 }
 
 const CustomTooltip = ({ active, payload, label }: any) => {
@@ -31,8 +34,9 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   );
 };
 
-const NetGexChartComponent: React.FC<NetGexChartProps> = ({ data }) => {
-  // Hook MUST run before any conditional return (React rules of hooks).
+const NetGexChartComponent: React.FC<NetGexChartProps> = ({ data, indexName = 'INDEX', timestamp }) => {
+  const panelRef = useRef<HTMLDivElement>(null);
+
   const chartData = useMemo(() =>
     (data || []).map((d) => ({
       time: d.timestamp.split(' ')[1] || d.timestamp,
@@ -40,17 +44,26 @@ const NetGexChartComponent: React.FC<NetGexChartProps> = ({ data }) => {
     })),
   [data]);
 
+  const tsLabel = timestamp ? timestamp.replace(/[:\s]/g, '-') : new Date().toISOString().slice(0,16).replace(/T/g,'-');
+  const screenshotFilename = `${indexName}-net-gex-${tsLabel}`;
+
   if (!data || data.length === 0) {
     return (
-      <div className="terminal-panel h-[200px] flex items-center justify-center">
+      <div className="terminal-panel h-[200px] flex items-center justify-center" ref={panelRef}>
+        <div className="absolute top-2 right-2">
+          <ScreenshotButton targetRef={panelRef} filename={screenshotFilename} />
+        </div>
         <span className="text-terminal-muted text-sm">No GEX history available</span>
       </div>
     );
   }
 
   return (
-    <div className="terminal-panel">
-      <div className="terminal-header">Net GEX — Full Trading Day</div>
+    <div className="terminal-panel" ref={panelRef}>
+      <div className="terminal-header flex items-center justify-between">
+        <span>Net GEX — Full Trading Day</span>
+        <ScreenshotButton targetRef={panelRef} filename={screenshotFilename} />
+      </div>
       <div className="h-[200px] p-2">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>

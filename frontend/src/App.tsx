@@ -6,7 +6,6 @@ import { ReplayControls } from './components/ReplayControls';
 import { GexChart } from './components/GexChart';
 import { StrikeChart } from './components/StrikeChart';
 import { NetGexChart } from './components/NetGexChart';
-// [WallChart disabled] import { WallChart } from './components/WallChart';   (re-enable: python tools/toggle_wallchart.py --restore)
 import { SettingsModal } from './components/SettingsModal';
 import { AlertHistoryPanel } from './components/AlertHistory';
 import { AlertToastContainer } from './components/AlertToast';
@@ -65,10 +64,7 @@ function App() {
   const [fullMode, setFullMode] = useState(persisted.fullMode ?? false);
   const [selectedStrike, setSelectedStrike] = useState<number | null>(persisted.selectedStrike ?? null);
   const [liveMode, setLiveMode] = useState(persisted.liveMode ?? true);
-  // market_open is broadcast PER INSTRUMENT — keep a map, not one global bool
-  // (a single bool reflected whichever instrument ticked last).
   const [marketOpenMap, setMarketOpenMap] = useState<Record<string, boolean>>({});
-  // Instrument kind (index/stock/commodity) per symbol → drives the session.
   const [indexKinds, setIndexKinds] = useState<Record<string, InstrumentKind>>({});
   const [wsErrorMap, setWsErrorMap] = useState<Record<string, string | null>>({});
   const [showReconnectBanner, setShowReconnectBanner] = useState(false);
@@ -83,7 +79,6 @@ function App() {
   const wsUrl = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
   const { connected, lastMessage } = useWebSocket(wsUrl);
 
-  // Small screens get the dedicated mobile shell (desktop render below is untouched).
   const isMobile = useIsMobile();
 
   const timestamps = useSnapshots(selectedDate, selectedIndex, liveMode);
@@ -99,14 +94,9 @@ function App() {
   const { settings: alertSettings } = useAlertSettings();
   const { toasts, addToast, removeToast, playAlertSound } = useAlertNotifications();
 
-  // SELECTED instrument's session (equity 09:15–15:30 / MCX 09:00–23:30).
   const sessionHours: SessionHours = hoursForType(indexKinds[selectedIndex]);
-  // Backend broadcasts market_open per instrument; until the first tick for
-  // this instrument arrives, fall back to the locally computed session.
   const marketOpen = marketOpenMap[selectedIndex] ?? isSessionOpen(sessionHours);
 
-  // Alert notification scope — user-configurable in Settings > Alerts.
-  // Reloads when the settings modal saves (custom event) or on mount.
   useEffect(() => {
     const load = () =>
       fetch('/api/settings')
@@ -118,7 +108,6 @@ function App() {
     return () => window.removeEventListener('app-settings-changed', load);
   }, []);
 
-  // Instrument kinds → per-instrument trading session (equity vs MCX).
   useEffect(() => {
     let alive = true;
     const load = () =>
@@ -140,7 +129,7 @@ function App() {
         })
         .catch(() => {});
     load();
-    const t = setInterval(load, 60000); // pick up instruments added at runtime
+    const t = setInterval(load, 60000);
     return () => { alive = false; clearInterval(t); };
   }, []);
 
@@ -229,17 +218,11 @@ function App() {
         setUnseenAlertCount((c) => c + 1);
       }
       if (alertScope === 'all' || alertData.index_name === selectedIndex) {
-        // Channel-driven delivery: the engine computes channels_fired per tier,
-        // so a Telegram-only Tier-4 alert never reaches toast/sound.
         const channels = alertData.channels_fired ?? [];
         if (channels.includes('toast')) {
           addToast(alertData);
         }
         if (channels.includes('sound') && alertSettings?.sound.master_enabled) {
-          // channels_fired is authoritative: the engine already folded the
-          // rule's sound_enabled in for Tier 1/2/3, and for Tier 4 the
-          // tier4.channels profile alone decides — the shared rule's
-          // sound_enabled must NOT be re-checked here.
           const ruleConfig = alertSettings?.rules.find((r) => r.rule_type === alertData.rule_type);
           const soundId = ruleConfig?.custom_sound_id || ruleConfig?.sound_choice || 'alert';
           const volume = (alertSettings.sound.volume_percent || 80) / 100;
@@ -261,7 +244,6 @@ function App() {
     return () => { if (playTimerRef.current) clearInterval(playTimerRef.current); };
   }, [isPlaying, timestamps.length]);
 
-  // When playback reaches the end, automatically switch to live mode
   useEffect(() => {
     if (isPlaying && currentIndex >= timestamps.length - 1 && timestamps.length > 0 && marketOpen) {
       setIsPlaying(false);
@@ -289,7 +271,6 @@ function App() {
   const gammaFlip = displayData?.gamma_flip ?? null;
   const timestamp = displayData?.timestamp ?? new Date().toISOString();
   const options = displayData?.options ?? [];
-  // Wall levels for the WallChart (max-OI strikes from the visible chain; §41/42)
   const { ceWall, peWall } = React.useMemo(() => {
     let cew: number | null = null, pew: number | null = null, ceo = -1, peo = -1;
     for (const o of (options as any[])) {
@@ -343,7 +324,6 @@ function App() {
     });
   }, []);
 
-  // Keyboard: L = toggle live, End = jump to latest, Ctrl+, = settings
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
@@ -369,7 +349,7 @@ function App() {
 
   const atmStrike = React.useMemo(() => {
     const payloadAtm = (displayData as any)?.atm ?? null;
-    if (payloadAtm != null) return payloadAtm;   // backend source of truth (live ticks)
+    if (payloadAtm != null) return payloadAtm;
     if (!spot || normalizedOptions.length === 0) return null;
     const strikes = [...new Set(normalizedOptions.map((o: any) => o.strike))].sort((a: number, b: number) => a - b);
     return strikes.reduce((closest: number, s: number) => Math.abs(s - spot) < Math.abs(closest - spot) ? s : closest);
@@ -416,7 +396,6 @@ function App() {
 
   const toastDuration = alertSettings?.toast_duration_ms ?? 6000;
 
-  // Mobile: small screens get the dedicated mobile shell; desktop tree below is untouched.
   if (isMobile) {
     return (
       <MobileApp
@@ -429,7 +408,6 @@ function App() {
     );
   }
 
-  
   return (
     <div className="min-h-screen bg-terminal-bg">
       <AlertToastContainer alerts={toasts} onDismiss={removeToast} duration={toastDuration} />
@@ -491,26 +469,17 @@ function App() {
 
       <div className="p-2 sm:p-3 space-y-2 sm:space-y-3">
         <AnalyticsHeader indexName={selectedIndex} isFetching={snapshotLoading} spot={spot} futures={futures} futuresSpread={futuresSpread} spreadLabel={spreadLabel} netGex={netGex} maxGexStrike={maxGexStrike} maxPain={maxPain} gammaFlip={gammaFlip} timestamp={timestamp} isLive={liveMode && connected && marketOpen} />
-        <BuildupCard indexName={selectedIndex} date={selectedDate} live={liveMode} />
+        <BuildupCard indexName={selectedIndex} date={selectedDate} live={liveMode} timestamp={currentTimestamp || undefined} />
         <ReplayControls timestamps={timestamps} currentIndex={currentIndex} isFetching={snapshotLoading} isPlaying={isPlaying} onPlay={handlePlay} onPause={handlePause} onSeek={handleSeek} onRefresh={handleRefresh} selectedDate={selectedDate} onDateChange={handleDateChange} selectedIndex={selectedIndex} onIndexChange={handleIndexChange} availableDates={availableDates} sessionHours={sessionHours} />
-        <OptionChain options={normalizedOptions} spot={spot} futures={futures} maxPain={maxPain} gammaFlip={gammaFlip} fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike} />
-        {/* §45: GEX bar + Net GEX charts are Tier-1-only */}
-          {instrumentTier === 1 && (
-            // v3.10: wall strikes (already computed above for WallChart) are
-            // passed so the GEX plot labels CE/PE walls like ATM/MAX PAIN.
-            <GexChart data={gexByStrike} atmStrike={atmStrike} maxPain={maxPain} gammaFlip={gammaFlip}
-                      ceWall={ceWall} peWall={peWall} />
-          )}
-          <StrikeChart data={strikeHistory} strike={selectedStrike ?? 0} />
-{/* [WallChart disabled] 2026-10-02 — re-enable with: python tools/toggle_wallchart.py --restore
-          <WallChart symbol={selectedIndex} tier={instrumentTier} atm={atmStrike}
-                     ceWall={ceWall} peWall={peWall}
-                     negGex={(displayData as any)?.max_negative_gex_strike ?? (displayData as any)?.max_gex_strike ?? null}
-                     replayDate={liveMode ? null : selectedDate} />
-          */}
-          {instrumentTier === 1 && (
-            <NetGexChart data={gexHistory} />
-          )}
+        <OptionChain options={normalizedOptions} spot={spot} futures={futures} maxPain={maxPain} gammaFlip={gammaFlip} fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike} indexName={selectedIndex} timestamp={timestamp} />
+        {instrumentTier === 1 && (
+          <GexChart data={gexByStrike} atmStrike={atmStrike} maxPain={maxPain} gammaFlip={gammaFlip}
+                    ceWall={ceWall} peWall={peWall} indexName={selectedIndex} timestamp={timestamp} />
+        )}
+        <StrikeChart data={strikeHistory} strike={selectedStrike ?? 0} indexName={selectedIndex} timestamp={timestamp} />
+        {instrumentTier === 1 && (
+          <NetGexChart data={gexHistory} indexName={selectedIndex} timestamp={timestamp} />
+        )}
       </div>
 
       {showSettings && (

@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
+import { ScreenshotButton } from './ScreenshotButton';
 
 interface BuildupInfo {
   date: string;
@@ -12,8 +13,6 @@ interface BuildupInfo {
   error?: string;
 }
 
-// Quadrant colors: Long Buildup green, Short Covering teal,
-// Short Buildup red, Long Unwinding orange.
 const LABEL_STYLE: Record<string, { color: string; bg: string }> = {
   'LONG BUILDUP':   { color: '#22c55e', bg: 'rgba(34,197,94,0.12)' },
   'SHORT COVERING': { color: '#2dd4bf', bg: 'rgba(45,212,191,0.12)' },
@@ -21,16 +20,25 @@ const LABEL_STYLE: Record<string, { color: string; bg: string }> = {
   'LONG UNWINDING': { color: '#f97316', bg: 'rgba(249,115,22,0.12)' },
 };
 
-export const BuildupCard: React.FC<{ indexName: string; date: string; live: boolean }> = ({
-  indexName, date, live,
+export const BuildupCard: React.FC<{ indexName: string; date: string; live: boolean; timestamp?: string }> = ({
+  indexName, date, live, timestamp,
 }) => {
   const [data, setData] = useState<BuildupInfo | null>(null);
   const [gone, setGone] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
-    const load = () =>
-      fetch(`/api/buildup?index=${encodeURIComponent(indexName)}${live ? '' : `&date=${date}`}`)
+    const load = () => {
+      const params = new URLSearchParams();
+      params.set('index', indexName);
+      if (!live && timestamp) {
+        params.set('timestamp', timestamp);
+      }
+      if (!live && !timestamp) {
+        params.set('date', date);
+      }
+      fetch(`/api/buildup?${params.toString()}`)
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => {
           if (cancelled) return;
@@ -39,12 +47,12 @@ export const BuildupCard: React.FC<{ indexName: string; date: string; live: bool
           setGone(!info);
         })
         .catch(() => { if (!cancelled) setGone(true); });
+    };
     load();
     const t = setInterval(load, 30000);
     return () => { cancelled = true; clearInterval(t); };
-  }, [indexName, date, live]);
+  }, [indexName, date, live, timestamp]);
 
-  // nothing to show (unknown index / no snapshots) — stay out of the layout
   if (gone || !data) return null;
 
   const style = LABEL_STYLE[data.label] ?? { color: '#94a3b8', bg: 'rgba(148,163,184,0.12)' };
@@ -53,8 +61,11 @@ export const BuildupCard: React.FC<{ indexName: string; date: string; live: bool
   const fmtPct = (v?: number) => (v === undefined ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`);
   const barW = Math.min(Math.abs(data.oi_chg ?? 0), 100);
 
+  const tsLabel = timestamp ? timestamp.replace(/[:\s]/g, '-') : new Date().toISOString().slice(0,16).replace(/T/g,'-');
+  const screenshotFilename = `${indexName}-buildup-${tsLabel}`;
+
   return (
-    <div className="terminal-panel px-3 sm:px-4 py-2">
+    <div className="terminal-panel px-3 sm:px-4 py-2" ref={panelRef}>
       <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
         <span className="text-[9px] sm:text-[10px] font-mono uppercase tracking-wider text-terminal-muted">
           Buildup
@@ -90,8 +101,10 @@ export const BuildupCard: React.FC<{ indexName: string; date: string; live: bool
             since {data.baseline_ts ? data.baseline_ts.slice(11, 16) : '—'} ({data.date})
           </span>
         )}
+        <div className="ml-auto">
+          <ScreenshotButton targetRef={panelRef} filename={screenshotFilename} />
+        </div>
       </div>
-      {/* OI-change magnitude bar, colored by classification */}
       <div className="mt-1.5 h-1 rounded bg-white/5 overflow-hidden">
         <div
           className="h-full rounded transition-all duration-700"

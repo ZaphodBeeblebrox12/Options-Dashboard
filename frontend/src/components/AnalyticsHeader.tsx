@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { Activity, TrendingUp, BarChart3, Crosshair, Zap, Layers } from 'lucide-react';
+import { ScreenshotButton } from './ScreenshotButton';
 
 interface AnalyticsHeaderProps {
   indexName: string;
@@ -47,19 +48,23 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
   isLive,
   isFetching,
 }) => {
+  const panelRef = useRef<HTMLDivElement>(null);
+
   const formatPrice = (p: number | null) => p !== null ? p.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
   const formatInt = (n: number | null) => n !== null ? n.toLocaleString('en-IN') : '—';
 
-  const spreadColor = spreadLabel === 'PREMIUM' 
-    ? 'text-terminal-pe' 
-    : spreadLabel === 'DISCOUNT' 
-    ? 'text-terminal-ce' 
+  const spreadColor = spreadLabel === 'PREMIUM'
+    ? 'text-terminal-pe'
+    : spreadLabel === 'DISCOUNT'
+    ? 'text-terminal-ce'
     : 'text-terminal-muted';
   const gexColor = (netGex ?? 0) >= 0 ? 'text-terminal-pe' : 'text-terminal-ce';
 
+  const tsLabel = timestamp ? timestamp.replace(/[:\s]/g, '-') : new Date().toISOString().slice(0,16).replace(/T/g,'-');
+  const screenshotFilename = `${indexName}-analytics-${tsLabel}`;
+
   return (
-    <div className="terminal-panel relative overflow-hidden">
-      {/* Subtle sweep bar — indicates data is being fetched */}
+    <div className="terminal-panel relative overflow-hidden" ref={panelRef}>
       {isFetching && (
         <div
           className="absolute top-0 left-0 right-0 h-[2px] z-10"
@@ -87,20 +92,22 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
             </span>
           )}
         </div>
-        <div className={`text-[10px] font-mono transition-opacity duration-300 ${isFetching ? 'opacity-40' : 'opacity-100 text-terminal-muted'}`}>
-          {timestamp ? new Date(timestamp).toLocaleString('en-IN') : '—'}
+        <div className="flex items-center gap-2">
+          <div className={`text-[10px] font-mono transition-opacity duration-300 ${isFetching ? 'opacity-40' : 'opacity-100 text-terminal-muted'}`}>
+            {timestamp ? new Date(timestamp).toLocaleString('en-IN') : '—'}
+          </div>
+          <ScreenshotButton targetRef={panelRef} filename={screenshotFilename} />
         </div>
       </div>
 
-      {/* Desktop: flex row (unchanged). Mobile: 2-column grid */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:flex lg:flex-wrap lg:items-center">
         <MetricCard label="SPOT" value={formatPrice(spot)} icon={<TrendingUp className="w-4 h-4" />} color="text-terminal-atm" />
         <MetricCard label="FUTURES" value={formatPrice(futures)} icon={<BarChart3 className="w-4 h-4" />} color="text-terminal-futures" />
-        <MetricCard 
-          label="SPREAD" 
-          value={futuresSpread !== null ? `${futuresSpread >= 0 ? '+' : ''}${futuresSpread.toFixed(2)}` : '—'} 
+        <MetricCard
+          label="SPREAD"
+          value={futuresSpread !== null ? `${futuresSpread >= 0 ? '+' : ''}${futuresSpread.toFixed(2)}` : '—'}
           subValue={spreadLabel || ''}
-          icon={<Layers className="w-4 h-4" />} 
+          icon={<Layers className="w-4 h-4" />}
           color={spreadColor}
         />
         <MetricCard label="NET GEX" value={formatInt(netGex)} icon={<Zap className="w-4 h-4" />} color={gexColor} />
@@ -109,7 +116,6 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
         <MetricCard label="GAMMA FLIP" value={formatInt(gammaFlip)} icon={<Zap className="w-4 h-4" />} color="text-terminal-gammaflip" />
       </div>
 
-      {/* CSS keyframe for sweep animation */}
       <style>{`
         @keyframes sweep {
           0% { transform: translateX(-100%); }

@@ -1174,10 +1174,14 @@ def _classify_buildup(px_chg: float, oi_chg: float) -> str:
 async def get_buildup(
     index: str = Query(default=None, description="Instrument name (default: NIFTY + SENSEX)"),
     date: str = Query(default=None, description="Trading date (default: latest available)"),
+    timestamp: str = Query(default=None, description="Specific snapshot timestamp for replay mode"),
 ):
     """Futures-OI buildup status: price change x FUTURES OI change since the
     day's first snapshot. OI source: futures_oi (mode-3 ticks, v3.15+); falls
-    back to summed option OI for dates recorded before futures OI existed."""
+    back to summed option OI for dates recorded before futures OI existed.
+
+    REPLAY MODE: pass `timestamp` to evaluate buildup up to that exact
+    snapshot instead of the day's last snapshot."""
     targets = [index.strip().upper()] if index else ["NIFTY", "SENSEX"]
     out = {}
     with get_db() as conn:
@@ -1196,19 +1200,13 @@ async def get_buildup(
             if not first:
                 continue
 
-            # latest reading: live in-memory snapshot when it belongs to this day
-            live = snapshot_engine.get_latest_snapshot(idx)
-            if live and str(live.get("timestamp", "")).startswith(day):
-                last_px = live.get("spot")
-                foi = live.get("futures_oi")
-                oi_sum = sum(o.get("oi", 0) for o in live.get("options", [])) or None
-                last_ts = live.get("timestamp")
-                is_live = True
-            else:
+            # ── REPLAY MODE: use the exact timestamp snapshot ──
+            if timestamp:
                 last = conn.execute(
-                    "SELECT * FROM snapshots WHERE index_name = ? AND date(timestamp) = ? "
-                    "ORDER BY timestamp DESC LIMIT 1", (idx, day)).fetchone()
+                    "SELECT * FROM snapshots WHERE index_name = ? AND timestamp = ?",
+                    (idx, timestamp)).fetchone()
                 if not last:
+                    out[idx] = {"date": day, "label": "NO DATA", "error": "timestamp not found"}
                     continue
                 last_px, foi, last_ts = last["spot"], last["futures_oi"], last["timestamp"]
                 r = conn.execute(
@@ -1216,6 +1214,27 @@ async def get_buildup(
                     (last["id"],)).fetchone()
                 oi_sum = r[0] or None
                 is_live = False
+            else:
+                # latest reading: live in-memory snapshot when it belongs to this day
+                live = snapshot_engine.get_latest_snapshot(idx)
+                if live and str(live.get("timestamp", "")).startswith(day):
+                    last_px = live.get("spot")
+                    foi = live.get("futures_oi")
+                    oi_sum = sum(o.get("oi", 0) for o in live.get("options", [])) or None
+                    last_ts = live.get("timestamp")
+                    is_live = True
+                else:
+                    last = conn.execute(
+                        "SELECT * FROM snapshots WHERE index_name = ? AND date(timestamp) = ? "
+                        "ORDER BY timestamp DESC LIMIT 1", (idx, day)).fetchone()
+                    if not last:
+                        continue
+                    last_px, foi, last_ts = last["spot"], last["futures_oi"], last["timestamp"]
+                    r = conn.execute(
+                        "SELECT COALESCE(SUM(oi),0) FROM option_snapshots WHERE snapshot_id = ?",
+                        (last["id"],)).fetchone()
+                    oi_sum = r[0] or None
+                    is_live = False
 
             f0 = first["futures_oi"]
             if f0 is not None and foi is not None:
@@ -1239,7 +1258,6 @@ async def get_buildup(
                 "baseline_ts": first["timestamp"], "last_ts": last_ts, "live": is_live,
             }
     return out
-
 
 @app.get("/api/market-status")
 async def get_market_status():

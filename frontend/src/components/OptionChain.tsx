@@ -1,5 +1,6 @@
 import React, { useMemo, useRef, useCallback } from 'react';
 import { AlertTriangle, ArrowDown } from 'lucide-react';
+import { ScreenshotButton } from './ScreenshotButton';
 
 interface OptionData {
   strike: number;
@@ -25,6 +26,8 @@ interface OptionChainProps {
   fullMode: boolean;
   selectedStrike: number | null;
   onSelectStrike: (strike: number) => void;
+  indexName?: string;
+  timestamp?: string;
 }
 
 const OptionChainComponent: React.FC<OptionChainProps> = ({
@@ -36,8 +39,11 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   fullMode,
   selectedStrike,
   onSelectStrike,
+  indexName = 'INDEX',
+  timestamp,
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   // ── Group options by strike ──
   const chainData = useMemo(() => {
@@ -159,12 +165,17 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     );
   };
 
+  // Screenshot filename
+  const tsLabel = timestamp ? timestamp.replace(/[:\s]/g, '-') : new Date().toISOString().slice(0,16).replace(/T/g,'-');
+  const screenshotFilename = `${indexName}-option-chain-${tsLabel}`;
+
   // Empty state
   if (chainData.length === 0) {
     return (
-      <div className="terminal-panel overflow-hidden">
+      <div className="terminal-panel overflow-hidden" ref={panelRef}>
         <div className="terminal-header flex items-center justify-between">
           <span>Option Chain</span>
+          <ScreenshotButton targetRef={panelRef} filename={screenshotFilename} />
         </div>
         <div className="flex flex-col items-center justify-center py-16 px-4">
           <AlertTriangle className="w-8 h-8 text-terminal-muted mb-3" />
@@ -186,7 +197,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   const totalMinWidth = fullMode ? 'min-w-[900px]' : 'min-w-[680px]';
 
   return (
-    <div className="terminal-panel overflow-hidden">
+    <div className="terminal-panel overflow-hidden" ref={panelRef}>
       <style>{`
         .terminal-scroll {
           overflow-y: auto;
@@ -216,41 +227,44 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
 
       <div className="terminal-header flex items-center justify-between">
         <span className="text-xs sm:text-sm">Option Chain</span>
-        <div className="hidden sm:flex items-center gap-3 text-[10px]">
-          <div className="flex items-center gap-1.5">
-            <span className="w-5 h-4 rounded bg-red-800 text-white text-[8px] flex items-center justify-center font-bold">1</span>
-            <span className="w-5 h-4 rounded bg-red-900/40 text-red-300 text-[8px] flex items-center justify-center font-semibold">2</span>
-            <span className="w-5 h-4 rounded bg-red-950/30 text-red-400 text-[8px] flex items-center justify-center">3</span>
-            <span className="text-terminal-muted">CE OI</span>
+        <div className="flex items-center gap-2">
+          <div className="hidden sm:flex items-center gap-3 text-[10px]">
+            <div className="flex items-center gap-1.5">
+              <span className="w-5 h-4 rounded bg-red-800 text-white text-[8px] flex items-center justify-center font-bold">1</span>
+              <span className="w-5 h-4 rounded bg-red-900/40 text-red-300 text-[8px] flex items-center justify-center font-semibold">2</span>
+              <span className="w-5 h-4 rounded bg-red-950/30 text-red-400 text-[8px] flex items-center justify-center">3</span>
+              <span className="text-terminal-muted">CE OI</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-5 h-4 rounded bg-green-800 text-white text-[8px] flex items-center justify-center font-bold">1</span>
+              <span className="w-5 h-4 rounded bg-green-900/40 text-green-300 text-[8px] flex items-center justify-center font-semibold">2</span>
+              <span className="w-5 h-4 rounded bg-green-950/30 text-green-400 text-[8px] flex items-center justify-center">3</span>
+              <span className="text-terminal-muted">PE OI</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded bg-yellow-500/40" />
+              <span className="text-terminal-muted">ATM Spot</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded bg-cyan-500/40" />
+              <span className="text-terminal-muted">ATM Fut</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded bg-fuchsia-500/40" />
+              <span className="text-terminal-muted">Max Pain</span>
+            </div>
+            {atmSpot && (
+              <button
+                onClick={scrollToAtm}
+                className="flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-terminal-atm/10 text-terminal-atm border border-terminal-atm/30 hover:bg-terminal-atm/20 transition-colors"
+                title="Jump to ATM strike"
+              >
+                <ArrowDown className="w-3 h-3" />
+                Jump to ATM
+              </button>
+            )}
           </div>
-          <div className="flex items-center gap-1.5">
-            <span className="w-5 h-4 rounded bg-green-800 text-white text-[8px] flex items-center justify-center font-bold">1</span>
-            <span className="w-5 h-4 rounded bg-green-900/40 text-green-300 text-[8px] flex items-center justify-center font-semibold">2</span>
-            <span className="w-5 h-4 rounded bg-green-950/30 text-green-400 text-[8px] flex items-center justify-center">3</span>
-            <span className="text-terminal-muted">PE OI</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="w-3 h-3 rounded bg-yellow-500/40" />
-            <span className="text-terminal-muted">ATM Spot</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="w-3 h-3 rounded bg-cyan-500/40" />
-            <span className="text-terminal-muted">ATM Fut</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="w-3 h-3 rounded bg-fuchsia-500/40" />
-            <span className="text-terminal-muted">Max Pain</span>
-          </div>
-          {atmSpot && (
-            <button
-              onClick={scrollToAtm}
-              className="flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-terminal-atm/10 text-terminal-atm border border-terminal-atm/30 hover:bg-terminal-atm/20 transition-colors"
-              title="Jump to ATM strike"
-            >
-              <ArrowDown className="w-3 h-3" />
-              Jump to ATM
-            </button>
-          )}
+          <ScreenshotButton targetRef={panelRef} filename={screenshotFilename} />
         </div>
       </div>
 

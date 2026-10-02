@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef } from 'react';
 import {
   LineChart,
   Line,
@@ -9,6 +9,7 @@ import {
   ResponsiveContainer,
   Legend,
 } from 'recharts';
+import { ScreenshotButton } from './ScreenshotButton';
 
 interface StrikeHistoryPoint {
   timestamp: string;
@@ -28,6 +29,8 @@ interface StrikeHistoryPoint {
 interface StrikeChartProps {
   data: StrikeHistoryPoint[];
   strike: number;
+  indexName?: string;
+  timestamp?: string;
 }
 
 const CustomTooltip = ({ active, payload, label }: any) => {
@@ -45,7 +48,9 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   );
 };
 
-const StrikeChartComponent: React.FC<StrikeChartProps> = ({ data, strike }) => {
+const StrikeChartComponent: React.FC<StrikeChartProps> = ({ data, strike, indexName = 'INDEX', timestamp }) => {
+  const panelRef = useRef<HTMLDivElement>(null);
+
   const chartData = useMemo(() => {
     // Group by timestamp, split CE/PE
     const grouped: Record<string, any> = {};
@@ -73,9 +78,15 @@ const StrikeChartComponent: React.FC<StrikeChartProps> = ({ data, strike }) => {
     );
   }
 
+  const tsLabel = timestamp ? timestamp.replace(/[:\s]/g, '-') : new Date().toISOString().slice(0,16).replace(/T/g,'-');
+  const screenshotFilename = `${indexName}-strike-${strike}-${tsLabel}`;
+
   return (
-    <div className="terminal-panel">
-      <div className="terminal-header">Strike {strike.toLocaleString('en-IN')} — Time Series</div>
+    <div className="terminal-panel" ref={panelRef}>
+      <div className="terminal-header flex items-center justify-between">
+        <span>Strike {strike.toLocaleString('en-IN')} — Time Series</span>
+        <ScreenshotButton targetRef={panelRef} filename={screenshotFilename} />
+      </div>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-2 p-2">
         {/* LTP Chart */}
         <div className="h-[180px]">
