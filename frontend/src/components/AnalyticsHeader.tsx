@@ -1,5 +1,5 @@
 import React, { useRef } from 'react';
-import { Activity, TrendingUp, BarChart3, Crosshair, Zap, Layers } from 'lucide-react';
+import { Activity, TrendingUp, BarChart3, Crosshair, Zap, Layers, WifiOff } from 'lucide-react';
 import { ScreenshotButton } from './ScreenshotButton';
 
 interface AnalyticsHeaderProps {
@@ -14,6 +14,7 @@ interface AnalyticsHeaderProps {
   gammaFlip: number | null;
   timestamp: string;
   isLive: boolean;
+  isStale?: boolean;   // P1: feed frozen — data on screen has stopped updating
   isFetching?: boolean;
 }
 
@@ -46,6 +47,7 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
   gammaFlip,
   timestamp,
   isLive,
+  isStale = false,
   isFetching,
 }) => {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -79,12 +81,23 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
         <div className="flex items-center gap-2">
           <Activity className="w-4 h-4 sm:w-4 sm:h-4 text-terminal-atm" />
           <span className="text-sm font-semibold tracking-wide">{indexName}</span>
-          {isLive && (
+          {/* P1: amber STALE state when the tick stream has frozen but the
+              socket to our own backend is still up (backend rebroadcasts
+              cached state every 5s, so ticks keep arriving — just ancient). */}
+          {isStale ? (
+            <span
+              className="flex items-center gap-1 text-[10px] font-mono text-amber-400"
+              title="Feed frozen — prices stopped updating. Do not trade or share from this view."
+            >
+              <WifiOff className="w-3 h-3" />
+              STALE
+            </span>
+          ) : isLive ? (
             <span className="flex items-center gap-1 text-[10px] font-mono text-terminal-pe">
               <span className="w-1.5 h-1.5 rounded-full bg-terminal-pe animate-pulse" />
               LIVE
             </span>
-          )}
+          ) : null}
           {isFetching && (
             <span className="flex items-center gap-1 text-[10px] font-mono text-terminal-atm/70">
               <span className="w-1 h-1 rounded-full bg-terminal-atm animate-pulse" />

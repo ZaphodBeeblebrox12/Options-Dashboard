@@ -17,39 +17,56 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Databases
+# Databases — live files, journals, AND timestamped backups
+# (nifty_snapshots.db.bak-20261002-140334 etc.)
 *.db
 *.db-shm
 *.db-wal
+*.db-journal
 *.sqlite
 *.sqlite3
+*.db.bak-*
 
-# Backend runtime folders (seen in your filelist)
+# Backend runtime folders
 backend/cache/
 backend/logs/
 
+# Backend debug artifacts
+freeze_dump.txt
+backend_liveness.log
+
 # Distribution / packaging
 build/
-dist/
 *.egg-info/
 .eggs/
 
 # ===========================
 # Node.js / Frontend
 # ===========================
-# Dependencies (covers frontend/node_modules)
+# Dependencies (covers frontend/node_modules at any depth)
 node_modules/
 
-# Build output (covers frontend/dist if you build)
+# Build output (covers frontend/dist)
 dist/
 *.log
 
 # ===========================
-# Environment Variables
+# Environment Variables & Secrets
 # ===========================
-.env
-.env.local
-.env.*.local
+# CRITICAL: .env* (not .env) — covers .env, .env.local,
+# .env.production, and numbered variants like .env1
+.env*
+!*.env.example
+!*.env.sample
+
+# ===========================
+# Backup & experiment files
+# ===========================
+# Covers App.tsx.bak, App.tsx.disabled-wallchart, etc.
+*.bak
+*.bak-*
+*.orig
+*.disabled-*
 
 # ===========================
 # IDEs & OS
@@ -59,4 +76,5 @@ dist/
 *.swp
 *.swo
 .DS_Store
-Thumbs.dbfilelist.txt 
+Thumbs.db
+filelist.txt

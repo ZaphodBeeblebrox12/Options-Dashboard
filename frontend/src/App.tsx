@@ -21,6 +21,15 @@ const STORAGE_KEY = 'option_chain_view_state';
 const HISTORY_LAST_OPENED_KEY = 'history_last_opened_at';
 const SCROLL_KEY = 'option_chain_scroll_y';
 
+// ── P1 FIX: data-freshness gating ─────────────────────────────
+// The backend rebroadcasts CACHED state every 5s even when the Angel feed
+// has frozen (verified: freeze watchdog fires at snap_age>90s while the
+// frontend kept showing a green LIVE dot). So `connected` proves nothing
+// about the prices on screen — staleness must be judged from the tick's
+// own timestamp. Threshold sits between the ~30s snapshot cadence and the
+// backend watchdog's 90s trip.
+const STALE_AFTER_MS = 75_000;
+
 interface PersistedState {
   selectedIndex: string;
   selectedDate: string;
@@ -71,6 +80,9 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showAlertHistory, setShowAlertHistory] = useState(false);
   const [unseenAlertCount, setUnseenAlertCount] = useState(0);
+  // P1 FIX: a ticking clock so staleness re-evaluates even when the feed
+  // freezes — without it, no ticks = no state change = STALE never appears.
+  const [now, setNow] = useState(() => Date.now());
   const playTimerRef = useRef<ReturnType<typeof setInterval>>();
   const hasRestoredRef = useRef(false);
   const enteringLiveRef = useRef(false);
@@ -96,6 +108,11 @@ function App() {
 
   const sessionHours: SessionHours = hoursForType(indexKinds[selectedIndex]);
   const marketOpen = marketOpenMap[selectedIndex] ?? isSessionOpen(sessionHours);
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 10_000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     const load = () =>
@@ -260,6 +277,18 @@ function App() {
   const hasLiveData = liveData && Array.isArray(liveData.options) && liveData.options.length > 0 && liveData.spot != null;
   const displayData = liveMode && hasLiveData ? liveData : snapshot;
   const wsError = wsErrorMap[selectedIndex] || null;
+
+  // ── P1 FIX: judge LIVE by data age, not just socket state ──
+  // Backend ticks carry "YYYY-MM-DD HH:MM:SS" in local time; normalise to a
+  // parseable form and compare against the ticking clock above.
+  const liveDataAgeMs = (liveMode && hasLiveData && liveData?.timestamp)
+    ? now - new Date(String(liveData.timestamp).replace(' ', 'T')).getTime()
+    : null;
+  const isLiveDataStale =
+    liveDataAgeMs !== null && !Number.isNaN(liveDataAgeMs) && liveDataAgeMs > STALE_AFTER_MS;
+  // hasLiveData is part of the gate: showing LIVE while actually rendering a
+  // cached DB snapshot (no tick stream) was the same lie in a quieter form.
+  const isTrulyLive = liveMode && connected && marketOpen && hasLiveData && !isLiveDataStale;
 
   const spot = displayData?.spot ?? null;
   const futures = displayData?.futures ?? null;
@@ -460,15 +489,17 @@ function App() {
             <Settings className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Settings</span>
           </button>
-          <button onClick={toggleLiveMode} className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono font-semibold transition-colors ${liveMode ? 'bg-terminal-pe/20 text-terminal-pe' : 'bg-terminal-bg text-terminal-muted hover:text-terminal-text'}`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${liveMode ? 'bg-terminal-pe animate-pulse' : 'bg-terminal-muted'}`} />
-            LIVE
+          {/* P1 FIX: the toggle reflects mode, but warns when the live data
+              stream itself has gone stale (frozen feed, socket still up). */}
+          <button onClick={toggleLiveMode} className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono font-semibold transition-colors ${liveMode ? (isLiveDataStale ? 'bg-amber-500/20 text-amber-400' : 'bg-terminal-pe/20 text-terminal-pe') : 'bg-terminal-bg text-terminal-muted hover:text-terminal-text'}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${liveMode ? (isLiveDataStale ? 'bg-amber-400' : 'bg-terminal-pe animate-pulse') : 'bg-terminal-muted'}`} />
+            {liveMode && isLiveDataStale ? 'STALE' : 'LIVE'}
           </button>
         </div>
       </div>
 
       <div className="p-2 sm:p-3 space-y-2 sm:space-y-3">
-        <AnalyticsHeader indexName={selectedIndex} isFetching={snapshotLoading} spot={spot} futures={futures} futuresSpread={futuresSpread} spreadLabel={spreadLabel} netGex={netGex} maxGexStrike={maxGexStrike} maxPain={maxPain} gammaFlip={gammaFlip} timestamp={timestamp} isLive={liveMode && connected && marketOpen} />
+        <AnalyticsHeader indexName={selectedIndex} isFetching={snapshotLoading} spot={spot} futures={futures} futuresSpread={futuresSpread} spreadLabel={spreadLabel} netGex={netGex} maxGexStrike={maxGexStrike} maxPain={maxPain} gammaFlip={gammaFlip} timestamp={timestamp} isLive={isTrulyLive} isStale={isLiveDataStale} />
         <BuildupCard indexName={selectedIndex} date={selectedDate} live={liveMode} timestamp={currentTimestamp || undefined} />
         <ReplayControls timestamps={timestamps} currentIndex={currentIndex} isFetching={snapshotLoading} isPlaying={isPlaying} onPlay={handlePlay} onPause={handlePause} onSeek={handleSeek} onRefresh={handleRefresh} selectedDate={selectedDate} onDateChange={handleDateChange} selectedIndex={selectedIndex} onIndexChange={handleIndexChange} availableDates={availableDates} sessionHours={sessionHours} />
         <OptionChain options={normalizedOptions} spot={spot} futures={futures} maxPain={maxPain} gammaFlip={gammaFlip} fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike} indexName={selectedIndex} timestamp={timestamp} />

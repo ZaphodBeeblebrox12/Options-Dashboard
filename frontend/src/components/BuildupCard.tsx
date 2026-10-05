@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
+import { WifiOff, RefreshCw } from 'lucide-react';
 import { ScreenshotButton } from './ScreenshotButton';
 
 interface BuildupInfo {
@@ -11,6 +12,7 @@ interface BuildupInfo {
   oi_source?: string;
   live?: boolean;
   error?: string;
+  baseline_ts?: string;
 }
 
 const LABEL_STYLE: Record<string, { color: string; bg: string }> = {
@@ -23,12 +25,19 @@ const LABEL_STYLE: Record<string, { color: string; bg: string }> = {
 export const BuildupCard: React.FC<{ indexName: string; date: string; live: boolean; timestamp?: string }> = ({
   indexName, date, live, timestamp,
 }) => {
-  const [data, setData] = useState<BuildupInfo | null>(null);
-  const [gone, setGone] = useState(false);
+  // Key ties fetched data to its context (index/date/timestamp-or-LIVE).
+  const key = `${indexName}|${date}|${live ? 'LIVE' : (timestamp || '')}`;
+  const [entry, setEntry] = useState<{ key: string; info: BuildupInfo } | null>(null);
+  const [transitioning, setTransitioning] = useState(false);
+  const [stale, setStale] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
+  // Monotonic request id — guards against out-of-order responses when the
+  // user scrubs rapidly (an older fetch must never overwrite a newer one).
+  const reqIdRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
+    const myReq = ++reqIdRef.current;
     const load = () => {
       const params = new URLSearchParams();
       params.set('index', indexName);
@@ -41,20 +50,41 @@ export const BuildupCard: React.FC<{ indexName: string; date: string; live: bool
       fetch(`/api/buildup?${params.toString()}`)
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => {
-          if (cancelled) return;
+          if (cancelled || reqIdRef.current !== myReq) return;
           const info = d?.[indexName];
-          setData(info && info.label !== 'NO DATA' ? info : null);
-          setGone(!info);
+          if (info && info.label !== 'NO DATA') {
+            setEntry({ key, info });
+            setStale(false);
+          } else {
+            // Backend answered: no data for THIS context — hide is correct
+            setEntry(null);
+            setStale(false);
+          }
+          setTransitioning(false);
         })
-        .catch(() => { if (!cancelled) setGone(true); });
+        .catch(() => {
+          // Backend down / unreachable — keep last known data, mark stale
+          if (cancelled || reqIdRef.current !== myReq) return;
+          setStale(true);
+          setTransitioning(false);
+        });
     };
+    setTransitioning(true);
     load();
     const t = setInterval(load, 30000);
     return () => { cancelled = true; clearInterval(t); };
-  }, [indexName, date, live, timestamp]);
+  }, [key, indexName, date, live, timestamp]);
 
-  if (gone || !data) return null;
+  // PERSIST during seeks: any entry for the SAME index+date stays rendered
+  // while its new timestamp loads — only dim it. The card unmounts solely
+  // when the backend explicitly reports NO DATA for the current context,
+  // or when the cached entry belongs to a different index/date entirely.
+  const sameContext = entry && entry.key.startsWith(`${indexName}|${date}|`);
+  const data = sameContext ? entry.info : null;
 
+  if (!data) return null;
+
+  const isCurrent = entry.key === key;
   const style = LABEL_STYLE[data.label] ?? { color: '#94a3b8', bg: 'rgba(148,163,184,0.12)' };
   const pxUp = (data.px_chg ?? 0) >= 0;
   const oiUp = (data.oi_chg ?? 0) >= 0;
@@ -65,7 +95,12 @@ export const BuildupCard: React.FC<{ indexName: string; date: string; live: bool
   const screenshotFilename = `${indexName}-buildup-${tsLabel}`;
 
   return (
-    <div className="terminal-panel px-3 sm:px-4 py-2" ref={panelRef}>
+    <div
+      className={`terminal-panel px-3 sm:px-4 py-2 transition-opacity duration-300 ${
+        stale ? 'opacity-50' : !isCurrent && transitioning ? 'opacity-60' : 'opacity-100'
+      }`}
+      ref={panelRef}
+    >
       <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
         <span className="text-[9px] sm:text-[10px] font-mono uppercase tracking-wider text-terminal-muted">
           Buildup
@@ -90,7 +125,19 @@ export const BuildupCard: React.FC<{ indexName: string; date: string; live: bool
           {oiUp ? '\u25b2' : '\u25bc'}
           {data.oi_source === 'options' && <span className="opacity-60"> (proxy)</span>}
         </span>
-        {data.live && (
+        {stale && (
+          <span className="flex items-center gap-1 text-[9px] font-mono text-amber-400" title="Backend unreachable — showing last known data">
+            <WifiOff className="w-2.5 h-2.5" />
+            STALE
+          </span>
+        )}
+        {!stale && !isCurrent && transitioning && (
+          <span className="flex items-center gap-1 text-[9px] font-mono text-terminal-muted" title="Loading buildup for this moment">
+            <RefreshCw className="w-2.5 h-2.5 animate-spin" style={{ animationDuration: '1.5s' }} />
+            loading
+          </span>
+        )}
+        {!stale && isCurrent && data.live && (
           <span className="flex items-center gap-1 text-[9px] font-mono text-terminal-pe">
             <span className="w-1.5 h-1.5 rounded-full bg-terminal-pe animate-pulse" />
             LIVE

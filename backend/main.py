@@ -1283,6 +1283,22 @@ async def get_market_status():
 
 # ─────────────────────────────────────────────────────────────
 # ALERT API ENDPOINTS (v2.2)
+def _load_backtest_day(index_name: str, date: str):
+    """Synchronous full-day loader for the backtest endpoint.
+
+    Runs in the thread pool via asyncio.to_thread so the event loop
+    stays responsive (v3.16 — same fix as /api/history in v3.11)."""
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM snapshots WHERE index_name = ? AND date(timestamp) = ? ORDER BY timestamp",
+            (index_name, date)).fetchall()
+        opt_rows = conn.execute(
+            "SELECT * FROM option_snapshots WHERE snapshot_id IN "
+            "(SELECT id FROM snapshots WHERE index_name = ? AND date(timestamp) = ?)",
+            (index_name, date)).fetchall()
+    return rows, opt_rows
+
+
 # ─────────────────────────────────────────────────────────────
 
 @app.get("/api/alerts/settings")
@@ -1339,37 +1355,10 @@ async def run_backtest(req: BacktestRequest):
     bt_rule_state: dict = {}
     triggers = []
 
-    with get_db() as conn:
-        snap_rows = conn.execute(
-            "SELECT * FROM snapshots WHERE date(timestamp) = ? AND index_name = ? ORDER BY timestamp",
-            (req.date_str, req.index_name)
-        ).fetchall()
-
-        for snap in snap_rows:
-            opt_rows = conn.execute(
-                """SELECT strike, option_type, oi, oi_change, oi_change_pct, volume, ltp,
-                          iv, delta, gamma, theta, vega, gex
-                   FROM option_snapshots WHERE snapshot_id = ?
-                   ORDER BY strike, option_type""",
-                (snap["id"],)
-            ).fetchall()
-
-            snapshot = dict(snap)
-            snapshot["options"] = [dict(opt) for opt in opt_rows]
-
-            fired = alert_engine.evaluate_rules(snapshot, req.index_name, state_map=bt_rule_state)
-            for alert in fired:
-                if alert.rule_type in req.rule_types:
-                    triggers.append({
-                        "timestamp": alert.timestamp,
-                        "rule_type": alert.rule_type.value,
-                        "rule_name": alert.rule_name,
-                        "spot": alert.spot,
-                        "atm_strike": alert.atm_strike,
-                        "max_ce_oi_strike": alert.max_ce_oi_strike,
-                        "max_pe_oi_strike": alert.max_pe_oi_strike,
-                        "max_negative_gex_strike": alert.max_negative_gex_strike,
-                    })
+    # v3.16: full-day read (150-300k rows) runs in the thread pool.
+    # Doing this synchronously blocked the event loop and froze WS
+    # broadcasts for every client while a backtest ran.
+    rows, opt_rows = await asyncio.to_thread(_load_backtest_day, index_name, date)
 
     return BacktestResponse(
         date_str=req.date_str,
