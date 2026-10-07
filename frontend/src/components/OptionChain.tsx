@@ -30,6 +30,19 @@ interface OptionChainProps {
   timestamp?: string;
 }
 
+// FIX (ITM tint): subtle background used on the in-the-money side of a row.
+// CE is ITM when strike < spot; PE is ITM when strike > spot. Kept very
+// faint so the existing OI-rank badges, ATM highlights and gamma-flip
+// underline all stay dominant.
+const ITM_TINT_CLASS = 'bg-white/[0.045]';
+
+// FIX (OI rank window): rank OI only within ±N% of spot. Without this, a
+// far-from-spot strike (e.g. the 82,900 PE ~14% away) claims the #1 badge
+// while being irrelevant as a nearby level — the visible badges then start
+// at #2/#3, which looks like a ranking bug but is just an off-screen #1.
+// Set to 100 to restore the old whole-chain ranking.
+const OI_RANK_WINDOW_PCT = 5;
+
 const OptionChainComponent: React.FC<OptionChainProps> = ({
   options,
   spot,
@@ -72,20 +85,31 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     ).strike;
   }, [futures, chainData]);
 
-  // ── CE/PE OI ranking — TOP 3 ──
+  // ── FIX: rank only strikes within ±OI_RANK_WINDOW_PCT of spot ──
+  const rankableRows = useMemo(() => {
+    if (!spot) return chainData;
+    const lo = spot * (1 - OI_RANK_WINDOW_PCT / 100);
+    const hi = spot * (1 + OI_RANK_WINDOW_PCT / 100);
+    const windowed = chainData.filter((r) => r.strike >= lo && r.strike <= hi);
+    // Safety: if the window somehow contains nothing, fall back to all rows
+    // so the badges never vanish entirely.
+    return windowed.length > 0 ? windowed : chainData;
+  }, [chainData, spot]);
+
+  // ── CE/PE OI ranking — TOP 3 (within the spot window) ──
   const ceOiRanks = useMemo(() => {
-    const sorted = [...chainData].sort((a, b) => (b.CE?.oi ?? 0) - (a.CE?.oi ?? 0));
+    const sorted = [...rankableRows].sort((a, b) => (b.CE?.oi ?? 0) - (a.CE?.oi ?? 0));
     const ranks: Record<number, number> = {};
     sorted.slice(0, 3).forEach((row, i) => { ranks[row.strike] = i + 1; });
     return ranks;
-  }, [chainData]);
+  }, [rankableRows]);
 
   const peOiRanks = useMemo(() => {
-    const sorted = [...chainData].sort((a, b) => (b.PE?.oi ?? 0) - (a.PE?.oi ?? 0));
+    const sorted = [...rankableRows].sort((a, b) => (b.PE?.oi ?? 0) - (a.PE?.oi ?? 0));
     const ranks: Record<number, number> = {};
     sorted.slice(0, 3).forEach((row, i) => { ranks[row.strike] = i + 1; });
     return ranks;
-  }, [chainData]);
+  }, [rankableRows]);
 
   // ── Center view around ATM ──
   const displayRows = useMemo(() => {
@@ -166,7 +190,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   };
 
   // Screenshot filename
-  const tsLabel = timestamp ? timestamp.replace(/[:\s]/g, '-') : new Date().toISOString().slice(0,16).replace(/T/g,'-');
+  const tsLabel = timestamp ? timestamp.replace(/[:\s]/g, '-') : new Date().toISOString().slice(0,16).replace('T/g','-');
   const screenshotFilename = `${indexName}-option-chain-${tsLabel}`;
 
   // Empty state
@@ -242,6 +266,10 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
               <span className="text-terminal-muted">PE OI</span>
             </div>
             <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded bg-white/10" />
+              <span className="text-terminal-muted">ITM</span>
+            </div>
+            <div className="flex items-center gap-1.5">
               <span className="w-3 h-3 rounded bg-yellow-500/40" />
               <span className="text-terminal-muted">ATM Spot</span>
             </div>
@@ -270,6 +298,10 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
 
       {/* MOBILE LEGEND — visible only on small screens */}
       <div className="sm:hidden flex flex-wrap items-center gap-2 px-2 py-1.5 text-[9px] font-mono text-terminal-muted border-b border-terminal-border bg-terminal-bg/95">
+        <div className="flex items-center gap-1">
+          <span className="w-2.5 h-2.5 rounded bg-white/10" />
+          <span>ITM</span>
+        </div>
         <div className="flex items-center gap-1">
           <span className="w-2.5 h-2.5 rounded bg-yellow-500/40" />
           <span>ATM</span>
@@ -338,6 +370,9 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
               const isSelected = row.strike === selectedStrike;
               const ceRank = ceOiRanks[row.strike];
               const peRank = peOiRanks[row.strike];
+              // FIX (ITM tint): CE is ITM below spot, PE is ITM above spot.
+              const ceItm = spot != null && row.strike < spot;
+              const peItm = spot != null && row.strike > spot;
 
               return (
                 <div
@@ -349,7 +384,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                   } ${getGammaFlipClass(row.strike)}`}
                 >
                   {/* CE Side */}
-                  <div className={`grid ${fullMode ? 'grid-cols-7' : 'grid-cols-4'} gap-0`}>
+                  <div className={`grid ${fullMode ? 'grid-cols-7' : 'grid-cols-4'} gap-0 ${ceItm ? ITM_TINT_CLASS : ''}`}>
                     <div className={`px-1 sm:px-2 py-1 text-right flex items-center justify-end ${getCeOiClass(row.strike)}`}>
                       <span>{fmt(ce?.oi)}</span>
                       <OiRankBadge rank={ceRank} />
@@ -374,7 +409,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                   </div>
 
                   {/* PE Side */}
-                  <div className={`grid ${fullMode ? 'grid-cols-7' : 'grid-cols-4'} gap-0`}>
+                  <div className={`grid ${fullMode ? 'grid-cols-7' : 'grid-cols-4'} gap-0 ${peItm ? ITM_TINT_CLASS : ''}`}>
                     <div className="px-1 sm:px-2 py-1 text-left text-terminal-pe font-semibold">{fmt(pe?.ltp, 2)}</div>
                     <div className="px-1 sm:px-2 py-1 text-left text-terminal-muted">{fmt(pe?.volume)}</div>
                     <div className={`px-1 sm:px-2 py-1 text-left ${(pe?.oi_change ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>

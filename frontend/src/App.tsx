@@ -300,14 +300,20 @@ function App() {
   const gammaFlip = displayData?.gamma_flip ?? null;
   const timestamp = displayData?.timestamp ?? new Date().toISOString();
   const options = displayData?.options ?? [];
+  // ── FIX: walls must sit on the correct side of spot ──────────
+  // A CE wall is resistance ABOVE spot; a PE wall is support BELOW it.
+  // Without this filter, the max-OI strike from anywhere in the chain
+  // (e.g. a far ITM put 14% above spot) gets labeled as a "wall" and
+  // drawn on the GEX chart, compressing the meaningful near-ATM bars.
   const { ceWall, peWall } = React.useMemo(() => {
     let cew: number | null = null, pew: number | null = null, ceo = -1, peo = -1;
     for (const o of (options as any[])) {
-      if (o?.option_type === 'CE' && (o.oi ?? 0) > ceo) { ceo = o.oi; cew = o.strike; }
-      if (o?.option_type === 'PE' && (o.oi ?? 0) > peo) { peo = o.oi; pew = o.strike; }
+      const oi = o?.oi ?? 0;
+      if (o?.option_type === 'CE' && (spot == null || o.strike >= spot) && oi > ceo) { ceo = oi; cew = o.strike; }
+      if (o?.option_type === 'PE' && (spot == null || o.strike <= spot) && oi > peo) { peo = oi; pew = o.strike; }
     }
     return { ceWall: cew, peWall: pew };
-  }, [options]);
+  }, [options, spot]);
   const instrumentTier = (displayData as any)?.tier ?? (selectedIndex === 'NIFTY' || selectedIndex === 'SENSEX' ? 1 : 2);
 
 

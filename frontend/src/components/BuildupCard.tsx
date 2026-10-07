@@ -96,7 +96,7 @@ export const BuildupCard: React.FC<{ indexName: string; date: string; live: bool
 
   return (
     <div
-      className={`terminal-panel px-3 sm:px-4 py-2 transition-opacity duration-300 ${
+      className={`terminal-panel w-fit max-w-full px-3 sm:px-4 py-2 transition-opacity duration-300 ${
         stale ? 'opacity-50' : !isCurrent && transitioning ? 'opacity-60' : 'opacity-100'
       }`}
       ref={panelRef}

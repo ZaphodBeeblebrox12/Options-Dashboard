@@ -46,6 +46,7 @@ export interface OiWallInput {
 
 export function computeOiWalls(
   options: OiWallInput[] | undefined | null,
+  spot?: number | null,
 ): { ceWall: number | null; peWall: number | null } {
   let ceWall: number | null = null;
   let peWall: number | null = null;
@@ -53,10 +54,14 @@ export function computeOiWalls(
   let peOi = -1;
   for (const o of options ?? []) {
     const oi = o.oi ?? 0;
-    if (o.option_type === 'CE' && oi > ceOi) {
+    // FIX: a CE wall must sit AT/ABOVE spot (resistance); a PE wall must sit
+    // AT/BELOW spot (support). Without the side filter, max-OI strikes from
+    // anywhere in the chain (e.g. a far ITM put 14% above spot) get labeled
+    // as "walls". When spot is unknown, fall back to the old unfiltered max.
+    if (o.option_type === 'CE' && (spot == null || o.strike >= spot) && oi > ceOi) {
       ceOi = oi;
       ceWall = o.strike;
-    } else if (o.option_type === 'PE' && oi > peOi) {
+    } else if (o.option_type === 'PE' && (spot == null || o.strike <= spot) && oi > peOi) {
       peOi = oi;
       peWall = o.strike;
     }
@@ -190,17 +195,16 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
     if (atmStrike) {
       atmIdx = data.findIndex((d) => d.strike === atmStrike);
     }
-    if (atmIdx < 0) {
-      let maxVal = 0;
-      data.forEach((d, i) => {
-        const absG = Math.abs(d.net_gex);
-        if (absG > maxVal) { maxVal = absG; atmIdx = i; }
-      });
-    }
+    // FIX: removed the old fallback that guessed ATM = strike with the max
+    // |net_gex|. Max-GEX strike and ATM are not the same thing — if the
+    // backend's atmStrike is missing/odd, the chart would silently
+    // re-center on a wall and still draw a yellow "ATM" line. Now a missing
+    // ATM just means no near-ATM window (the GEX-threshold / key-strike
+    // rules still apply) and no ATM reference line is drawn.
 
     let filtered = data.filter((d, idx) => {
       const hasMeaningfulGex = Math.abs(d.net_gex) >= threshold;
-      const nearAtm = atmIdx >= 0 ? Math.abs(idx - atmIdx) <= 10 : true;
+      const nearAtm = atmIdx >= 0 && Math.abs(idx - atmIdx) <= 10;
       const isKeyStrike = d.strike === maxPain || d.strike === gammaFlip || d.strike === atmStrike
         || d.strike === ceWall || d.strike === peWall;
       return hasMeaningfulGex || nearAtm || isKeyStrike;
@@ -254,7 +258,17 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
       barSize = Math.min(32, Math.max(10, Math.floor(700 / filtered.length)));
     }
 
-    const refLineConfigs = buildRefLineConfigs(atmStrike, maxPain, gammaFlip, ceWall ?? null, peWall ?? null);
+    // FIX: only draw the ATM marker when the atmStrike actually survived in
+    // the filtered set — previously a filtered-out ATM still got a refline
+    // label at a stale position.
+    const atmVisible = atmStrike != null && filtered.some((d) => d.strike === atmStrike);
+    const refLineConfigs = buildRefLineConfigs(
+      atmVisible ? atmStrike : null,
+      maxPain,
+      gammaFlip,
+      ceWall ?? null,
+      peWall ?? null,
+    );
 
     return {
       hasData: true,
@@ -297,7 +311,7 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
     return [];
   }, [isMobile, chartWidth, memoized.chartData, memoized.refLines, plotLeft, plotWidth]);
 
-  const tsLabel = timestamp ? timestamp.replace(/[:\s]/g, '-') : new Date().toISOString().slice(0,16).replace(/T/g,'-');
+  const tsLabel = timestamp ? timestamp.replace(/[:\s]/g, '-') : new Date().toISOString().slice(0,16).replace('T/g','-');
   const screenshotFilename = `${indexName}-gex-by-strike-${tsLabel}`;
 
   if (!memoized.hasData) {
@@ -334,6 +348,10 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
   const minTickGap = isMobile ? 12 : 30;
   const showBarLabels = !isMobile;
   const showOverlays = !isMobile;
+
+  // FIX: gate the ATM reference line on the strike surviving in the visible
+  // set, matching the refLines guard above.
+  const atmVisible = atmStrike != null && chartData.some((d) => d.strike === atmStrike);
 
   return (
     <div className="terminal-panel" ref={panelRef}>
@@ -427,7 +445,7 @@ const GexChartComponent: React.FC<GexChartProps> = ({ data, atmStrike, maxPain, 
               )}
             </Bar>
 
-            {atmStrike && (
+            {atmVisible && (
               <ReferenceLine x={atmStrike} stroke="#eab308" strokeDasharray="5 5" strokeWidth={2} />
             )}
             {maxPain && (
