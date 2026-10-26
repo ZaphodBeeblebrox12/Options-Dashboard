@@ -341,20 +341,20 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
           <div className="sticky top-0 z-10 grid grid-cols-[1fr_64px_1fr] sm:grid-cols-[1fr_80px_1fr] gap-0 text-[9px] sm:text-[10px] font-mono text-terminal-muted border-b border-terminal-border bg-terminal-bg/95 backdrop-blur-sm">
             {/* CE Header */}
             <div className="grid" style={{ gridTemplateColumns: fullMode ? 'repeat(7, 1fr)' : 'repeat(4, 1fr)' }}>
-              <div className="px-1 sm:px-2 py-1.5 text-center">OI</div>
               <div className="px-1 sm:px-2 py-1.5 text-center">Chg</div>
               <div className="px-1 sm:px-2 py-1.5 text-center">Vol</div>
               <div className="px-1 sm:px-2 py-1.5 text-center">LTP</div>
               {fullMode && <><div className="px-1 sm:px-2 py-1.5 text-center">IV</div><div className="px-1 sm:px-2 py-1.5 text-center">Δ</div><div className="px-1 sm:px-2 py-1.5 text-center">Γ</div></>}
+              <div className="px-1 sm:px-2 py-1.5 text-center">OI</div>
             </div>
             {/* Strike Header */}
             <div className="px-1 sm:px-2 py-1.5 text-center font-bold">STRIKE</div>
             {/* PE Header */}
             <div className="grid" style={{ gridTemplateColumns: fullMode ? 'repeat(7, 1fr)' : 'repeat(4, 1fr)' }}>
+              <div className="px-1 sm:px-2 py-1.5 text-center">OI</div>
               <div className="px-1 sm:px-2 py-1.5 text-center">LTP</div>
               <div className="px-1 sm:px-2 py-1.5 text-center">Vol</div>
               <div className="px-1 sm:px-2 py-1.5 text-center">Chg</div>
-              <div className="px-1 sm:px-2 py-1.5 text-center">OI</div>
               {fullMode && <><div className="px-1 sm:px-2 py-1.5 text-center">Γ</div><div className="px-1 sm:px-2 py-1.5 text-center">Δ</div><div className="px-1 sm:px-2 py-1.5 text-center">IV</div></>}
             </div>
           </div>
@@ -385,10 +385,6 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                 >
                   {/* CE Side */}
                   <div className={`grid ${fullMode ? 'grid-cols-7' : 'grid-cols-4'} gap-0 ${ceItm ? ITM_TINT_CLASS : ''}`}>
-                    <div className={`px-1 sm:px-2 py-1 text-right flex items-center justify-end ${getCeOiClass(row.strike)}`}>
-                      <span>{fmt(ce?.oi)}</span>
-                      <OiRankBadge rank={ceRank} />
-                    </div>
                     <div className={`px-1 sm:px-2 py-1 text-right ${(ce?.oi_change ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                       {(ce?.oi_change ?? 0) > 0 ? '+' : ''}{fmt(ce?.oi_change)}
                     </div>
@@ -401,6 +397,10 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                         <div className="px-1 sm:px-2 py-1 text-right text-terminal-muted">{fmt(ce?.gamma, 4)}</div>
                       </>
                     )}
+                    <div className={`px-1 sm:px-2 py-1 text-right flex items-center justify-end ${getCeOiClass(row.strike)}`}>
+                      <span>{fmt(ce?.oi)}</span>
+                      <OiRankBadge rank={ceRank} />
+                    </div>
                   </div>
 
                   {/* Strike */}
@@ -410,14 +410,14 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
 
                   {/* PE Side */}
                   <div className={`grid ${fullMode ? 'grid-cols-7' : 'grid-cols-4'} gap-0 ${peItm ? ITM_TINT_CLASS : ''}`}>
+                    <div className={`px-1 sm:px-2 py-1 text-left flex items-center ${getPeOiClass(row.strike)}`}>
+                      <PeOiRankBadge rank={peRank} />
+                      <span>{fmt(pe?.oi)}</span>
+                    </div>
                     <div className="px-1 sm:px-2 py-1 text-left text-terminal-pe font-semibold">{fmt(pe?.ltp, 2)}</div>
                     <div className="px-1 sm:px-2 py-1 text-left text-terminal-muted">{fmt(pe?.volume)}</div>
                     <div className={`px-1 sm:px-2 py-1 text-left ${(pe?.oi_change ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                       {(pe?.oi_change ?? 0) > 0 ? '+' : ''}{fmt(pe?.oi_change)}
-                    </div>
-                    <div className={`px-1 sm:px-2 py-1 text-left flex items-center ${getPeOiClass(row.strike)}`}>
-                      <PeOiRankBadge rank={peRank} />
-                      <span>{fmt(pe?.oi)}</span>
                     </div>
                     {fullMode && (
                       <>

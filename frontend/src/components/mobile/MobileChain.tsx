@@ -10,7 +10,7 @@ interface Opt {
 interface RowData { strike: number; ce?: Opt; pe?: Opt }
 
 /**
- * Mobile option chain — columns: LTP | OI Δ | OI | STRIKE | OI | OI Δ | LTP
+ * Mobile option chain — columns: OI Δ | LTP | OI | STRIKE | OI | LTP | OI Δ
  * Walls: full-row inset border in the wall color + colored OI + bold strike.
  * ATM: centers on load / instrument / expiry; drift-recenter only when the
  * user has been idle 8s; the floating pill (live mode only — never over the
@@ -33,8 +33,8 @@ const ChainRow = React.memo(function ChainRow(props: {
     <div className={cls} data-s={row.strike} onClick={() => onSelect(row.strike)}>
       {wl > 0.5 && <div className="mc-gexb l" style={{ width: wl + "%", background: gL >= 0 ? "var(--mup)" : "var(--mdn)" }} />}
       {wr > 0.5 && <div className="mc-gexb r" style={{ width: wr + "%", background: gR >= 0 ? "var(--mup)" : "var(--mdn)" }} />}
-      <div className="mc-c mc-lt num">{ce ? fmtPx(ce.ltp) : "—"}</div>
       <div className="mc-c"><span className={"mc-dl num " + (ceD == null ? "" : ceD >= 0 ? "mc-up" : "mc-dn")}>{fmtDelta(ceD)}</span></div>
+      <div className="mc-c mc-lt num">{ce ? fmtPx(ce.ltp) : "—"}</div>
       <div className="mc-c"><div className={"mc-oi num" + (isCEWall ? " mc-oi-ce" : "")}>{ce ? fmtOI(ce.oi) : "—"}</div></div>
       <div className={"mc-strk num" + (isCEWall ? " mc-strk-ce" : isPEWall ? " mc-strk-pe" : "")}>
         {isCEWall && <span className="mc-wn l" />}
@@ -45,8 +45,8 @@ const ChainRow = React.memo(function ChainRow(props: {
         {!isATM && !isCEWall && isPEWall && <span className="mc-tag pe">pe wall</span>}
       </div>
       <div className="mc-p"><div className={"mc-oi num" + (isPEWall ? " mc-oi-pe" : "")}>{pe ? fmtOI(pe.oi) : "—"}</div></div>
-      <div className="mc-p"><span className={"mc-dl num " + (peD == null ? "" : peD >= 0 ? "mc-up" : "mc-dn")}>{fmtDelta(peD)}</span></div>
       <div className="mc-p mc-lt num">{pe ? fmtPx(pe.ltp) : "—"}</div>
+      <div className="mc-p"><span className={"mc-dl num " + (peD == null ? "" : peD >= 0 ? "mc-up" : "mc-dn")}>{fmtDelta(peD)}</span></div>
     </div>
   );
 }, (a, b) =>
@@ -188,8 +188,8 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
     <>
       <div className="mc-ladder" ref={listRef}>
         <div className="mc-lh">
-          <div>LTP</div><div>Chg</div><div className="h-oi" style={{ textAlign: "right" }}>OI</div>
-          <div>Strike</div><div className="h-oi">OI</div><div>Chg</div><div>LTP</div>
+          <div>Chg</div><div>LTP</div><div className="h-oi" style={{ textAlign: "right" }}>OI</div>
+          <div>Strike</div><div className="h-oi">OI</div><div>LTP</div><div>Chg</div>
         </div>
         {rows.map(r => (
           <ChainRow key={r.strike} row={r}
