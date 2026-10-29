@@ -486,16 +486,26 @@ class InstrumentStreamer:
             feed_note = f"Angel greeks missing for {missing} contracts"
         return analytics, feed_note
 
+    def _source_age_fields(self):
+        """Ages of upstream feeds, measured at tick receipt, not payload creation."""
+        return {
+            "spot_age_sec": self.spot_poller.spot_age_sec(),
+            "futures_age_sec": self.spot_poller.futures_age_sec(),
+            "option_age_sec": self.data_store.age_sec(),
+        }
+
     def _tier4_state_payload(self, data, spot):
         if self.paused:
             return {"type": "tick", "data": {"index_name": self.symbol, "spot": spot,
                     "futures": self.spot_poller.get_futures(), "timestamp": datetime.now().isoformat(),
                     "options": [], "market_open": self._market_open(), "window_state": self.state,
+                    **self._source_age_fields(),
                     "message": "Streaming paused — resume from Settings"}}
         if not data or spot is None:
             return {"type": "tick", "data": {"index_name": self.symbol, "spot": spot,
                     "futures": self.spot_poller.get_futures(), "timestamp": datetime.now().isoformat(),
                     "options": [], "market_open": self._market_open(), "window_state": self.state,
+                    **self._source_age_fields(),
                     "message": (f"Building Tier 4 feed for {self.symbol}..."
                                 if self._market_open() else None)}}
         atm_strike = _nearest_strike(spot, sorted(data.keys())) if spot is not None else None
@@ -529,6 +539,7 @@ class InstrumentStreamer:
             "instrument_kind": self.kind.lower(), "tier": 4, "greeks_source": "angel",
             "atm": atm_strike,
             "window_state": self.state,
+            **self._source_age_fields(),
             "window_note": feed_note or f"Angel-fed Greeks (Tier 4) — ±{TIER4_HALF_WIDTH} window, no local calculation",
         }}
         self._state_cache = result
@@ -1207,6 +1218,7 @@ class InstrumentStreamer:
             "pe_wall": walls.get("pe_wall"),
             "atm": atm,
             "at_wall": (atm in (walls.get("ce_wall"), walls.get("pe_wall"))) if atm is not None else None,
+            **self._source_age_fields(),
             "window_note": f"Scanner — analytics only at wall trigger (±{_scanner_half_width()})",
         }}
 
@@ -1214,7 +1226,9 @@ class InstrumentStreamer:
         now = time.time()
         if self._state_cache is not None and now - self._state_cache_time < 1.0:
             return {**self._state_cache,
-                    "data": {**self._state_cache["data"], "timestamp": datetime.now().isoformat()}}
+                    "data": {**self._state_cache["data"],
+                             "timestamp": datetime.now().isoformat(),
+                             **self._source_age_fields()}}
 
         data = self.data_store.get_data()
         spot = self.spot_poller.get_spot()
@@ -1229,6 +1243,7 @@ class InstrumentStreamer:
                 "index_name": self.symbol, "spot": spot, "futures": self.spot_poller.get_futures(),
                 "timestamp": datetime.now().isoformat(), "options": [],
                 "market_open": self._market_open(), "window_state": self.state,
+                **self._source_age_fields(),
                 "message": "Streaming paused — resume from Settings"}}
 
         if not data or spot is None:
@@ -1236,6 +1251,7 @@ class InstrumentStreamer:
                 "index_name": self.symbol, "spot": spot, "futures": self.spot_poller.get_futures(),
                 "timestamp": datetime.now().isoformat(), "options": [],
                 "market_open": self._market_open(), "window_state": self.state,
+                **self._source_age_fields(),
                 "message": (f"Building option window for {self.symbol}..."
                             if self.state in ("CASH_SUBSCRIBED", "WINDOW_PENDING") and self._market_open()
                             else None)}}
@@ -1317,7 +1333,7 @@ class InstrumentStreamer:
                 "tier": self.tier,
                 "atm": atm_strike,
                 "window_state": self.state,
-                "spot_age_sec": _age,
+                **self._source_age_fields(),
                 "window_note": f"ATM±{_half_width()} strikes (window view)",
             }}
             self._state_cache = result
