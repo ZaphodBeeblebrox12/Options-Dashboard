@@ -1,9 +1,9 @@
 name: One-time frontend lockfile repair
 
 on:
-  push:
+  pull_request:
     branches:
-      - fix/p1-live-replay-freshness
+      - main
     paths:
       - frontend/package.json
 
@@ -12,12 +12,14 @@ permissions:
 
 jobs:
   regenerate-and-commit-lockfile:
+    # Only repair this repository's own PR branch, never a fork.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Check out fix branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
           persist-credentials: true
 
       - name: Set up Node.js
@@ -41,4 +43,4 @@ jobs:
             exit 0
           fi
           git commit -m "Fix frontend package lockfile"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_HEAD_REF}"
