@@ -27,6 +27,12 @@ const RULE_COLORS: Record<string, { accent: string; glow: string; text: string; 
     text: 'text-sky-300',
     bg: 'bg-slate-900/90',
   },
+  'wall_vacated': {
+    accent: 'border-l-orange-400',
+    glow: 'shadow-orange-500/10',
+    text: 'text-orange-300',
+    bg: 'bg-slate-900/90',
+  },
 };
 
 const ToastItem: React.FC<{
@@ -105,6 +111,14 @@ const ToastItem: React.FC<{
       <div className={`px-2.5 pb-1 text-[11px] font-semibold ${colors.text} leading-tight`}>
         {alert.rule_name}
       </div>
+      {alert.rule_type === 'wall_vacated' && alert.wall_side && alert.watched_strike != null && (
+        <div className="px-2.5 pb-1.5 text-[10px] font-mono text-slate-200 leading-snug">
+          {alert.wall_side === 'CE' ? 'Call Wall' : 'Put Wall'} left {alert.watched_strike.toLocaleString('en-IN')}
+          {alert.new_wall_strike != null
+            ? ` · new wall ${alert.new_wall_strike.toLocaleString('en-IN')}`
+            : ' · no replacement wall'}
+        </div>
+      )}
 
       {/* ── Compact Metrics Row ── */}
       <div className="px-2.5 pb-1.5 flex items-center gap-3 text-[10px] font-mono">
