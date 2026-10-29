@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { BellRing, BellOff, LoaderCircle } from 'lucide-react';
+import { BellRing, BellOff, Loader2 } from 'lucide-react';
 
 type Side = 'CE' | 'PE';
 interface OptionRow { strike: number; option_type: Side; oi: number; }
@@ -174,7 +174,7 @@ export const WallWatchControls: React.FC<Props> = ({ symbol, spot, options, canA
                 className={`mt-2 w-full rounded px-2 py-1.5 text-[10px] font-mono font-bold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${watch.armed ? 'bg-amber-500/15 text-amber-200 hover:bg-amber-500/25' : 'bg-terminal-border/50 text-terminal-text hover:bg-terminal-border'}`}
                 aria-label={watch.armed ? `Disarm ${label} alert` : `Arm ${label} alert`}
               >
-                {isBusy ? <LoaderCircle className="w-3 h-3 inline animate-spin mr-1" /> : watch.armed ? <BellOff className="w-3 h-3 inline mr-1" /> : <BellRing className="w-3 h-3 inline mr-1" />}
+                {isBusy ? <Loader2 className="w-3 h-3 inline animate-spin mr-1" /> : watch.armed ? <BellOff className="w-3 h-3 inline mr-1" /> : <BellRing className="w-3 h-3 inline mr-1" />}
                 {isBusy ? 'SAVING…' : watch.armed ? 'DISARM WATCH' : currentWall == null ? 'NO WALL TO ARM' : `ARM AT ${fmtStrike(currentWall)}`}
               </button>
             </div>
