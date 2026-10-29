@@ -397,7 +397,8 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
         )}
         {sheet === "strike" && strikePick && (
           <MobileStrikeSheet pick={strikePick} label={selected} expiry={viewData?.expiry} lot={viewData?.contract_multiplier}
-            date={replay?.date} onClose={() => setSheet(null)} />
+            date={replay?.date} onClose={() => setSheet(null)} wallSides={{ CE: walls.ceWall, PE: walls.peWall }}
+            canArm={!replay && connected && data?.market_open !== false && Array.isArray(data?.options) && data.options.length > 0} />
         )}
         {sheet === "date" && (
           <div className="mc-sheet open">
