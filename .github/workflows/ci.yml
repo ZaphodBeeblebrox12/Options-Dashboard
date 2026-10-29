@@ -13,6 +13,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  frontend-policy-tests:
+    name: Frontend replay and freshness regression tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Test replay and live-status policies
+        run: node --test frontend/tests/*.test.mjs
+
   frontend:
     name: Frontend typecheck and build
     runs-on: ubuntu-latest
@@ -27,28 +40,9 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      # Temporary lockfile repair step: the checked-in package lock was
-      # already out of sync with package.json, which makes npm ci fail before
-      # typechecking can run. The generated lockfile is uploaded so it can be
-      # committed, then this step is removed and npm ci remains the gate.
-      - name: Regenerate frontend lockfile from manifest
-        working-directory: frontend
-        run: npm install --package-lock-only
-
-      - name: Upload regenerated frontend lockfile
-        uses: actions/upload-artifact@v4
-        with:
-          name: synchronized-frontend-lockfile
-          path: frontend/package-lock.json
-          if-no-files-found: error
-
       - name: Install locked frontend dependencies
         working-directory: frontend
         run: npm ci
-
-      - name: Test replay and live-status policies
-        working-directory: frontend
-        run: node --test tests/*.test.mjs
 
       - name: Type-check and build frontend
         working-directory: frontend
