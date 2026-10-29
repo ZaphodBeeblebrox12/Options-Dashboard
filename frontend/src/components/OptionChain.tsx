@@ -1,5 +1,5 @@
-import React, { useMemo, useRef, useCallback } from 'react';
-import { AlertTriangle, ArrowDown } from 'lucide-react';
+import React, { useMemo, useRef, useCallback, useEffect, useState } from 'react';
+import { AlertTriangle, ArrowDown, Bell, BellRing } from 'lucide-react';
 import { ScreenshotButton } from './ScreenshotButton';
 
 interface OptionData {
@@ -28,6 +28,7 @@ interface OptionChainProps {
   onSelectStrike: (strike: number) => void;
   indexName?: string;
   timestamp?: string;
+  canArm?: boolean;
 }
 
 // FIX (ITM tint): subtle background used on the in-the-money side of a row.
@@ -54,9 +55,48 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   onSelectStrike,
   indexName = 'INDEX',
   timestamp,
+  canArm = false,
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const [wallWatches, setWallWatches] = useState<Record<'CE' | 'PE', { armed: boolean; watched_strike: number | null }>>({
+    CE: { armed: false, watched_strike: null }, PE: { armed: false, watched_strike: null },
+  });
+  const [watchBusy, setWatchBusy] = useState<'CE' | 'PE' | null>(null);
+  const [watchError, setWatchError] = useState<string | null>(null);
+
+  const refreshWallWatches = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/wall-watches?index=${encodeURIComponent(indexName)}`);
+      if (!response.ok) return;
+      const payload = await response.json();
+      setWallWatches({
+        CE: payload.watches?.CE ?? { armed: false, watched_strike: null },
+        PE: payload.watches?.PE ?? { armed: false, watched_strike: null },
+      });
+    } catch { /* Keep the last known indicator state during transient network failures. */ }
+  }, [indexName]);
+
+  useEffect(() => {
+    void refreshWallWatches();
+    const timer = window.setInterval(() => void refreshWallWatches(), 4000);
+    return () => window.clearInterval(timer);
+  }, [refreshWallWatches]);
+
+  const toggleWallWatch = useCallback(async (side: 'CE' | 'PE', event: React.MouseEvent) => {
+    event.stopPropagation();
+    const action = wallWatches[side]?.armed ? 'disarm' : 'arm';
+    setWatchBusy(side);
+    setWatchError(null);
+    try {
+      const response = await fetch(`/api/wall-watches/${encodeURIComponent(indexName)}/${side}/${action}`, { method: 'POST' });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || `Could not ${action} wall watch`);
+      await refreshWallWatches();
+    } catch (error) {
+      setWatchError(error instanceof Error ? error.message : 'Wall watch update failed');
+    } finally { setWatchBusy(null); }
+  }, [indexName, wallWatches, refreshWallWatches]);
 
   // ── Group options by strike ──
   const chainData = useMemo(() => {
@@ -110,6 +150,16 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     sorted.slice(0, 3).forEach((row, i) => { ranks[row.strike] = i + 1; });
     return ranks;
   }, [rankableRows]);
+
+  // Current side-specific walls: calls at/above spot, puts at/below spot.
+  const currentWalls = useMemo(() => {
+    const find = (side: 'CE' | 'PE') => {
+      const rows = chainData.filter(row => (side === 'CE' ? row.strike >= (spot ?? -Infinity) : row.strike <= (spot ?? Infinity)));
+      rows.sort((a, b) => ((side === 'CE' ? b.CE?.oi ?? 0 : b.PE?.oi ?? 0) - (side === 'CE' ? a.CE?.oi ?? 0 : a.PE?.oi ?? 0)) || a.strike - b.strike);
+      return rows[0]?.strike ?? null;
+    };
+    return { CE: find('CE'), PE: find('PE') };
+  }, [chainData, spot]);
 
   // ── Center view around ATM ──
   const displayRows = useMemo(() => {
@@ -334,6 +384,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
       </div>
 
       {/* ── HORIZONTAL SCROLL WRAPPER ── */}
+      {watchError && <div role="status" className="px-2 py-1 text-[10px] text-amber-300">{watchError}</div>}
       <div className="overflow-x-auto terminal-scroll">
         <div className={totalMinWidth}>
 
@@ -397,9 +448,18 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                         <div className="px-1 sm:px-2 py-1 text-right text-terminal-muted">{fmt(ce?.gamma, 4)}</div>
                       </>
                     )}
-                    <div className={`px-1 sm:px-2 py-1 text-right flex items-center justify-end ${getCeOiClass(row.strike)}`}>
+                    <div className={`group/ceoi relative px-1 sm:px-2 py-1 text-right flex items-center justify-end ${getCeOiClass(row.strike)}`}>
                       <span>{fmt(ce?.oi)}</span>
                       <OiRankBadge rank={ceRank} />
+                      {currentWalls.CE === row.strike && (
+                        <button type="button" onClick={(event) => void toggleWallWatch('CE', event)}
+                          disabled={watchBusy === 'CE' || (!wallWatches.CE?.armed && !canArm)}
+                          title={wallWatches.CE?.armed ? `Disarm Call Wall watch at ${fmt(wallWatches.CE.watched_strike)}` : `Arm Call Wall watch at ${fmt(row.strike)}`}
+                          aria-label={wallWatches.CE?.armed ? 'Disarm Call Wall alert' : 'Arm Call Wall alert'}
+                          className={`ml-1 inline-flex shrink-0 items-center justify-center rounded p-0.5 transition-opacity focus:opacity-100 ${wallWatches.CE?.armed ? 'text-amber-300 bg-amber-500/20 opacity-100' : 'text-terminal-muted hover:text-amber-300 sm:opacity-0 sm:group-hover/ceoi:opacity-100'} disabled:opacity-40`}>
+                          {wallWatches.CE?.armed ? <BellRing className="h-3 w-3" /> : <Bell className="h-3 w-3" />}
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -410,9 +470,18 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
 
                   {/* PE Side */}
                   <div className={`grid ${fullMode ? 'grid-cols-7' : 'grid-cols-4'} gap-0 ${peItm ? ITM_TINT_CLASS : ''}`}>
-                    <div className={`px-1 sm:px-2 py-1 text-left flex items-center ${getPeOiClass(row.strike)}`}>
+                    <div className={`group/peoi relative px-1 sm:px-2 py-1 text-left flex items-center ${getPeOiClass(row.strike)}`}>
                       <PeOiRankBadge rank={peRank} />
                       <span>{fmt(pe?.oi)}</span>
+                      {currentWalls.PE === row.strike && (
+                        <button type="button" onClick={(event) => void toggleWallWatch('PE', event)}
+                          disabled={watchBusy === 'PE' || (!wallWatches.PE?.armed && !canArm)}
+                          title={wallWatches.PE?.armed ? `Disarm Put Wall watch at ${fmt(wallWatches.PE.watched_strike)}` : `Arm Put Wall watch at ${fmt(row.strike)}`}
+                          aria-label={wallWatches.PE?.armed ? 'Disarm Put Wall alert' : 'Arm Put Wall alert'}
+                          className={`ml-1 inline-flex shrink-0 items-center justify-center rounded p-0.5 transition-opacity focus:opacity-100 ${wallWatches.PE?.armed ? 'text-amber-300 bg-amber-500/20 opacity-100' : 'text-terminal-muted hover:text-amber-300 sm:opacity-0 sm:group-hover/peoi:opacity-100'} disabled:opacity-40`}>
+                          {wallWatches.PE?.armed ? <BellRing className="h-3 w-3" /> : <Bell className="h-3 w-3" />}
+                        </button>
+                      )}
                     </div>
                     <div className="px-1 sm:px-2 py-1 text-left text-terminal-pe font-semibold">{fmt(pe?.ltp, 2)}</div>
                     <div className="px-1 sm:px-2 py-1 text-left text-terminal-muted">{fmt(pe?.volume)}</div>
