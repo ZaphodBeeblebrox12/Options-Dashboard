@@ -82,7 +82,7 @@ export const BuildupCard: React.FC<{ indexName: string; date: string; live: bool
   const sameContext = entry && entry.key.startsWith(`${indexName}|${date}|`);
   const data = sameContext ? entry.info : null;
 
-  if (!data) return null;
+  if (!data || !entry) return null;
 
   const isCurrent = entry.key === key;
   const style = LABEL_STYLE[data.label] ?? { color: '#94a3b8', bg: 'rgba(148,163,184,0.12)' };

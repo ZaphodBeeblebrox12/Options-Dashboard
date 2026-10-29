@@ -203,7 +203,7 @@ export const InstrumentsTab: React.FC = () => {
     setTierMove({ inst, tier });
   }, []);
 
-  const [tierError, setTierError] = useState<string | null>(null);
+  const [, setTierError] = useState<string | null>(null);
   const confirmTierMove = useCallback(async (): Promise<false | void> => {
     if (!tierMove) return;
     const { inst, tier } = tierMove;

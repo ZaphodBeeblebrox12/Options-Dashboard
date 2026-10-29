@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { History, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Bell, Calendar, Target, TrendingUp, Activity, RefreshCw, Loader2, AlertTriangle } from 'lucide-react';
-import { useAlertHistory, useAlertSettings, AlertHistoryEntry } from '../hooks/useAlerts';
+import { useAlertHistory, useAlertSettings } from '../hooks/useAlerts';
 
 // Canonical rule_type values (alert_models.AlertRuleType). Only these two
 // strings are ever sent to the backend; anything else means All Alerts.
@@ -44,13 +44,13 @@ export const AlertHistoryPanel: React.FC<AlertHistoryPanelProps> = ({ indexName,
   const { settings: alertSettings } = useAlertSettings();
   const [ruleFilter, setRuleFilter] = useState<string>(() => {
     const d = alertSettings?.history_default_rule_type;
-    return RULE_OPTIONS.some((o) => o.value && o.value === d) ? d : '';
+    return d && RULE_OPTIONS.some((o) => o.value === d) ? d : '';
   });
   const [ruleTouched, setRuleTouched] = useState(false);
   useEffect(() => {
     if (ruleTouched) return;                 // manual override wins this session
     const d = alertSettings?.history_default_rule_type;
-    setRuleFilter(RULE_OPTIONS.some((o) => o.value && o.value === d) ? d : '');
+    setRuleFilter(d && RULE_OPTIONS.some((o) => o.value === d) ? d : '');
     // only adopt a new default for a not-yet-touched panel; page reset keeps
     // the list coherent if the default changed between opens
     setPage(1);

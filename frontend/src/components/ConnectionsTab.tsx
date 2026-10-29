@@ -20,6 +20,8 @@ interface AppHealth {
   market_open: boolean;
   last_tier2_snapshot_at: number | null;
   last_tier2_snapshot_age_sec: number | null;
+  max_spot_age_sec?: number | null;
+  oldest_feed?: string | null;
   analytics_tier2: HealthStat;
   broadcast_tier2: HealthStat;
   snapshot_cycle_tier2: HealthStat;
