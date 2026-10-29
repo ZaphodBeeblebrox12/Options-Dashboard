@@ -92,7 +92,7 @@ export default function MobileStrikeSheet({ pick, label, expiry, lot, date, onCl
     } catch (e) { setWatchError(e instanceof Error ? e.message : "Wall watch update failed"); }
     finally { setWatchBusy(null); }
   };
-  const wallActions = (["CE", "PE"] as const).filter(side => wallSides[side] === pick.strike);
+  const wallActions = (["CE", "PE"] as const).filter(side => wallSides[side] === pick.strike || (watchState[side].armed && watchState[side].watched_strike === pick.strike));
   const [hist, setHist] = useState<{ ce: any[]; pe: any[]; shownDate: string } | null>(null);
   const [hstat, setHstat] = useState<"loading" | "ready" | "empty" | "error">("loading");
   const [fallback, setFallback] = useState(false);
