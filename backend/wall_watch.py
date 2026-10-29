@@ -231,6 +231,10 @@ class WallWatchManager:
                        WHERE symbol=? AND side=? AND armed=1""",
                     (current_wall, current_wall, event, triggered_at, symbol, side),
                 )
+                # Commit the watch transition before opening the independent
+                # alert-history writer connection, avoiding SQLite writer-lock
+                # contention between these two durable state changes.
+                conn.commit()
 
                 tier = snapshot.get("tier")
                 if not isinstance(tier, int):
