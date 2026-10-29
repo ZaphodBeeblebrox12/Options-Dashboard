@@ -296,11 +296,13 @@ function App() {
     (age * 1000 + liveMessageAgeMs) <= STALE_AFTER_MS;
   // The receive-age term also catches a frozen WebSocket/broadcast path where
   // no new payload arrives to advance the backend's source-age measurements.
+  const needsFuturesFreshness = !!liveData &&
+    (liveData.instrument_kind === 'commodity' || liveData.futures != null);
   const hasFreshMarketSources = !!liveData &&
     liveMessageAgeMs <= STALE_AFTER_MS &&
     isFreshSourceAge(liveData.spot_age_sec) &&
-    isFreshSourceAge(liveData.futures_age_sec) &&
-    isFreshSourceAge(liveData.option_age_sec);
+    isFreshSourceAge(liveData.option_age_sec) &&
+    (!needsFuturesFreshness || isFreshSourceAge(liveData.futures_age_sec));
   const isLiveDataStale = liveMode && marketOpen &&
     (!connected || !hasLiveData || !hasFreshMarketSources || !!wsError);
   const isTrulyLive = liveMode && connected && marketOpen &&
