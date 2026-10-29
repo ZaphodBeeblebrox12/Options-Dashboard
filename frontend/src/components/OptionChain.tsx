@@ -449,14 +449,14 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                       </>
                     )}
                     <div className={`group/ceoi relative px-1 sm:px-2 py-1 text-right flex items-center justify-end ${getCeOiClass(row.strike)}`}>
-                      <span>{fmt(ce?.oi)}</span>
                       <OiRankBadge rank={ceRank} />
+                      <span>{fmt(ce?.oi)}</span>
                       {currentWalls.CE === row.strike && (
                         <button type="button" onClick={(event) => void toggleWallWatch('CE', event)}
                           disabled={watchBusy === 'CE' || (!wallWatches.CE?.armed && !canArm)}
                           title={wallWatches.CE?.armed ? `Disarm Call Wall watch at ${fmt(wallWatches.CE.watched_strike)}` : `Arm Call Wall watch at ${fmt(row.strike)}`}
                           aria-label={wallWatches.CE?.armed ? 'Disarm Call Wall alert' : 'Arm Call Wall alert'}
-                          className={`ml-1 inline-flex shrink-0 items-center justify-center rounded p-0.5 transition-opacity focus:opacity-100 ${wallWatches.CE?.armed ? 'text-amber-300 bg-amber-500/20 opacity-100' : 'text-terminal-muted hover:text-amber-300 sm:opacity-0 sm:group-hover/ceoi:opacity-100'} disabled:opacity-40`}>
+                          className={`ml-0.5 inline-flex shrink-0 items-center justify-center rounded p-0.5 transition-opacity focus:opacity-100 ${wallWatches.CE?.armed ? 'text-amber-300 bg-amber-500/20 opacity-100' : 'text-terminal-muted hover:text-amber-300 sm:opacity-0 sm:group-hover/ceoi:opacity-100'} disabled:opacity-40`}>
                           {wallWatches.CE?.armed ? <BellRing className="h-3 w-3" /> : <Bell className="h-3 w-3" />}
                         </button>
                       )}
@@ -478,7 +478,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                           disabled={watchBusy === 'PE' || (!wallWatches.PE?.armed && !canArm)}
                           title={wallWatches.PE?.armed ? `Disarm Put Wall watch at ${fmt(wallWatches.PE.watched_strike)}` : `Arm Put Wall watch at ${fmt(row.strike)}`}
                           aria-label={wallWatches.PE?.armed ? 'Disarm Put Wall alert' : 'Arm Put Wall alert'}
-                          className={`ml-1 inline-flex shrink-0 items-center justify-center rounded p-0.5 transition-opacity focus:opacity-100 ${wallWatches.PE?.armed ? 'text-amber-300 bg-amber-500/20 opacity-100' : 'text-terminal-muted hover:text-amber-300 sm:opacity-0 sm:group-hover/peoi:opacity-100'} disabled:opacity-40`}>
+                          className={`ml-0.5 inline-flex shrink-0 items-center justify-center rounded p-0.5 transition-opacity focus:opacity-100 ${wallWatches.PE?.armed ? 'text-amber-300 bg-amber-500/20 opacity-100' : 'text-terminal-muted hover:text-amber-300 sm:opacity-0 sm:group-hover/peoi:opacity-100'} disabled:opacity-40`}>
                           {wallWatches.PE?.armed ? <BellRing className="h-3 w-3" /> : <Bell className="h-3 w-3" />}
                         </button>
                       )}
