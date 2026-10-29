@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fmtPx, fmtOI, fmtDelta, fmtDeltaPct, fmtExpiry } from "./mobileFormat";
 
 /** Strike drill-down: current values + ALL THREE session charts (OI, LTP,
