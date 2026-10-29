@@ -97,6 +97,23 @@ def init_alert_db():
         )
     """)
 
+    # Manual one-shot Call/Put wall watches. Armed state is persistent so a
+    # restart does not silently discard an explicitly armed watch.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS wall_watch_state (
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL CHECK(side IN ('CE', 'PE')),
+            armed INTEGER NOT NULL DEFAULT 0,
+            watched_strike REAL,
+            last_wall_strike REAL,
+            new_wall_strike REAL,
+            last_event TEXT,
+            last_triggered_at TEXT,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(symbol, side)
+        )
+    """)
+
     # Indexes
     conn.execute("CREATE INDEX IF NOT EXISTS idx_history_time ON alert_history(timestamp)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_history_date ON alert_history(date(timestamp))")
