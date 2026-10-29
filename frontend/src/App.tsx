@@ -21,13 +21,9 @@ const STORAGE_KEY = 'option_chain_view_state';
 const HISTORY_LAST_OPENED_KEY = 'history_last_opened_at';
 const SCROLL_KEY = 'option_chain_scroll_y';
 
-// ── P1 FIX: data-freshness gating ─────────────────────────────
-// The backend rebroadcasts CACHED state every 5s even when the Angel feed
-// has frozen (verified: freeze watchdog fires at snap_age>90s while the
-// frontend kept showing a green LIVE dot). So `connected` proves nothing
-// about the prices on screen — staleness must be judged from the tick's
-// own timestamp. Threshold sits between the ~30s snapshot cadence and the
-// backend watchdog's 90s trip.
+// Source freshness threshold: every required upstream feed must have
+// delivered a tick within 75 seconds. These ages are measured by the backend
+// at receipt time, not inferred from when a payload was rebroadcast.
 const STALE_AFTER_MS = 75_000;
 
 interface PersistedState {
@@ -83,9 +79,6 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showAlertHistory, setShowAlertHistory] = useState(false);
   const [unseenAlertCount, setUnseenAlertCount] = useState(0);
-  // P1 FIX: a ticking clock so staleness re-evaluates even when the feed
-  // freezes — without it, no ticks = no state change = STALE never appears.
-  const [now, setNow] = useState(() => Date.now());
   const playTimerRef = useRef<ReturnType<typeof setInterval>>();
   const hasRestoredRef = useRef(false);
   const enteringLiveRef = useRef(false);
@@ -111,11 +104,6 @@ function App() {
 
   const sessionHours: SessionHours = hoursForType(indexKinds[selectedIndex]);
   const marketOpen = marketOpenMap[selectedIndex] ?? isSessionOpen(sessionHours);
-
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 10_000);
-    return () => clearInterval(t);
-  }, []);
 
   useEffect(() => {
     const load = () =>
