@@ -183,9 +183,10 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
   // wall chips for the Walls tab: max-OI strikes from the visible chain
   const wallChips = useMemo(() => {
     let cew: number | null = null, pew: number | null = null, ceo = -1, peo = -1;
+    const wallSpot = (baseData as any)?.spot;
     for (const o of ((baseData as any)?.options ?? []) as any[]) {
-      if (o?.option_type === "CE" && (o.oi ?? 0) > ceo) { ceo = o.oi; cew = o.strike; }
-      if (o?.option_type === "PE" && (o.oi ?? 0) > peo) { peo = o.oi; pew = o.strike; }
+      if (o?.option_type === "CE" && (wallSpot == null || o.strike >= wallSpot) && (o.oi ?? 0) > ceo) { ceo = o.oi; cew = o.strike; }
+      if (o?.option_type === "PE" && (wallSpot == null || o.strike <= wallSpot) && (o.oi ?? 0) > peo) { peo = o.oi; pew = o.strike; }
     }
     return { ce_wall: cew, pe_wall: pew };
   }, [baseData]);
@@ -230,11 +231,11 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
   const walls = useMemo(() => {
     let ceW: number | null = null, peW: number | null = null, ceOI: number | null = null, peOI: number | null = null, cm = -1, pm = -1;
     (viewData?.options ?? []).forEach((o: any) => {
-      if (o.option_type === "CE" && o.oi > cm) { cm = o.oi; ceW = o.strike; ceOI = o.oi; }
-      if (o.option_type === "PE" && o.oi > pm) { pm = o.oi; peW = o.strike; peOI = o.oi; }
+      if (o.option_type === "CE" && (viewData?.spot == null || o.strike >= viewData.spot) && o.oi > cm) { cm = o.oi; ceW = o.strike; ceOI = o.oi; }
+      if (o.option_type === "PE" && (viewData?.spot == null || o.strike <= viewData.spot) && o.oi > pm) { pm = o.oi; peW = o.strike; peOI = o.oi; }
     });
     return { ceWall: ceW, peWall: peW, ceOI, peOI };
-  }, [viewData?.options]);
+  }, [viewData?.options, viewData?.spot]);
   const [focusStrike, setFocusStrike] = useState<number | null>(null);
   const [focusTickN, setFocusTickN] = useState(0);
   const focusStrikeReq = (s: number | null) => {
@@ -396,7 +397,8 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
         )}
         {sheet === "strike" && strikePick && (
           <MobileStrikeSheet pick={strikePick} label={selected} expiry={viewData?.expiry} lot={viewData?.contract_multiplier}
-            date={replay?.date} onClose={() => setSheet(null)} />
+            date={replay?.date} onClose={() => setSheet(null)} wallSides={{ CE: walls.ceWall, PE: walls.peWall }}
+            canArm={!replay && connected && data?.market_open !== false && Array.isArray(data?.options) && data.options.length > 0} />
         )}
         {sheet === "date" && (
           <div className="mc-sheet open">

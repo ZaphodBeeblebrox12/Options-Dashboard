@@ -99,6 +99,10 @@ export interface AlertFiring {
   net_gex: number | null;
   channels_fired: string[];
   instrument_tier?: number | null;
+  wall_side?: string | null;
+  watched_strike?: number | null;
+  new_wall_strike?: number | null;
+  wall_event?: string | null;
 }
 
 export function useAlertSettings() {

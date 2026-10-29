@@ -1,5 +1,5 @@
-import React, { useMemo, useRef, useCallback } from 'react';
-import { AlertTriangle, ArrowDown } from 'lucide-react';
+import React, { useMemo, useRef, useCallback, useEffect, useState } from 'react';
+import { AlertTriangle, ArrowDown, ArrowUp, Bell, BellRing } from 'lucide-react';
 import { ScreenshotButton } from './ScreenshotButton';
 
 interface OptionData {
@@ -28,6 +28,7 @@ interface OptionChainProps {
   onSelectStrike: (strike: number) => void;
   indexName?: string;
   timestamp?: string;
+  canArm?: boolean;
 }
 
 // FIX (ITM tint): subtle background used on the in-the-money side of a row.
@@ -54,9 +55,49 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   onSelectStrike,
   indexName = 'INDEX',
   timestamp,
+  canArm = false,
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const [wallWatches, setWallWatches] = useState<Record<'CE' | 'PE', { armed: boolean; watched_strike: number | null }>>({
+    CE: { armed: false, watched_strike: null }, PE: { armed: false, watched_strike: null },
+  });
+  const [watchBusy, setWatchBusy] = useState<'CE' | 'PE' | null>(null);
+  const [strikeOrder, setStrikeOrder] = useState<'asc' | 'desc'>('asc');
+  const [watchError, setWatchError] = useState<string | null>(null);
+
+  const refreshWallWatches = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/wall-watches?index=${encodeURIComponent(indexName)}`);
+      if (!response.ok) return;
+      const payload = await response.json();
+      setWallWatches({
+        CE: payload.watches?.CE ?? { armed: false, watched_strike: null },
+        PE: payload.watches?.PE ?? { armed: false, watched_strike: null },
+      });
+    } catch { /* Keep the last known indicator state during transient network failures. */ }
+  }, [indexName]);
+
+  useEffect(() => {
+    void refreshWallWatches();
+    const timer = window.setInterval(() => void refreshWallWatches(), 4000);
+    return () => window.clearInterval(timer);
+  }, [refreshWallWatches]);
+
+  const toggleWallWatch = useCallback(async (side: 'CE' | 'PE', event: React.MouseEvent) => {
+    event.stopPropagation();
+    const action = wallWatches[side]?.armed ? 'disarm' : 'arm';
+    setWatchBusy(side);
+    setWatchError(null);
+    try {
+      const response = await fetch(`/api/wall-watches/${encodeURIComponent(indexName)}/${side}/${action}`, { method: 'POST' });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || `Could not ${action} wall watch`);
+      await refreshWallWatches();
+    } catch (error) {
+      setWatchError(error instanceof Error ? error.message : 'Wall watch update failed');
+    } finally { setWatchBusy(null); }
+  }, [indexName, wallWatches, refreshWallWatches]);
 
   // ── Group options by strike ──
   const chainData = useMemo(() => {
@@ -111,16 +152,32 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     return ranks;
   }, [rankableRows]);
 
+  // Current side-specific walls: calls at/above spot, puts at/below spot.
+  const currentWalls = useMemo(() => {
+    const find = (side: 'CE' | 'PE') => {
+      const rows = chainData.filter(row => (side === 'CE' ? !!row.CE : !!row.PE) && (side === 'CE' ? row.strike >= (spot ?? -Infinity) : row.strike <= (spot ?? Infinity)));
+      rows.sort((a, b) => ((side === 'CE' ? b.CE?.oi ?? 0 : b.PE?.oi ?? 0) - (side === 'CE' ? a.CE?.oi ?? 0 : a.PE?.oi ?? 0)) || a.strike - b.strike);
+      return rows[0]?.strike ?? null;
+    };
+    return { CE: find('CE'), PE: find('PE') };
+  }, [chainData, spot]);
+
   // ── Center view around ATM ──
   const displayRows = useMemo(() => {
     const center = atmFutures ?? atmSpot;
-    if (!center || chainData.length <= 21) return chainData;
-    const centerIdx = chainData.findIndex((r) => r.strike === center);
-    if (centerIdx < 0) return chainData.slice(0, 21);
-    const start = Math.max(0, centerIdx - 10);
-    const end = Math.min(chainData.length, centerIdx + 11);
-    return chainData.slice(start, end);
-  }, [chainData, atmSpot, atmFutures]);
+    let visibleRows = chainData;
+    if (center && chainData.length > 21) {
+      const centerIdx = chainData.findIndex((r) => r.strike === center);
+      if (centerIdx < 0) {
+        visibleRows = chainData.slice(0, 21);
+      } else {
+        const start = Math.max(0, centerIdx - 10);
+        const end = Math.min(chainData.length, centerIdx + 11);
+        visibleRows = chainData.slice(start, end);
+      }
+    }
+    return strikeOrder === 'asc' ? visibleRows : [...visibleRows].reverse();
+  }, [chainData, atmSpot, atmFutures, strikeOrder]);
 
   // ── Jump to ATM ──
   const scrollToAtm = useCallback(() => {
@@ -281,6 +338,17 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
               <span className="w-3 h-3 rounded bg-fuchsia-500/40" />
               <span className="text-terminal-muted">Max Pain</span>
             </div>
+            <button
+              type="button"
+              onClick={() => setStrikeOrder(order => order === 'asc' ? 'desc' : 'asc')}
+              className="flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded border border-terminal-border/60 text-terminal-text hover:bg-white/5 transition-colors"
+              title={strikeOrder === 'asc' ? 'Strike order ascending — click for descending' : 'Strike order descending — click for ascending'}
+              aria-label={strikeOrder === 'asc' ? 'Switch to descending strike order' : 'Switch to ascending strike order'}
+              aria-pressed={strikeOrder === 'desc'}
+            >
+              {strikeOrder === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />}
+              Strike {strikeOrder === 'asc' ? 'Asc' : 'Desc'}
+            </button>
             {atmSpot && (
               <button
                 onClick={scrollToAtm}
@@ -334,6 +402,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
       </div>
 
       {/* ── HORIZONTAL SCROLL WRAPPER ── */}
+      {watchError && <div role="status" className="px-2 py-1 text-[10px] text-amber-300">{watchError}</div>}
       <div className="overflow-x-auto terminal-scroll">
         <div className={totalMinWidth}>
 
@@ -397,8 +466,17 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                         <div className="px-1 sm:px-2 py-1 text-right text-terminal-muted">{fmt(ce?.gamma, 4)}</div>
                       </>
                     )}
-                    <div className={`px-1 sm:px-2 py-1 text-right flex items-center justify-end ${getCeOiClass(row.strike)}`}>
+                    <div className={`group/ceoi relative px-1 sm:px-2 py-1 text-right flex items-center justify-end ${getCeOiClass(row.strike)}`}>
                       <span>{fmt(ce?.oi)}</span>
+                      {currentWalls.CE === row.strike && (
+                        <button type="button" onClick={(event) => void toggleWallWatch('CE', event)}
+                          disabled={watchBusy === 'CE' || (!wallWatches.CE?.armed && !canArm)}
+                          title={wallWatches.CE?.armed ? `Disarm Call Wall watch at ${fmt(wallWatches.CE.watched_strike)}` : `Arm Call Wall watch at ${fmt(row.strike)}`}
+                          aria-label={wallWatches.CE?.armed ? 'Disarm Call Wall alert' : 'Arm Call Wall alert'}
+                          className={`ml-0.5 inline-flex shrink-0 items-center justify-center rounded p-0.5 transition-opacity focus:opacity-100 ${wallWatches.CE?.armed ? 'text-amber-300 bg-amber-500/20 opacity-100' : 'text-terminal-muted hover:text-amber-300 sm:opacity-0 sm:group-hover/ceoi:opacity-100'} disabled:opacity-40`}>
+                          {wallWatches.CE?.armed ? <BellRing className="h-3 w-3" /> : <Bell className="h-3 w-3" />}
+                        </button>
+                      )}
                       <OiRankBadge rank={ceRank} />
                     </div>
                   </div>
@@ -410,8 +488,17 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
 
                   {/* PE Side */}
                   <div className={`grid ${fullMode ? 'grid-cols-7' : 'grid-cols-4'} gap-0 ${peItm ? ITM_TINT_CLASS : ''}`}>
-                    <div className={`px-1 sm:px-2 py-1 text-left flex items-center ${getPeOiClass(row.strike)}`}>
+                    <div className={`group/peoi relative px-1 sm:px-2 py-1 text-left flex items-center ${getPeOiClass(row.strike)}`}>
                       <PeOiRankBadge rank={peRank} />
+                      {currentWalls.PE === row.strike && (
+                        <button type="button" onClick={(event) => void toggleWallWatch('PE', event)}
+                          disabled={watchBusy === 'PE' || (!wallWatches.PE?.armed && !canArm)}
+                          title={wallWatches.PE?.armed ? `Disarm Put Wall watch at ${fmt(wallWatches.PE.watched_strike)}` : `Arm Put Wall watch at ${fmt(row.strike)}`}
+                          aria-label={wallWatches.PE?.armed ? 'Disarm Put Wall alert' : 'Arm Put Wall alert'}
+                          className={`ml-0.5 inline-flex shrink-0 items-center justify-center rounded p-0.5 transition-opacity focus:opacity-100 ${wallWatches.PE?.armed ? 'text-amber-300 bg-amber-500/20 opacity-100' : 'text-terminal-muted hover:text-amber-300 sm:opacity-0 sm:group-hover/peoi:opacity-100'} disabled:opacity-40`}>
+                          {wallWatches.PE?.armed ? <BellRing className="h-3 w-3" /> : <Bell className="h-3 w-3" />}
+                        </button>
+                      )}
                       <span>{fmt(pe?.oi)}</span>
                     </div>
                     <div className="px-1 sm:px-2 py-1 text-left text-terminal-pe font-semibold">{fmt(pe?.ltp, 2)}</div>

@@ -73,6 +73,7 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
   const lastUserScroll = useRef(0);
   const lastATM = useRef<number | null>(null);
   const [pillOn, setPillOn] = useState(false);
+  const [strikeOrder, setStrikeOrder] = useState<'asc' | 'desc'>('asc');
 
   const rows: RowData[] = useMemo(() => {
     const opts: Opt[] = data?.options ?? [];
@@ -189,9 +190,17 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
       <div className="mc-ladder" ref={listRef}>
         <div className="mc-lh">
           <div>Chg</div><div>LTP</div><div className="h-oi" style={{ textAlign: "right" }}>OI</div>
-          <div>Strike</div><div className="h-oi">OI</div><div>LTP</div><div>Chg</div>
+          <button
+            type="button"
+            onClick={() => setStrikeOrder(order => order === "asc" ? "desc" : "asc")}
+            title={strikeOrder === "asc" ? "Ascending strikes — tap for descending" : "Descending strikes — tap for ascending"}
+            aria-label={strikeOrder === "asc" ? "Switch to descending strike order" : "Switch to ascending strike order"}
+            aria-pressed={strikeOrder === "desc"}
+            style={{ background: "transparent", border: 0, padding: 0, color: "var(--mtx)", font: "inherit", whiteSpace: "nowrap", cursor: "pointer", textAlign: "center" }}
+          >Strike {strikeOrder === "asc" ? "↑" : "↓"}</button>
+          <div className="h-oi">OI</div><div>LTP</div><div>Chg</div>
         </div>
-        {rows.map(r => (
+        {(strikeOrder === "asc" ? rows : [...rows].reverse()).map(r => (
           <ChainRow key={r.strike} row={r}
             isATM={r.strike === atmStrike}
             isCEWall={r.strike === walls.ceWall}

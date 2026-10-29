@@ -80,6 +80,16 @@ class AlertEngine:
                     "custom_sound_id": None,
                     "telegram_enabled": False,
                 },
+                {
+                    "rule_type": AlertRuleType.WALL_VACATED.value,
+                    "enabled": True,
+                    "cooldown_seconds": 300,
+                    "channels": [NotificationChannel.TOAST.value, NotificationChannel.SOUND.value, NotificationChannel.TELEGRAM.value],
+                    "sound_enabled": True,
+                    "sound_choice": "alert",
+                    "custom_sound_id": None,
+                    "telegram_enabled": True,
+                },
             ]
             changed = True
         if "telegram" not in settings:
@@ -140,6 +150,13 @@ class AlertEngine:
                 "channels": [NotificationChannel.TOAST.value],
                 "sound_enabled": False, "sound_choice": "alert",
                 "custom_sound_id": None, "telegram_enabled": False,
+            },
+            AlertRuleType.WALL_VACATED.value: {
+                "rule_type": AlertRuleType.WALL_VACATED.value, "enabled": True,
+                "cooldown_seconds": 300,
+                "channels": [NotificationChannel.TOAST.value, NotificationChannel.SOUND.value, NotificationChannel.TELEGRAM.value],
+                "sound_enabled": True, "sound_choice": "alert",
+                "custom_sound_id": None, "telegram_enabled": True,
             },
         }
         _existing = {r.get("rule_type") for r in settings.get("rules", [])}
