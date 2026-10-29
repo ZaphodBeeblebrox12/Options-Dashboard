@@ -9,6 +9,7 @@ const RULE_OPTIONS: { value: string; label: string }[] = [
   { value: 'atm_negative_gex_oi_wall', label: 'Strong Signal — ATM + Negative GEX + OI Wall' },
   { value: 'atm_max_ce_pe_wall', label: 'Wall Alignment — ATM Maximum CE/PE Wall' },
   { value: 'wall_reversal', label: 'Wall Reversal — Evening/Morning Star' },
+  { value: 'wall_vacated', label: 'Armed Wall Departure' },
 ];
 import { HistoryCalendar } from './HistoryCalendar';
 
@@ -27,12 +28,14 @@ const RULE_BADGE_COLORS: Record<string, string> = {
   'atm_negative_gex_oi_wall': 'bg-red-500/20 text-red-400 border-red-500/30',
   'atm_max_ce_pe_wall': 'bg-amber-500/20 text-amber-400 border-amber-500/30',
   'wall_reversal': 'bg-sky-500/20 text-sky-400 border-sky-500/30',
+  'wall_vacated': 'bg-orange-500/20 text-orange-400 border-orange-500/30',
 };
 
 const RULE_NAMES: Record<string, string> = {
   'atm_negative_gex_oi_wall': 'Strong Signal',
   'atm_max_ce_pe_wall': 'Wall Alignment',
   'wall_reversal': 'Wall Reversal',
+  'wall_vacated': 'Armed Wall Departure',
 };
 
 export const AlertHistoryPanel: React.FC<AlertHistoryPanelProps> = ({ indexName, onNavigate }) => {
