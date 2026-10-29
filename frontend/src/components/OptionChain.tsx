@@ -154,7 +154,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   // Current side-specific walls: calls at/above spot, puts at/below spot.
   const currentWalls = useMemo(() => {
     const find = (side: 'CE' | 'PE') => {
-      const rows = chainData.filter(row => (side === 'CE' ? row.strike >= (spot ?? -Infinity) : row.strike <= (spot ?? Infinity)));
+      const rows = chainData.filter(row => (side === 'CE' ? !!row.CE : !!row.PE) && (side === 'CE' ? row.strike >= (spot ?? -Infinity) : row.strike <= (spot ?? Infinity)));
       rows.sort((a, b) => ((side === 'CE' ? b.CE?.oi ?? 0 : b.PE?.oi ?? 0) - (side === 'CE' ? a.CE?.oi ?? 0 : a.PE?.oi ?? 0)) || a.strike - b.strike);
       return rows[0]?.strike ?? null;
     };
