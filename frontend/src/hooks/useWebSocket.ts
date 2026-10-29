@@ -106,7 +106,7 @@ export function useWebSocket(url: string, onError?: (msg: string) => void) {
       return false;
     }
     try {
-      socket.send(JSON.stringify(data));
+      socket.send(JSON.stringify(data) ?? "null");
       return true;
     } catch (error) {
       console.error('[WS] send() failed:', error);
