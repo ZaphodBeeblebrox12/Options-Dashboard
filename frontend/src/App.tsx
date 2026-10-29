@@ -13,7 +13,7 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { useSnapshots, useSnapshot, useGexHistory, useStrikeHistory, useGexByStrike, useAvailableDates } from './hooks/useApi';
 import { useAlertSettings, useAlertNotifications, AlertFiring } from './hooks/useAlerts';
 import { Monitor, AlertTriangle, Info, WifiOff, Bell, Settings, X } from 'lucide-react';
-import { hoursForType, isSessionOpen, fmtSessionRange, InstrumentKind, SessionHours } from './session';
+import { hoursForType, isSessionOpen, fmtSessionRange, getMarketDateIST, InstrumentKind, SessionHours } from './session';
 import { useIsMobile } from "./components/mobile/useIsMobile";
 import MobileApp from "./components/mobile/MobileApp";
 
@@ -63,16 +63,19 @@ function saveLastOpenedHistory(ts: string) {
 function App() {
   const persisted = loadPersistedState();
 
+  const initialLiveMode = persisted.liveMode ?? true;
   const [selectedIndex, setSelectedIndex] = useState(persisted.selectedIndex || "NIFTY");
-  const [selectedDate, setSelectedDate] = useState(persisted.selectedDate || (() => {
-    const today = new Date();
-    return today.toISOString().split('T')[0];
-  }));
+  // A restored LIVE state must always point at today's market date in IST.
+  // Historical dates are restored only when the persisted mode is REPLAY.
+  const [selectedDate, setSelectedDate] = useState(() => {
+    const today = getMarketDateIST();
+    return initialLiveMode ? today : (persisted.selectedDate || today);
+  });
   const [currentIndex, setCurrentIndex] = useState(-1);
   const [isPlaying, setIsPlaying] = useState(false);
   const [fullMode, setFullMode] = useState(persisted.fullMode ?? false);
   const [selectedStrike, setSelectedStrike] = useState<number | null>(persisted.selectedStrike ?? null);
-  const [liveMode, setLiveMode] = useState(persisted.liveMode ?? true);
+  const [liveMode, setLiveMode] = useState(initialLiveMode);
   const [marketOpenMap, setMarketOpenMap] = useState<Record<string, boolean>>({});
   const [indexKinds, setIndexKinds] = useState<Record<string, InstrumentKind>>({});
   const [wsErrorMap, setWsErrorMap] = useState<Record<string, string | null>>({});
@@ -262,11 +265,16 @@ function App() {
   }, [isPlaying, timestamps.length]);
 
   useEffect(() => {
-    if (isPlaying && currentIndex >= timestamps.length - 1 && timestamps.length > 0 && marketOpen) {
-      setIsPlaying(false);
+    if (!isPlaying || timestamps.length === 0 || currentIndex < timestamps.length - 1) return;
+
+    // Playback of a prior session must never change source to today's live feed.
+    setIsPlaying(false);
+    if (selectedDate === getMarketDateIST() && marketOpen) {
       setLiveMode(true);
+    } else {
+      setLiveMode(false);
     }
-  }, [currentIndex, isPlaying, timestamps.length, marketOpen]);
+  }, [currentIndex, isPlaying, timestamps.length, marketOpen, selectedDate]);
 
   useEffect(() => {
     setCurrentIndex(-1); setIsPlaying(false); setSelectedStrike(null);
@@ -275,20 +283,32 @@ function App() {
 
   const liveData = liveDataMap[selectedIndex];
   const hasLiveData = liveData && Array.isArray(liveData.options) && liveData.options.length > 0 && liveData.spot != null;
-  const displayData = liveMode && hasLiveData ? liveData : snapshot;
+  // Do not fall back to a historical DB snapshot while the UI is in LIVE mode.
+  // Blank values are safer than presenting yesterday's data as today's market.
+  const displayData = liveMode ? (hasLiveData ? liveData : null) : snapshot;
   const wsError = wsErrorMap[selectedIndex] || null;
 
-  // ── P1 FIX: judge LIVE by data age, not just socket state ──
-  // Backend ticks carry "YYYY-MM-DD HH:MM:SS" in local time; normalise to a
-  // parseable form and compare against the ticking clock above.
-  const liveDataAgeMs = (liveMode && hasLiveData && liveData?.timestamp)
-    ? now - new Date(String(liveData.timestamp).replace(' ', 'T')).getTime()
-    : null;
-  const isLiveDataStale =
-    liveDataAgeMs !== null && !Number.isNaN(liveDataAgeMs) && liveDataAgeMs > STALE_AFTER_MS;
-  // hasLiveData is part of the gate: showing LIVE while actually rendering a
-  // cached DB snapshot (no tick stream) was the same lie in a quieter form.
-  const isTrulyLive = liveMode && connected && marketOpen && hasLiveData && !isLiveDataStale;
+  // Freshness is based on source-tick ages from the backend, not the timestamp
+  // attached when a cached/rebroadcast payload was assembled.
+  const isFreshSourceAge = (age: unknown) =>
+    typeof age === 'number' && Number.isFinite(age) && age >= 0 && age * 1000 <= STALE_AFTER_MS;
+  const hasFreshMarketSources = !!liveData &&
+    isFreshSourceAge(liveData.spot_age_sec) &&
+    isFreshSourceAge(liveData.futures_age_sec) &&
+    isFreshSourceAge(liveData.option_age_sec);
+  const isLiveDataStale = liveMode && marketOpen &&
+    (!connected || !hasLiveData || !hasFreshMarketSources || !!wsError);
+  const isTrulyLive = liveMode && connected && marketOpen &&
+    hasLiveData && hasFreshMarketSources && !wsError;
+  const liveStatusLabel = !liveMode
+    ? 'REPLAY'
+    : !marketOpen
+      ? 'CLOSED'
+      : isTrulyLive
+        ? 'LIVE'
+        : (!connected || !hasLiveData)
+          ? 'NO FEED'
+          : 'STALE';
 
   const spot = displayData?.spot ?? null;
   const futures = displayData?.futures ?? null;
@@ -298,7 +318,7 @@ function App() {
   const maxGexStrike = displayData?.max_gex_strike ?? null;
   const maxPain = displayData?.max_pain ?? null;
   const gammaFlip = displayData?.gamma_flip ?? null;
-  const timestamp = displayData?.timestamp ?? new Date().toISOString();
+  const timestamp = displayData?.timestamp ?? '';
   const options = displayData?.options ?? [];
   // ── FIX: walls must sit on the correct side of spot ──────────
   // A CE wall is resistance ABOVE spot; a PE wall is support BELOW it.
@@ -336,25 +356,33 @@ function App() {
   const handlePause = useCallback(() => setIsPlaying(false), []);
   const handleSeek = useCallback((index: number) => {
     const isAtEnd = index >= 0 && timestamps.length > 0 && index === timestamps.length - 1;
-    if (isAtEnd && marketOpen) {
-      setLiveMode(true);
-      setIsPlaying(false);
-      setCurrentIndex(index);
-    } else {
-      setLiveMode(false);
-      setIsPlaying(false);
-      setCurrentIndex(index);
-    }
-  }, [timestamps.length, marketOpen]);
+    const canReturnToLive = isAtEnd && selectedDate === getMarketDateIST() && marketOpen;
+    setLiveMode(canReturnToLive);
+    setIsPlaying(false);
+    setCurrentIndex(index);
+  }, [timestamps.length, marketOpen, selectedDate]);
   const handleRefresh = useCallback(() => window.location.reload(), []);
   const handleDateChange = useCallback((date: string) => { setSelectedDate(date); setCurrentIndex(-1); setIsPlaying(false); setLiveMode(false); hasRestoredRef.current = false; scrollRestoredRef.current = false; }, []);
-  const handleIndexChange = useCallback((index: string) => { setSelectedIndex(index); setCurrentIndex(-1); setIsPlaying(false); setSelectedStrike(null); setLiveMode(true); enteringLiveRef.current = true; hasRestoredRef.current = false; scrollRestoredRef.current = false; }, []);
+  const handleIndexChange = useCallback((index: string) => {
+    setSelectedIndex(index);
+    setCurrentIndex(-1);
+    setIsPlaying(false);
+    setSelectedStrike(null);
+    if (liveMode) {
+      setSelectedDate(getMarketDateIST());
+      enteringLiveRef.current = true;
+    } else {
+      enteringLiveRef.current = false;
+    }
+    hasRestoredRef.current = false;
+    scrollRestoredRef.current = false;
+  }, [liveMode]);
   const handleSelectStrike = useCallback((strike: number) => setSelectedStrike(strike), []);
   const handleFullModeChange = useCallback((v: boolean) => setFullMode(v), []);
   const toggleLiveMode = useCallback(() => {
     setLiveMode((prev) => {
       const next = !prev;
-      if (next) { setIsPlaying(false); setSelectedDate(new Date().toISOString().split('T')[0]); setCurrentIndex(-1); enteringLiveRef.current = true; hasRestoredRef.current = false; scrollRestoredRef.current = false; }
+      if (next) { setIsPlaying(false); setSelectedDate(getMarketDateIST()); setCurrentIndex(-1); enteringLiveRef.current = true; hasRestoredRef.current = false; scrollRestoredRef.current = false; }
       return next;
     });
   }, []);
@@ -497,9 +525,9 @@ function App() {
           </button>
           {/* P1 FIX: the toggle reflects mode, but warns when the live data
               stream itself has gone stale (frozen feed, socket still up). */}
-          <button onClick={toggleLiveMode} className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono font-semibold transition-colors ${liveMode ? (isLiveDataStale ? 'bg-amber-500/20 text-amber-400' : 'bg-terminal-pe/20 text-terminal-pe') : 'bg-terminal-bg text-terminal-muted hover:text-terminal-text'}`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${liveMode ? (isLiveDataStale ? 'bg-amber-400' : 'bg-terminal-pe animate-pulse') : 'bg-terminal-muted'}`} />
-            {liveMode && isLiveDataStale ? 'STALE' : 'LIVE'}
+          <button onClick={toggleLiveMode} className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono font-semibold transition-colors ${liveStatusLabel === 'LIVE' ? 'bg-terminal-pe/20 text-terminal-pe' : liveStatusLabel === 'STALE' ? 'bg-amber-500/20 text-amber-400' : 'bg-terminal-bg text-terminal-muted hover:text-terminal-text'}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${liveStatusLabel === 'LIVE' ? 'bg-terminal-pe animate-pulse' : liveStatusLabel === 'STALE' ? 'bg-amber-400' : 'bg-terminal-muted'}`} />
+            {liveStatusLabel}
           </button>
         </div>
       </div>
