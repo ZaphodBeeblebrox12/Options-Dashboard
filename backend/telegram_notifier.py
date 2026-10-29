@@ -11,6 +11,8 @@ TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 def build_telegram_message(payload: dict) -> str:
     """Select the Telegram template by alert tier. Tier 4 has its own dedicated
     formatting; Tier 1/2/3 keep the standard template."""
+    if payload.get("rule_type") == "wall_vacated":
+        return _format_wall_watch_message(payload)
     if payload.get("instrument_tier") == 4:
         return _format_tier4_message(payload)
     return _format_standard_message(payload)
@@ -26,6 +28,35 @@ def resolve_telegram_destination(settings: dict, instrument_tier) -> dict:
         if t4.get("enabled") and t4.get("bot_token") and t4.get("chat_id"):
             return t4
     return settings.get("telegram") or {}
+
+
+def _format_wall_watch_message(payload: dict) -> str:
+    """Unambiguous notification for a manually armed, one-shot wall watch."""
+    side = payload.get("wall_side")
+    label = "Call Wall" if side == "CE" else "Put Wall"
+    watched = payload.get("watched_strike")
+    new_wall = payload.get("new_wall_strike")
+    event = payload.get("wall_event")
+    if event == "vacated" or new_wall is None:
+        movement = f"Vacated watched strike {watched:,.2f}" if watched is not None else "Wall vacated"
+        replacement = "No replacement wall is currently available."
+    else:
+        movement = f"Moved away from {watched:,.2f}" if watched is not None else "Moved away from watched strike"
+        replacement = f"New wall: {new_wall:,.2f}"
+    spot = payload.get("spot")
+    timestamp = payload.get("timestamp", "")
+    lines = [
+        f"🚨 <b>{payload.get('index_name', 'NIFTY')} WALL ALERT</b>",
+        "",
+        f"<b>Wall:</b> {label}",
+        f"<b>Event:</b> {movement}",
+        f"<b>{replacement}</b>",
+        f"<b>Spot:</b> {spot:,.2f}" if spot is not None else "<b>Spot:</b> —",
+        f"<b>Time:</b> {timestamp}",
+        "",
+        "<i>One-shot watch auto-disarmed after this alert.</i>",
+    ]
+    return "\n".join(lines)
 
 
 def _format_standard_message(payload: dict) -> str:
