@@ -14,6 +14,7 @@ import { useSnapshots, useSnapshot, useGexHistory, useStrikeHistory, useGexByStr
 import { useAlertSettings, useAlertNotifications, AlertFiring } from './hooks/useAlerts';
 import { Monitor, AlertTriangle, Info, WifiOff, Bell, Settings, X } from 'lucide-react';
 import { hoursForType, isSessionOpen, fmtSessionRange, getMarketDateIST, InstrumentKind, SessionHours } from './session';
+import { canReturnToLive, isSourceFresh, resolveLiveStatus } from './replayPolicy.js';
 import { useIsMobile } from "./components/mobile/useIsMobile";
 import MobileApp from "./components/mobile/MobileApp";
 
@@ -267,11 +268,12 @@ function App() {
 
     // Playback of a prior session must never change source to today's live feed.
     setIsPlaying(false);
-    if (selectedDate === getMarketDateIST() && marketOpen) {
-      setLiveMode(true);
-    } else {
-      setLiveMode(false);
-    }
+    setLiveMode(canReturnToLive(
+      true,
+      selectedDate,
+      getMarketDateIST(),
+      marketOpen,
+    ));
   }, [currentIndex, isPlaying, timestamps.length, marketOpen, selectedDate]);
 
   useEffect(() => {
@@ -291,31 +293,24 @@ function App() {
   const liveMessageAgeMs = typeof liveData?.__receivedAtMs === 'number'
     ? Math.max(0, now - liveData.__receivedAtMs)
     : Number.POSITIVE_INFINITY;
-  const isFreshSourceAge = (age: unknown) =>
-    typeof age === 'number' && Number.isFinite(age) && age >= 0 &&
-    (age * 1000 + liveMessageAgeMs) <= STALE_AFTER_MS;
   // The receive-age term also catches a frozen WebSocket/broadcast path where
   // no new payload arrives to advance the backend's source-age measurements.
   const needsFuturesFreshness = !!liveData &&
     (liveData.instrument_kind === 'commodity' || liveData.futures != null);
   const hasFreshMarketSources = !!liveData &&
-    liveMessageAgeMs <= STALE_AFTER_MS &&
-    isFreshSourceAge(liveData.spot_age_sec) &&
-    isFreshSourceAge(liveData.option_age_sec) &&
-    (!needsFuturesFreshness || isFreshSourceAge(liveData.futures_age_sec));
-  const isLiveDataStale = liveMode && marketOpen &&
-    (!connected || !hasLiveData || !hasFreshMarketSources || !!wsError);
-  const isTrulyLive = liveMode && connected && marketOpen &&
-    hasLiveData && hasFreshMarketSources && !wsError;
-  const liveStatusLabel = !liveMode
-    ? 'REPLAY'
-    : !marketOpen
-      ? 'CLOSED'
-      : isTrulyLive
-        ? 'LIVE'
-        : (!connected || !hasLiveData)
-          ? 'NO FEED'
-          : 'STALE';
+    isSourceFresh(liveData.spot_age_sec, liveMessageAgeMs, STALE_AFTER_MS) &&
+    isSourceFresh(liveData.option_age_sec, liveMessageAgeMs, STALE_AFTER_MS) &&
+    (!needsFuturesFreshness || isSourceFresh(liveData.futures_age_sec, liveMessageAgeMs, STALE_AFTER_MS));
+  const liveStatusLabel = resolveLiveStatus({
+    liveMode,
+    marketOpen,
+    connected,
+    hasLiveData: !!hasLiveData,
+    hasFreshMarketSources,
+    hasError: !!wsError,
+  });
+  const isLiveDataStale = liveMode && marketOpen && liveStatusLabel !== 'LIVE';
+  const isTrulyLive = liveStatusLabel === 'LIVE';
 
   const spot = displayData?.spot ?? null;
   const futures = displayData?.futures ?? null;
@@ -382,8 +377,7 @@ function App() {
   const handlePause = useCallback(() => setIsPlaying(false), []);
   const handleSeek = useCallback((index: number) => {
     const isAtEnd = index >= 0 && timestamps.length > 0 && index === timestamps.length - 1;
-    const canReturnToLive = isAtEnd && selectedDate === getMarketDateIST() && marketOpen;
-    setLiveMode(canReturnToLive);
+    setLiveMode(canReturnToLive(isAtEnd, selectedDate, getMarketDateIST(), marketOpen));
     setIsPlaying(false);
     setCurrentIndex(index);
   }, [timestamps.length, marketOpen, selectedDate]);
