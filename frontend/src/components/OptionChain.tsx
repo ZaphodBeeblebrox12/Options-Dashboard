@@ -449,7 +449,6 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                       </>
                     )}
                     <div className={`group/ceoi relative px-1 sm:px-2 py-1 text-right flex items-center justify-end ${getCeOiClass(row.strike)}`}>
-                      <OiRankBadge rank={ceRank} />
                       <span>{fmt(ce?.oi)}</span>
                       {currentWalls.CE === row.strike && (
                         <button type="button" onClick={(event) => void toggleWallWatch('CE', event)}
@@ -460,6 +459,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                           {wallWatches.CE?.armed ? <BellRing className="h-3 w-3" /> : <Bell className="h-3 w-3" />}
                         </button>
                       )}
+                      <OiRankBadge rank={ceRank} />
                     </div>
                   </div>
 
