@@ -96,7 +96,7 @@ function App() {
   const { snapshot, isLoading: snapshotLoading } = useSnapshot(currentTimestamp, selectedIndex, liveMode);
   const gexHistory = useGexHistory(selectedDate, selectedIndex, liveMode);
   const strikeHistory = useStrikeHistory(selectedStrike, selectedDate, selectedIndex, liveMode);
-  const gexByStrike = useGexByStrike(currentTimestamp, selectedIndex, liveMode);
+  const gexByStrike = useGexByStrike(liveMode ? null : currentTimestamp, selectedIndex, liveMode);
   const availableDates = useAvailableDates(selectedIndex, liveMode);
 
   const [liveDataMap, setLiveDataMap] = useState<Record<string, any>>({});
@@ -353,6 +353,25 @@ function App() {
     return result;
   }, [options]);
 
+  // Live GEX bars must be derived from the same live payload as the option
+  // chain; historical replay continues to use the selected DB snapshot.
+  const liveGexByStrike = React.useMemo(() => {
+    const byStrike: Record<number, { strike: number; ce_gex: number; pe_gex: number; net_gex: number }> = {};
+    for (const option of normalizedOptions as any[]) {
+      const strike = Number(option.strike);
+      if (!Number.isFinite(strike)) continue;
+      const point = byStrike[strike] ?? { strike, ce_gex: 0, pe_gex: 0, net_gex: 0 };
+      const gex = Number(option.gex);
+      const value = Number.isFinite(gex) ? gex : 0;
+      if (option.option_type === 'CE') point.ce_gex = value;
+      if (option.option_type === 'PE') point.pe_gex = value;
+      point.net_gex = point.ce_gex + point.pe_gex;
+      byStrike[strike] = point;
+    }
+    return Object.values(byStrike).sort((a, b) => a.strike - b.strike);
+  }, [normalizedOptions]);
+  const displayedGexByStrike = liveMode ? liveGexByStrike : gexByStrike;
+
   const handlePlay = useCallback(() => {
     if (currentIndex >= timestamps.length - 1) setCurrentIndex(0);
     setLiveMode(false); setIsPlaying(true);
@@ -545,7 +564,7 @@ function App() {
         <ReplayControls timestamps={timestamps} currentIndex={currentIndex} isFetching={snapshotLoading} isPlaying={isPlaying} onPlay={handlePlay} onPause={handlePause} onSeek={handleSeek} onRefresh={handleRefresh} selectedDate={selectedDate} onDateChange={handleDateChange} selectedIndex={selectedIndex} onIndexChange={handleIndexChange} availableDates={availableDates} sessionHours={sessionHours} />
         <OptionChain options={normalizedOptions} spot={spot} futures={futures} maxPain={maxPain} gammaFlip={gammaFlip} fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike} indexName={selectedIndex} timestamp={timestamp} />
         {instrumentTier === 1 && (
-          <GexChart data={gexByStrike} atmStrike={atmStrike} maxPain={maxPain} gammaFlip={gammaFlip}
+          <GexChart data={displayedGexByStrike} atmStrike={atmStrike} maxPain={maxPain} gammaFlip={gammaFlip}
                     ceWall={ceWall} peWall={peWall} indexName={selectedIndex} timestamp={timestamp} />
         )}
         <StrikeChart data={strikeHistory} strike={selectedStrike ?? 0} indexName={selectedIndex} timestamp={timestamp} />
