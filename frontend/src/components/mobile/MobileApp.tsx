@@ -13,7 +13,6 @@ import MobileSettings from "./MobileSettings";
 import MobileLevelsRail from "./MobileLevelsRail";
 import MobileWalls from "./MobileWalls";
 import MobileStrikeSheet from "./MobileStrikeSheet";
-import { WallWatchControls } from "../WallWatchControls";
 import { fmtExpiry, fmtPx, fmtGex, fmtNum } from "./mobileFormat";
 import { nearestStrike } from "../../strikeUtils";
 import "./mobile.css";
@@ -324,14 +323,6 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
                 <b>{viewData?.max_pain != null ? Number(viewData.max_pain).toLocaleString("en-IN") : "—"}</b><span>Max pain</span>
               </button>
             </div>
-          )}
-          {!isScanner && viewData && (
-            <WallWatchControls
-              symbol={selected}
-              spot={data?.spot ?? null}
-              options={data?.options ?? []}
-              canArm={!replay && connected && data?.market_open !== false && Array.isArray(data?.options) && data.options.length > 0}
-            />
           )}
         </>
       ) : tab === "walls" ? null : (
