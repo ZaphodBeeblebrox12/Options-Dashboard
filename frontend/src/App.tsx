@@ -3,6 +3,7 @@ import { AnalyticsHeader } from './components/AnalyticsHeader';
 import { BuildupCard } from './components/BuildupCard';
 import { OptionChain } from './components/OptionChain';
 import { ReplayControls } from './components/ReplayControls';
+import { WallWatchControls } from './components/WallWatchControls';
 import { GexChart } from './components/GexChart';
 import { StrikeChart } from './components/StrikeChart';
 import { NetGexChart } from './components/NetGexChart';
@@ -508,6 +509,7 @@ function App() {
         <AnalyticsHeader indexName={selectedIndex} isFetching={snapshotLoading} spot={spot} futures={futures} futuresSpread={futuresSpread} spreadLabel={spreadLabel} netGex={netGex} maxGexStrike={maxGexStrike} maxPain={maxPain} gammaFlip={gammaFlip} timestamp={timestamp} isLive={isTrulyLive} isStale={isLiveDataStale} />
         <BuildupCard indexName={selectedIndex} date={selectedDate} live={liveMode} timestamp={currentTimestamp || undefined} />
         <ReplayControls timestamps={timestamps} currentIndex={currentIndex} isFetching={snapshotLoading} isPlaying={isPlaying} onPlay={handlePlay} onPause={handlePause} onSeek={handleSeek} onRefresh={handleRefresh} selectedDate={selectedDate} onDateChange={handleDateChange} selectedIndex={selectedIndex} onIndexChange={handleIndexChange} availableDates={availableDates} sessionHours={sessionHours} />
+        <WallWatchControls symbol={selectedIndex} spot={spot} options={normalizedOptions} canArm={isTrulyLive} />
         <OptionChain options={normalizedOptions} spot={spot} futures={futures} maxPain={maxPain} gammaFlip={gammaFlip} fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike} indexName={selectedIndex} timestamp={timestamp} />
         {instrumentTier === 1 && (
           <GexChart data={gexByStrike} atmStrike={atmStrike} maxPain={maxPain} gammaFlip={gammaFlip}
