@@ -54,6 +54,7 @@ import faulthandler
 # ── Alert System Imports ──────────────────────────────────────
 from alert_db import init_alert_db
 from alert_engine import alert_engine
+from wall_watch import wall_watch_manager, calculate_wall_strikes
 from alert_models import (
     AlertSettings, AlertHistoryResponse, BacktestRequest, BacktestResponse,
     AlertStatus, AlertTriggerPayload, NotificationChannel,
@@ -532,9 +533,21 @@ def _evaluate_snapshot_alerts(snapshot: dict, index_name: str) -> None:
         fired = alert_engine.evaluate_rules(snapshot, index_name)
     except Exception as e:
         logging.error(f"[Alerts] Snapshot evaluation failed for {index_name}: {e}")
-        return
+        fired = []
+
+    # Manual wall watches are a separate, user-armed one-shot state machine.
+    # They share the normal dispatch pipeline but do not depend on RULE_1/2
+    # being true, and continue to be evaluated even if an unrelated rule fails.
+    try:
+        wall_fired = wall_watch_manager.evaluate_snapshot(snapshot, index_name)
+    except Exception as e:
+        logging.error(f"[WallWatch] Snapshot evaluation failed for {index_name}: {e}")
+        wall_fired = []
+
     if fired:
         _dispatch_fired_alerts(fired)
+    if wall_fired:
+        _dispatch_fired_alerts(wall_fired)
 
 
 async def alert_broadcast_loop():
@@ -1297,6 +1310,45 @@ def _load_backtest_day(index_name: str, date: str):
             "(SELECT id FROM snapshots WHERE index_name = ? AND date(timestamp) = ?)",
             (index_name, date)).fetchall()
     return rows, opt_rows
+
+
+# ─────────────────────────────────────────────────────────────
+# User-armed, one-shot Call/Put wall-departure watches
+# ─────────────────────────────────────────────────────────────
+
+@app.get("/api/wall-watches")
+async def get_wall_watches(index: str = Query(default="NIFTY")):
+    return {"symbol": index.strip().upper(), "watches": wall_watch_manager.get_watches(index)}
+
+
+@app.post("/api/wall-watches/{symbol}/{side}/arm")
+async def arm_wall_watch(symbol: str, side: str):
+    symbol = symbol.strip().upper()
+    side = side.strip().upper()
+    if side not in ("CE", "PE"):
+        raise HTTPException(status_code=422, detail="side must be CE (Call Wall) or PE (Put Wall)")
+    if streamer_adapter.mode != "real":
+        raise HTTPException(status_code=503, detail="Live broker feed is unavailable")
+    state = await asyncio.to_thread(streamer_adapter.get_current_state, symbol)
+    data = (state or {}).get("data") or {}
+    if data.get("error"):
+        raise HTTPException(status_code=503, detail=str(data["error"]))
+    if data.get("market_open") is False:
+        raise HTTPException(status_code=409, detail="Arm wall alerts while the market feed is live")
+    walls = calculate_wall_strikes(data.get("options") or [], data.get("spot"))
+    strike, side_present = walls.get(side, (None, False))
+    if not side_present or strike is None:
+        raise HTTPException(status_code=409, detail=f"No current {('Call' if side == 'CE' else 'Put')} Wall is available to arm")
+    return wall_watch_manager.arm(symbol, side, strike)
+
+
+@app.post("/api/wall-watches/{symbol}/{side}/disarm")
+async def disarm_wall_watch(symbol: str, side: str):
+    symbol = symbol.strip().upper()
+    side = side.strip().upper()
+    if side not in ("CE", "PE"):
+        raise HTTPException(status_code=422, detail="side must be CE (Call Wall) or PE (Put Wall)")
+    return wall_watch_manager.disarm(symbol, side)
 
 
 # ─────────────────────────────────────────────────────────────
