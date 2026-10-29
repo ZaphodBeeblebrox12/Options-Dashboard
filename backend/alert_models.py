@@ -9,6 +9,7 @@ class AlertRuleType(str, Enum):
     RULE_1 = "atm_negative_gex_oi_wall"      # ATM == Max Neg GEX AND (ATM == Max CE OI OR ATM == Max PE OI)
     RULE_2 = "atm_max_ce_pe_wall"            # ATM == Max CE OI OR ATM == Max PE OI
     WALL_REVERSAL = "wall_reversal"          # Evening Star (CE Wall) / Morning Star (PE Wall) on 15m/30m/1H
+    WALL_VACATED = "wall_vacated"            # User-armed one-shot alert when a watched wall leaves its strike
 
 
 class NotificationChannel(str, Enum):
@@ -89,6 +90,10 @@ class AlertTriggerPayload(BaseModel):
     channels_fired: List[NotificationChannel]
     market_state: Dict  # Full snapshot data for expansion
     instrument_tier: Optional[int] = None   # 4 = Angel-fed Greeks (T4 label)
+    wall_side: Optional[str] = None          # CE = Call Wall; PE = Put Wall
+    watched_strike: Optional[float] = None  # Original strike the user armed
+    new_wall_strike: Optional[float] = None # Replacement wall; None when no eligible wall remains
+    wall_event: Optional[str] = None         # "moved" or "vacated"
 
 
 class AlertHistoryEntry(BaseModel):
