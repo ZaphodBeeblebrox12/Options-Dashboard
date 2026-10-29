@@ -472,7 +472,6 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                   <div className={`grid ${fullMode ? 'grid-cols-7' : 'grid-cols-4'} gap-0 ${peItm ? ITM_TINT_CLASS : ''}`}>
                     <div className={`group/peoi relative px-1 sm:px-2 py-1 text-left flex items-center ${getPeOiClass(row.strike)}`}>
                       <PeOiRankBadge rank={peRank} />
-                      <span>{fmt(pe?.oi)}</span>
                       {currentWalls.PE === row.strike && (
                         <button type="button" onClick={(event) => void toggleWallWatch('PE', event)}
                           disabled={watchBusy === 'PE' || (!wallWatches.PE?.armed && !canArm)}
@@ -482,6 +481,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                           {wallWatches.PE?.armed ? <BellRing className="h-3 w-3" /> : <Bell className="h-3 w-3" />}
                         </button>
                       )}
+                      <span>{fmt(pe?.oi)}</span>
                     </div>
                     <div className="px-1 sm:px-2 py-1 text-left text-terminal-pe font-semibold">{fmt(pe?.ltp, 2)}</div>
                     <div className="px-1 sm:px-2 py-1 text-left text-terminal-muted">{fmt(pe?.volume)}</div>
