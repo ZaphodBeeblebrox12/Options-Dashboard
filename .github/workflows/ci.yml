@@ -34,6 +34,9 @@ jobs:
       - name: Type-check and build frontend
         working-directory: frontend
         run: npm run build
+      - name: Test replay and live-status policies
+        working-directory: frontend
+        run: node --test tests/*.test.mjs
 
   backend:
     name: Backend compile and unit tests
