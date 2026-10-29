@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, ArrowDown, Bell, BellRing } from 'lucide-react';
+import { AlertTriangle, ArrowDown, ArrowUp, Bell, BellRing } from 'lucide-react';
 import { ScreenshotButton } from './ScreenshotButton';
 
 interface OptionData {
@@ -63,6 +63,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     CE: { armed: false, watched_strike: null }, PE: { armed: false, watched_strike: null },
   });
   const [watchBusy, setWatchBusy] = useState<'CE' | 'PE' | null>(null);
+  const [strikeOrder, setStrikeOrder] = useState<'asc' | 'desc'>('asc');
   const [watchError, setWatchError] = useState<string | null>(null);
 
   const refreshWallWatches = useCallback(async () => {
@@ -164,13 +165,19 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   // ── Center view around ATM ──
   const displayRows = useMemo(() => {
     const center = atmFutures ?? atmSpot;
-    if (!center || chainData.length <= 21) return chainData;
-    const centerIdx = chainData.findIndex((r) => r.strike === center);
-    if (centerIdx < 0) return chainData.slice(0, 21);
-    const start = Math.max(0, centerIdx - 10);
-    const end = Math.min(chainData.length, centerIdx + 11);
-    return chainData.slice(start, end);
-  }, [chainData, atmSpot, atmFutures]);
+    let visibleRows = chainData;
+    if (center && chainData.length > 21) {
+      const centerIdx = chainData.findIndex((r) => r.strike === center);
+      if (centerIdx < 0) {
+        visibleRows = chainData.slice(0, 21);
+      } else {
+        const start = Math.max(0, centerIdx - 10);
+        const end = Math.min(chainData.length, centerIdx + 11);
+        visibleRows = chainData.slice(start, end);
+      }
+    }
+    return strikeOrder === 'asc' ? visibleRows : [...visibleRows].reverse();
+  }, [chainData, atmSpot, atmFutures, strikeOrder]);
 
   // ── Jump to ATM ──
   const scrollToAtm = useCallback(() => {
@@ -331,6 +338,17 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
               <span className="w-3 h-3 rounded bg-fuchsia-500/40" />
               <span className="text-terminal-muted">Max Pain</span>
             </div>
+            <button
+              type="button"
+              onClick={() => setStrikeOrder(order => order === 'asc' ? 'desc' : 'asc')}
+              className="flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded border border-terminal-border/60 text-terminal-text hover:bg-white/5 transition-colors"
+              title={strikeOrder === 'asc' ? 'Strike order ascending — click for descending' : 'Strike order descending — click for ascending'}
+              aria-label={strikeOrder === 'asc' ? 'Switch to descending strike order' : 'Switch to ascending strike order'}
+              aria-pressed={strikeOrder === 'desc'}
+            >
+              {strikeOrder === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />}
+              Strike {strikeOrder === 'asc' ? 'Asc' : 'Desc'}
+            </button>
             {atmSpot && (
               <button
                 onClick={scrollToAtm}
