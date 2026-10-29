@@ -1,6 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import { X, Bell, Send, Volume2, Settings, Plus, Trash2, ToggleLeft, ToggleRight, Check, History } from 'lucide-react';
-import { AlertRule, TelegramSettings } from '../hooks/useAlerts';
+interface AlertRule {
+  id: number;
+  name: string;
+  condition_type: string;
+  index_name: string;
+  cooldown_seconds: number;
+  enabled: boolean;
+  sound_enabled: boolean;
+  telegram_enabled: boolean;
+  parameters?: Record<string, unknown>;
+}
+
+interface TelegramSettings {
+  enabled: boolean;
+  bot_token: string;
+  chat_id: string;
+}
 
 interface SettingsPanelProps {
   isOpen: boolean;

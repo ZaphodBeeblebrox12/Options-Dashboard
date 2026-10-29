@@ -101,7 +101,7 @@ export const SoundUploader: React.FC = () => {
                   {sound.name}
                 </span>
                 <span className="text-[9px] font-mono text-terminal-muted/60 shrink-0">
-                  ({(sound.size_bytes / 1024).toFixed(1)} KB)
+                  ({((sound.size_bytes ?? 0) / 1024).toFixed(1)} KB)
                 </span>
               </div>
               <button
