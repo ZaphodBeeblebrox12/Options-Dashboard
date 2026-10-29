@@ -240,6 +240,8 @@ class SpotPricePoller:
         self.futures_volume = None   # v3.15: from mode-3 futures ticks
         self.last_ws_update = 0
         self.last_futures_ws_update = 0
+        self.last_ws_update_monotonic = None
+        self.last_futures_ws_update_monotonic = None
         self.spot_lock = threading.Lock()
 
     def get_spot(self):
@@ -269,26 +271,28 @@ class SpotPricePoller:
             self.spot_price = ltp
             self.spot_source = "WS"
             self.last_ws_update = time.time()
+            self.last_ws_update_monotonic = time.monotonic()
 
     def spot_age_sec(self):
         """Seconds since the last underlying tick (None if never)."""
         with self.spot_lock:
-            if not self.last_ws_update:
+            if self.last_ws_update_monotonic is None:
                 return None
-            return round(max(0.0, time.time() - self.last_ws_update), 1)
+            return round(max(0.0, time.monotonic() - self.last_ws_update_monotonic), 1)
 
     def futures_age_sec(self):
         """Seconds since the last futures tick (None if never)."""
         with self.spot_lock:
-            if not self.last_futures_ws_update:
+            if self.last_futures_ws_update_monotonic is None:
                 return None
-            return round(max(0.0, time.time() - self.last_futures_ws_update), 1)
+            return round(max(0.0, time.monotonic() - self.last_futures_ws_update_monotonic), 1)
 
     def update_futures_from_ws(self, ltp, oi=None, volume=None):
         with self.spot_lock:
             self.futures_price = ltp
             self.futures_source = "WS"
             self.last_futures_ws_update = time.time()
+            self.last_futures_ws_update_monotonic = time.monotonic()
             if oi is not None:
                 self.futures_oi = oi
             if volume is not None:
