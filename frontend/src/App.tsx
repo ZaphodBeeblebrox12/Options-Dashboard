@@ -3,7 +3,6 @@ import { AnalyticsHeader } from './components/AnalyticsHeader';
 import { BuildupCard } from './components/BuildupCard';
 import { OptionChain } from './components/OptionChain';
 import { ReplayControls } from './components/ReplayControls';
-import { WallWatchControls } from './components/WallWatchControls';
 import { GexChart } from './components/GexChart';
 import { StrikeChart } from './components/StrikeChart';
 import { NetGexChart } from './components/NetGexChart';
@@ -507,14 +506,9 @@ function App() {
 
       <div className="p-2 sm:p-3 space-y-2 sm:space-y-3">
         <AnalyticsHeader indexName={selectedIndex} isFetching={snapshotLoading} spot={spot} futures={futures} futuresSpread={futuresSpread} spreadLabel={spreadLabel} netGex={netGex} maxGexStrike={maxGexStrike} maxPain={maxPain} gammaFlip={gammaFlip} timestamp={timestamp} isLive={isTrulyLive} isStale={isLiveDataStale} />
-        <div className="flex flex-col xl:flex-row xl:items-start gap-2 min-w-0">
-          <BuildupCard indexName={selectedIndex} date={selectedDate} live={liveMode} timestamp={currentTimestamp || undefined} />
-          <div className="flex-1 min-w-0">
-            <WallWatchControls symbol={selectedIndex} spot={spot} options={normalizedOptions} canArm={isTrulyLive} />
-          </div>
-        </div>
+        <BuildupCard indexName={selectedIndex} date={selectedDate} live={liveMode} timestamp={currentTimestamp || undefined} />
         <ReplayControls timestamps={timestamps} currentIndex={currentIndex} isFetching={snapshotLoading} isPlaying={isPlaying} onPlay={handlePlay} onPause={handlePause} onSeek={handleSeek} onRefresh={handleRefresh} selectedDate={selectedDate} onDateChange={handleDateChange} selectedIndex={selectedIndex} onIndexChange={handleIndexChange} availableDates={availableDates} sessionHours={sessionHours} />
-        <OptionChain options={normalizedOptions} spot={spot} futures={futures} maxPain={maxPain} gammaFlip={gammaFlip} fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike} indexName={selectedIndex} timestamp={timestamp} />
+        <OptionChain options={normalizedOptions} spot={spot} futures={futures} maxPain={maxPain} gammaFlip={gammaFlip} fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike} indexName={selectedIndex} timestamp={timestamp} canArm={isTrulyLive} />
         {instrumentTier === 1 && (
           <GexChart data={gexByStrike} atmStrike={atmStrike} maxPain={maxPain} gammaFlip={gammaFlip}
                     ceWall={ceWall} peWall={peWall} indexName={selectedIndex} timestamp={timestamp} />
