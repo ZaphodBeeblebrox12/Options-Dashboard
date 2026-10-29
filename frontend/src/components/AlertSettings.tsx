@@ -15,12 +15,14 @@ const RULE_NAMES: Record<string, string> = {
   'atm_negative_gex_oi_wall': 'ATM + Negative GEX + OI Wall',
   'atm_max_ce_pe_wall': 'ATM Maximum CE/PE Wall',
   'wall_reversal': 'Wall Reversal',
+  'wall_vacated': 'Armed Wall Departure',
 };
 
 const RULE_DESCRIPTIONS: Record<string, string> = {
   'atm_negative_gex_oi_wall': 'ATM is the max negative GEX wall AND ATM is either max CE or max PE OI wall',
   'atm_max_ce_pe_wall': 'ATM is either the maximum CE OI wall or maximum PE OI wall',
   'wall_reversal': 'Detects Evening Star-style CE Wall bearish reversals and Morning Star-style PE Wall bullish reversals on 15m, 30m and 1H.',
+  'wall_vacated': 'For a wall you manually arm, alert once when the watched Call Wall or Put Wall moves off its original strike, then automatically disarm that watch.',
 };
 
 const BUILT_IN_SOUNDS = [
