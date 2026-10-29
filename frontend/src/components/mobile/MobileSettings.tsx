@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import MobileDisplayTab from "./MobileDisplayTab";
 import MobileAnalyticsTab from "./MobileAnalyticsTab";
 import MobileAlertsSettingsTab from "./MobileAlertsSettingsTab";

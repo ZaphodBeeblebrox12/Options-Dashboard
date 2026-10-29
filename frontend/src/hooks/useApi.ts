@@ -81,7 +81,7 @@ export function useSnapshots(date: string, index: string, liveMode: boolean) {
 // ── useSnapshot ────────────────────────────────────────────────
 // CRITICAL FIX: keyed fallback so a failed seek to a new timestamp
 // does not show the previous timestamp's data.
-export function useSnapshot(timestamp: string | null, index: string, liveMode: boolean) {
+export function useSnapshot(timestamp: string | null, index: string, _liveMode: boolean) {
   const [snapshot, setSnapshot] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(false);
   const abortRef = useRef<AbortController | null>(null);

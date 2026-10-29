@@ -183,7 +183,7 @@ export function useAlertHistory(index?: string, date?: string, page: number = 1,
 }
 
 export function useSounds() {
-  const [sounds, setSounds] = useState<Array<{ id: string; name: string; type: string }>>([]);
+  const [sounds, setSounds] = useState<Array<{ id: string; name: string; type: string; size_bytes?: number }>>([]);
   const [loading, setLoading] = useState(false);
 
   const fetchSounds = useCallback(async () => {

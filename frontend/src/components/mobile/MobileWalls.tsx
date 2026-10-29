@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import { WallChart } from "../WallChart";
 import { fmtNum, fmtPx } from "./mobileFormat";
 
