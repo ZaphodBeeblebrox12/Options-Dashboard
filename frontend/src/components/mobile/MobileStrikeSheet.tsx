@@ -62,10 +62,37 @@ function Chart({ title, ce, pe, hover, setHover, fmtY, timeAt }: {
   );
 }
 
-export default function MobileStrikeSheet({ pick, label, expiry, lot, date, onClose }: {
+export default function MobileStrikeSheet({ pick, label, expiry, lot, date, onClose, wallSides, canArm }: {
   pick: { strike: number; ce?: any; pe?: any };
   label: string; expiry?: string; lot?: number; date?: string; onClose: () => void;
+  wallSides: { CE: number | null; PE: number | null }; canArm: boolean;
 }) {
+  const [watchState, setWatchState] = useState<Record<"CE" | "PE", { armed: boolean; watched_strike: number | null }>>({
+    CE: { armed: false, watched_strike: null }, PE: { armed: false, watched_strike: null },
+  });
+  const [watchBusy, setWatchBusy] = useState<"CE" | "PE" | null>(null);
+  const [watchError, setWatchError] = useState<string | null>(null);
+  const refreshWatches = async () => {
+    try {
+      const r = await fetch(`/api/wall-watches?index=${encodeURIComponent(label)}`);
+      if (!r.ok) return;
+      const d = await r.json();
+      setWatchState({ CE: d.watches?.CE ?? { armed: false, watched_strike: null }, PE: d.watches?.PE ?? { armed: false, watched_strike: null } });
+    } catch { /* Keep last known state during temporary network errors. */ }
+  };
+  useEffect(() => { void refreshWatches(); }, [label]);
+  const toggleWatch = async (side: "CE" | "PE") => {
+    const action = watchState[side].armed ? "disarm" : "arm";
+    setWatchBusy(side); setWatchError(null);
+    try {
+      const r = await fetch(`/api/wall-watches/${encodeURIComponent(label)}/${side}/${action}`, { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.detail || `Could not ${action} wall watch`);
+      await refreshWatches();
+    } catch (e) { setWatchError(e instanceof Error ? e.message : "Wall watch update failed"); }
+    finally { setWatchBusy(null); }
+  };
+  const wallActions = (["CE", "PE"] as const).filter(side => wallSides[side] === pick.strike);
   const [hist, setHist] = useState<{ ce: any[]; pe: any[]; shownDate: string } | null>(null);
   const [hstat, setHstat] = useState<"loading" | "ready" | "empty" | "error">("loading");
   const [fallback, setFallback] = useState(false);
@@ -141,6 +168,20 @@ export default function MobileStrikeSheet({ pick, label, expiry, lot, date, onCl
         <div><div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: .5, color: "var(--mce)", marginBottom: 7 }}>CALL</div>{core(pick.ce)}</div>
         <div><div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: .5, color: "var(--mpe)", marginBottom: 7 }}>PUT</div>{core(pick.pe)}</div>
       </div>
+      {wallActions.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
+          {wallActions.map(side => {
+            const armed = watchState[side].armed;
+            const labelText = side === "CE" ? "Call Wall" : "Put Wall";
+            return <button key={side} type="button" disabled={watchBusy === side || (!armed && !canArm)}
+              onClick={() => void toggleWatch(side)}
+              style={{ border: "1px solid " + (armed ? "var(--mup)" : "var(--mborder)"), borderRadius: 7, padding: "7px 10px", fontSize: 11, fontWeight: 700, color: armed ? "var(--mup)" : "var(--mtext)", background: armed ? "rgba(22,163,74,.10)" : "transparent", opacity: watchBusy === side || (!armed && !canArm) ? .45 : 1 }}>
+              {armed ? "🔔 " + labelText + " ARMED · tap to disarm" : "♧ Arm " + labelText + " alert"}
+            </button>;
+          })}
+        </div>
+      )}
+      {watchError && <div role="status" className="mc-note" style={{ color: "var(--mdn)", marginTop: 6 }}>{watchError}</div>}
       <div style={{ fontSize: 10, color: "var(--mfaint)", margin: "8px 0 10px", paddingTop: 8, borderTop: "1px solid var(--mborder)" }}>
         Session history · {hist?.shownDate ?? date ?? "today"}{fallback ? " (latest available — nothing recorded for the requested date)" : ""}
       </div>
