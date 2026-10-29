@@ -79,6 +79,8 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showAlertHistory, setShowAlertHistory] = useState(false);
   const [unseenAlertCount, setUnseenAlertCount] = useState(0);
+  // Re-evaluate feed health even if the WebSocket stops delivering messages.
+  const [now, setNow] = useState(() => Date.now());
   const playTimerRef = useRef<ReturnType<typeof setInterval>>();
   const hasRestoredRef = useRef(false);
   const enteringLiveRef = useRef(false);
@@ -104,6 +106,11 @@ function App() {
 
   const sessionHours: SessionHours = hoursForType(indexKinds[selectedIndex]);
   const marketOpen = marketOpenMap[selectedIndex] ?? isSessionOpen(sessionHours);
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 10_000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     const load = () =>
@@ -213,7 +220,10 @@ function App() {
 
     if (lastMessage.type === 'tick') {
       const idx = lastMessage.data?.index_name || 'NIFTY';
-      setLiveDataMap((prev) => ({ ...prev, [idx]: lastMessage.data }));
+      setLiveDataMap((prev) => ({
+        ...prev,
+        [idx]: { ...lastMessage.data, __receivedAtMs: Date.now() },
+      }));
       if (lastMessage.data.market_open !== undefined) {
         setMarketOpenMap((prev) => ({ ...prev, [idx]: lastMessage.data.market_open }));
       }
@@ -278,9 +288,16 @@ function App() {
 
   // Freshness is based on source-tick ages from the backend, not the timestamp
   // attached when a cached/rebroadcast payload was assembled.
+  const liveMessageAgeMs = typeof liveData?.__receivedAtMs === 'number'
+    ? Math.max(0, now - liveData.__receivedAtMs)
+    : Number.POSITIVE_INFINITY;
   const isFreshSourceAge = (age: unknown) =>
-    typeof age === 'number' && Number.isFinite(age) && age >= 0 && age * 1000 <= STALE_AFTER_MS;
+    typeof age === 'number' && Number.isFinite(age) && age >= 0 &&
+    (age * 1000 + liveMessageAgeMs) <= STALE_AFTER_MS;
+  // The receive-age term also catches a frozen WebSocket/broadcast path where
+  // no new payload arrives to advance the backend's source-age measurements.
   const hasFreshMarketSources = !!liveData &&
+    liveMessageAgeMs <= STALE_AFTER_MS &&
     isFreshSourceAge(liveData.spot_age_sec) &&
     isFreshSourceAge(liveData.futures_age_sec) &&
     isFreshSourceAge(liveData.option_age_sec);
