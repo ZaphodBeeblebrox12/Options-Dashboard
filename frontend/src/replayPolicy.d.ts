@@ -1,4 +1,4 @@
-export type LiveStatus = 'REPLAY' | 'CLOSED' | 'NO FEED' | 'STALE' | 'LIVE';
+export type LiveStatus = 'REPLAY' | 'CLOSED' | 'NO FEED' | 'STALE' | 'UNVERIFIED' | 'LIVE';
 
 export function canReturnToLive(
   isAtEnd: boolean,
@@ -19,5 +19,7 @@ export function resolveLiveStatus(input: {
   connected: boolean;
   hasLiveData: boolean;
   hasFreshMarketSources: boolean;
+  hasStaleMarketSources?: boolean;
+  hasUnknownMarketSources?: boolean;
   hasError: boolean;
 }): LiveStatus;
