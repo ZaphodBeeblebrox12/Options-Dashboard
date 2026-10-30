@@ -39,13 +39,15 @@ test('replay status takes precedence over live connection state', () => {
   }), 'REPLAY');
 });
 
-test('a connected WebSocket with stale source data is never labelled live', () => {
+test('a connected WebSocket with a measured stale source is never labelled live', () => {
   assert.equal(resolveLiveStatus({
     liveMode: true,
     marketOpen: true,
     connected: true,
     hasLiveData: true,
     hasFreshMarketSources: false,
+    hasStaleMarketSources: true,
+    hasUnknownMarketSources: false,
     hasError: false,
   }), 'STALE');
 });
