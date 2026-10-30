@@ -172,15 +172,21 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     return ranks;
   }, [rankableRows]);
 
-  // Current side-specific walls: calls at/above spot, puts at/below spot.
+  // Walls are OI concentrations, not "currently OTM" strikes. Use the
+  // same symmetric near-spot universe as the OI rank badges so a spot-price
+  // cross above/below a wall does not itself make that wall disappear.
   const currentWalls = useMemo(() => {
     const find = (side: 'CE' | 'PE') => {
-      const rows = chainData.filter(row => (side === 'CE' ? !!row.CE : !!row.PE) && (side === 'CE' ? row.strike >= (spot ?? -Infinity) : row.strike <= (spot ?? Infinity)));
-      rows.sort((a, b) => ((side === 'CE' ? b.CE?.oi ?? 0 : b.PE?.oi ?? 0) - (side === 'CE' ? a.CE?.oi ?? 0 : a.PE?.oi ?? 0)) || a.strike - b.strike);
-      return rows[0]?.strike ?? null;
+      const sideRows = rankableRows.filter(row => side === 'CE' ? !!row.CE : !!row.PE);
+      sideRows.sort((a, b) =>
+        ((side === 'CE' ? b.CE?.oi ?? 0 : b.PE?.oi ?? 0) -
+          (side === 'CE' ? a.CE?.oi ?? 0 : a.PE?.oi ?? 0)) ||
+        a.strike - b.strike
+      );
+      return sideRows[0]?.strike ?? null;
     };
     return { CE: find('CE'), PE: find('PE') };
-  }, [chainData, spot]);
+  }, [rankableRows]);
 
   // ── Center view around ATM ──
   const displayRows = useMemo(() => {
