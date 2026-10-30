@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import './premium.css';
 import { AnalyticsHeader } from './components/AnalyticsHeader';
 import { BuildupCard } from './components/BuildupCard';
 import { OptionChain } from './components/OptionChain';
@@ -12,7 +13,7 @@ import { AlertToastContainer } from './components/AlertToast';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useSnapshots, useSnapshot, useGexHistory, useStrikeHistory, useGexByStrike, useAvailableDates } from './hooks/useApi';
 import { useAlertSettings, useAlertNotifications, AlertFiring } from './hooks/useAlerts';
-import { Monitor, AlertTriangle, Info, WifiOff, Bell, Settings, X, ChevronDown } from 'lucide-react';
+import { AlertTriangle, Info, WifiOff, Bell, Settings, X, ChevronDown } from 'lucide-react';
 import { hoursForType, isSessionOpen, fmtSessionRange, getMarketDateIST, InstrumentKind, SessionHours } from './session';
 import { canReturnToLive, resolveLiveStatus } from './replayPolicy.js';
 import { computeOiWalls } from './oiWalls.js';
@@ -531,11 +532,11 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-terminal-bg">
+    <div className="premium-shell min-h-screen">
       <AlertToastContainer alerts={toasts} onDismiss={removeToast} duration={toastDuration} />
 
       {showReconnectBanner && (
-        <div className="bg-amber-900/40 border-b border-amber-700/50 px-4 py-1.5 flex items-center justify-center gap-2">
+        <div className="premium-state-banner premium-state-banner-warning">
           <WifiOff className="w-3.5 h-3.5 text-amber-400" />
           <span className="text-xs font-mono text-amber-300">
             {connected ? 'Reconnected — resuming live data...' : 'Connection lost — replay data is cached. Reconnecting...'}
@@ -544,32 +545,32 @@ function App() {
       )}
 
       {!marketOpen && (
-        <div className="bg-slate-800/50 border-b border-slate-700/50 px-4 py-1.5 flex items-center justify-center gap-2">
+        <div className="premium-state-banner premium-state-banner-neutral">
           <Info className="w-3.5 h-3.5 text-slate-400" />
           <span className="text-xs font-mono text-slate-400">Market Closed ({fmtSessionRange(sessionHours)}, Mon–Fri) — Showing last known data.</span>
         </div>
       )}
       {wsError && liveMode && marketOpen && (
-        <div className="bg-red-900/30 border-b border-red-700/50 px-4 py-1.5 flex items-center justify-center gap-2">
+        <div className="premium-state-banner premium-state-banner-danger">
           <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
           <span className="text-xs font-mono text-red-300">{wsError}</span>
         </div>
       )}
 
-      <div className="border-b border-terminal-border bg-terminal-panel px-3 sm:px-4 py-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <Monitor className="w-5 h-5 text-terminal-atm shrink-0" />
-          <h1 className="text-sm font-bold tracking-wide">
-            <span className="sm:hidden">{selectedIndex} Dashboard</span>
-            <span className="hidden sm:inline">{selectedIndex} Option Chain Replay Dashboard</span>
-          </h1>
-          <span className={`text-[10px] font-mono px-2 py-0.5 rounded shrink-0 ${connected ? 'bg-terminal-pe/20 text-terminal-pe' : 'bg-terminal-ce/20 text-terminal-ce'}`}>
-            <span className="sm:hidden">{connected ? 'WS' : '—'}</span>
-            <span className="hidden sm:inline">{connected ? 'WS Connected' : 'WS Disconnected'}</span>
+      <div className="premium-topbar">
+        <div className="premium-brand">
+          <div className="premium-monogram">O<span>D</span></div>
+          <div className="premium-brand-copy">
+            <span className="premium-brand-overline">OPTIONS · MARKET DESK</span>
+            <strong>{selectedIndex}<span> / CHAIN WORKSPACE</span></strong>
+          </div>
+          <span className={`premium-connection-pill ${connected ? 'connected' : 'disconnected'}`}>
+            <i />
+            {connected ? 'CONNECTED' : 'OFFLINE'}
           </span>
         </div>
-        <div className="flex items-center gap-2">
-          <button onClick={() => { setShowAlertHistory(true); setUnseenAlertCount(0); saveLastOpenedHistory(new Date().toISOString()); }} className="relative flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono bg-terminal-bg text-terminal-muted hover:text-terminal-text transition-colors">
+        <div className="premium-topbar-actions">
+          <button onClick={() => { setShowAlertHistory(true); setUnseenAlertCount(0); saveLastOpenedHistory(new Date().toISOString()); }} className="premium-action-button relative">
             <Bell className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">History</span>
             {unseenAlertCount > 0 && (
@@ -578,7 +579,7 @@ function App() {
               </span>
             )}
           </button>
-          <button onClick={() => setShowSettings(true)} className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono bg-terminal-bg text-terminal-muted hover:text-terminal-text transition-colors">
+          <button onClick={() => setShowSettings(true)} className="premium-action-button">
             <Settings className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Settings</span>
           </button>
@@ -590,11 +591,7 @@ function App() {
             aria-pressed={liveMode}
             aria-label={liveMode ? 'Switch to replay mode' : 'Switch to live mode'}
             title={liveMode ? 'Live mode selected — click to switch to replay' : 'Replay mode selected — click to return to live'}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terminal-atm ${
-              liveMode
-                ? 'bg-terminal-pe/20 text-terminal-pe hover:bg-terminal-pe/30'
-                : 'bg-terminal-atm/15 text-terminal-atm hover:bg-terminal-atm/25'
-            }`}
+            className={`premium-mode-button ${liveMode ? 'is-live' : 'is-replay'}`}
           >
             <span className={`w-1.5 h-1.5 rounded-full ${liveMode ? 'bg-terminal-pe animate-pulse' : 'bg-terminal-atm'}`} />
             {liveMode ? 'LIVE' : 'REPLAY'}
@@ -610,7 +607,7 @@ function App() {
                 title={liveStatusLabel === 'UNVERIFIED'
                   ? 'Source age telemetry is unavailable; values may still be updating'
                   : 'Show market feed freshness details'}
-                className={`flex items-center gap-1.5 px-2 py-1.5 rounded text-[10px] font-mono font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terminal-atm ${
+                className={`premium-feed-status ${
                   liveStatusLabel === 'LIVE'
                     ? 'bg-terminal-pe/10 text-terminal-pe hover:bg-terminal-pe/20'
                     : liveStatusLabel === 'STALE'
@@ -691,22 +688,70 @@ function App() {
         </div>
       </div>
 
-      <div className="p-2 sm:p-3 space-y-2 sm:space-y-3">
-        <AnalyticsHeader indexName={selectedIndex} isFetching={snapshotLoading} spot={spot} futures={futures} futuresSpread={futuresSpread} spreadLabel={spreadLabel} netGex={netGex} maxGexStrike={maxGexStrike} maxPain={maxPain} gammaFlip={gammaFlip} timestamp={timestamp} isLive={isTrulyLive} isStale={isLiveDataStale} />
+      <main className="premium-main">
+        <section className="premium-control-section">
+          <div className="premium-section-caption">
+            <span>WORKSPACE CONTROLS</span>
+            <small>INSTRUMENT · SESSION · REPLAY</small>
+          </div>
+          <ReplayControls timestamps={timestamps} currentIndex={currentIndex} isFetching={snapshotLoading} isPlaying={isPlaying} onPlay={handlePlay} onPause={handlePause} onSeek={handleSeek} onRefresh={handleRefresh} selectedDate={selectedDate} onDateChange={handleDateChange} selectedIndex={selectedIndex} onIndexChange={handleIndexChange} availableDates={availableDates} sessionHours={sessionHours} />
+        </section>
+
+        <AnalyticsHeader
+          indexName={selectedIndex}
+          isFetching={snapshotLoading}
+          spot={spot}
+          futures={futures}
+          futuresSpread={futuresSpread}
+          spreadLabel={spreadLabel}
+          netGex={netGex}
+          maxGexStrike={maxGexStrike}
+          maxPain={maxPain}
+          gammaFlip={gammaFlip}
+          ceWall={ceWall}
+          peWall={peWall}
+          atmStrike={atmStrike}
+          timestamp={timestamp}
+          isLive={isTrulyLive}
+          isStale={isLiveDataStale}
+        />
+
         {(!liveMode || isTrulyLive) && (
-          <BuildupCard indexName={selectedIndex} date={selectedDate} live={liveMode} timestamp={currentTimestamp || undefined} />
+          <div className="premium-buildup-row">
+            <BuildupCard indexName={selectedIndex} date={selectedDate} live={liveMode} timestamp={currentTimestamp || undefined} />
+          </div>
         )}
-        <ReplayControls timestamps={timestamps} currentIndex={currentIndex} isFetching={snapshotLoading} isPlaying={isPlaying} onPlay={handlePlay} onPause={handlePause} onSeek={handleSeek} onRefresh={handleRefresh} selectedDate={selectedDate} onDateChange={handleDateChange} selectedIndex={selectedIndex} onIndexChange={handleIndexChange} availableDates={availableDates} sessionHours={sessionHours} />
-        <OptionChain options={normalizedOptions} spot={spot} futures={futures} maxPain={maxPain} gammaFlip={gammaFlip} fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike} indexName={selectedIndex} timestamp={timestamp} canArm={canArmWallWatch} />
-        {instrumentTier === 1 && (
-          <GexChart data={displayedGexByStrike} atmStrike={atmStrike} maxPain={maxPain} gammaFlip={gammaFlip}
-                    ceWall={ceWall} peWall={peWall} indexName={selectedIndex} timestamp={timestamp} />
-        )}
-        <StrikeChart data={strikeHistory} strike={selectedStrike ?? 0} indexName={selectedIndex} timestamp={timestamp} />
-        {instrumentTier === 1 && (
-          <NetGexChart data={gexHistory} indexName={selectedIndex} timestamp={timestamp} />
-        )}
-      </div>
+
+        <section className="premium-chain-section">
+          <OptionChain options={normalizedOptions} spot={spot} futures={futures} maxPain={maxPain} gammaFlip={gammaFlip} fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike} indexName={selectedIndex} timestamp={timestamp} canArm={canArmWallWatch} />
+        </section>
+
+        <section className="premium-analysis-section">
+          <div className="premium-section-title">
+            <div>
+              <span>POSITIONING & EXPOSURE</span>
+              <h2>Market structure</h2>
+            </div>
+            <p>Explore dealer gamma, selected-strike behaviour and intraday exposure from the same market feed.</p>
+          </div>
+          <div className="premium-analytics-grid">
+            {instrumentTier === 1 && (
+              <div className="premium-chart-gex">
+                <GexChart data={displayedGexByStrike} atmStrike={atmStrike} maxPain={maxPain} gammaFlip={gammaFlip}
+                          ceWall={ceWall} peWall={peWall} indexName={selectedIndex} timestamp={timestamp} />
+              </div>
+            )}
+            {instrumentTier === 1 && (
+              <div className="premium-chart-netgex">
+                <NetGexChart data={gexHistory} indexName={selectedIndex} timestamp={timestamp} />
+              </div>
+            )}
+            <div className="premium-chart-history">
+              <StrikeChart data={strikeHistory} strike={selectedStrike ?? 0} indexName={selectedIndex} timestamp={timestamp} />
+            </div>
+          </div>
+        </section>
+      </main>
 
       {showSettings && (
         <SettingsModal
