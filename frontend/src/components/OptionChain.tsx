@@ -63,7 +63,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     CE: { armed: false, watched_strike: null }, PE: { armed: false, watched_strike: null },
   });
   const [watchBusy, setWatchBusy] = useState<'CE' | 'PE' | null>(null);
-  const [strikeOrder, setStrikeOrder] = useState<'asc' | 'desc'>('asc');
+  const [strikeOrder, setStrikeOrder] = useState<'asc' | 'desc'>('desc');
   const [watchError, setWatchError] = useState<string | null>(null);
 
   const refreshWallWatches = useCallback(async () => {
@@ -221,12 +221,10 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   const getStrikeClass = (strike: number) => {
     const isAtmSpot = strike === atmSpot;
     const isAtmFut = strike === atmFutures;
-    const isMaxPain = strike === maxPain;
 
     if (isAtmSpot && isAtmFut) return 'bg-fuchsia-900/40 text-fuchsia-300 border border-fuchsia-500/50';
     if (isAtmSpot) return 'bg-yellow-900/30 text-yellow-300 border border-yellow-500/40';
     if (isAtmFut) return 'bg-cyan-900/30 text-cyan-300 border border-cyan-500/40';
-    if (isMaxPain) return 'border border-fuchsia-500/50';
     return 'text-terminal-text border border-terminal-border/30';
   };
 
@@ -357,10 +355,6 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
               <span className="w-3 h-3 rounded bg-cyan-500/40" />
               <span className="text-terminal-muted">ATM Fut</span>
             </div>
-            <div className="flex items-center gap-1.5">
-              <span className="w-3 h-3 rounded bg-fuchsia-500/40" />
-              <span className="text-terminal-muted">Max Pain</span>
-            </div>
             <button
               type="button"
               onClick={() => setStrikeOrder(order => order === 'asc' ? 'desc' : 'asc')}
@@ -400,10 +394,6 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
         <div className="flex items-center gap-1">
           <span className="w-2.5 h-2.5 rounded bg-cyan-500/40" />
           <span>Fut</span>
-        </div>
-        <div className="flex items-center gap-1">
-          <span className="w-2.5 h-2.5 rounded bg-fuchsia-500/40" />
-          <span>Pain</span>
         </div>
         <div className="flex items-center gap-1">
           <span className="w-2.5 h-2.5 rounded bg-red-600" />
