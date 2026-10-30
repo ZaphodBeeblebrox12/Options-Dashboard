@@ -19,6 +19,7 @@ from telegram_notifier import resolve_telegram_destination
 
 logger = logging.getLogger(__name__)
 SIDES = ("CE", "PE")
+WALL_WATCH_MAX_OPTION_AGE_SEC = 90
 
 
 def _number(value, fallback=None):
@@ -96,6 +97,109 @@ def calculate_wall_strikes(options: Any, spot: Optional[float] = None) -> Dict[s
         strike = winner["strike"]
         results[side] = (int(strike) if strike.is_integer() else strike, True)
     return results
+
+
+def _latest_side_tick_age(options: Any, side: str, now: Optional[datetime] = None) -> Optional[float]:
+    """Age of the freshest contract tick for one option side in a raw live store."""
+    now = now or datetime.now()
+    freshest = None
+    if not isinstance(options, dict):
+        return None
+    for contracts in options.values():
+        if not isinstance(contracts, dict):
+            continue
+        contract = contracts.get(side)
+        if not isinstance(contract, dict):
+            continue
+        raw_timestamp = contract.get("last_update")
+        if not raw_timestamp:
+            continue
+        try:
+            stamp = datetime.fromisoformat(str(raw_timestamp))
+            current = datetime.now(stamp.tzinfo) if stamp.tzinfo else now
+            age = (current - stamp).total_seconds()
+        except (TypeError, ValueError):
+            continue
+        # Ignore timestamps materially in the future; tolerate a few seconds
+        # of clock skew between the provider callback and this reader.
+        if age < -5:
+            continue
+        age = max(0.0, age)
+        if freshest is None or age < freshest:
+            freshest = age
+    return freshest
+
+
+def build_live_wall_watch_snapshot(
+    streamer: Any,
+    symbol: str,
+    fallback_market_open,
+    now: Optional[datetime] = None,
+) -> Optional[dict]:
+    """Read only raw OI state for a live manual wall watch.
+
+    Do not call get_current_state(): that performs full Greeks/GEX analytics
+    and can be expensive for Tier 2/4. The wall watch only needs current OI,
+    source freshness, market-session state and the symbol's spot for context.
+    """
+    if streamer is None or bool(getattr(streamer, "paused", False)):
+        return None
+
+    # InstrumentStreamer instances expose their instrument-specific market
+    # session and a window lifecycle state. Tier-1 index streamers use the
+    # shared equity-session callback and have no .state/.paused attributes.
+    state = getattr(streamer, "state", None)
+    if state is not None and state != "WINDOW_ACTIVE":
+        return None
+    market_open_fn = getattr(streamer, "_market_open", None)
+    try:
+        market_open = market_open_fn() if callable(market_open_fn) else fallback_market_open()
+    except Exception:
+        return None
+    if not market_open:
+        return None
+
+    data_store = getattr(streamer, "data_store", None)
+    if data_store is None or not callable(getattr(data_store, "get_data", None)):
+        return None
+    if not callable(getattr(data_store, "age_sec", None)):
+        return None
+    try:
+        option_age = _number(data_store.age_sec())
+        if option_age is None or option_age > WALL_WATCH_MAX_OPTION_AGE_SEC:
+            return None
+        options = data_store.get_data()
+    except Exception:
+        return None
+    if not isinstance(options, dict) or not options:
+        return None
+
+    now = now or datetime.now()
+    side_ages = {
+        side: _latest_side_tick_age(options, side, now)
+        for side in SIDES
+    }
+    side_freshness = {
+        side: age is not None and age <= WALL_WATCH_MAX_OPTION_AGE_SEC
+        for side, age in side_ages.items()
+    }
+
+    spot_poller = getattr(streamer, "spot_poller", None)
+    try:
+        spot = spot_poller.get_spot() if spot_poller is not None else None
+    except Exception:
+        spot = None
+
+    return {
+        "index_name": str(symbol).strip().upper(),
+        "timestamp": now.isoformat(),
+        "spot": spot,
+        "options": options,
+        "market_open": True,
+        "option_age_sec": option_age,
+        "tier": getattr(streamer, "tier", 1),
+        "_side_freshness": side_freshness,
+    }
 
 
 def _fmt_strike(value: Optional[float]) -> str:
@@ -182,6 +286,9 @@ class WallWatchManager:
     def evaluate_snapshot(self, snapshot: dict, index_name: str) -> List[AlertTriggerPayload]:
         if not isinstance(snapshot, dict) or not snapshot.get("options"):
             return []
+        option_age = _number(snapshot.get("option_age_sec"))
+        if option_age is not None and option_age > WALL_WATCH_MAX_OPTION_AGE_SEC:
+            return []
         # A click on the row's bell is an explicit, symbol/side-specific
         # opt-in. It must not be silently disabled by the unrelated global
         # automatic-alert switch or by the automatic WALL_VACATED rule toggle.
@@ -211,6 +318,9 @@ class WallWatchManager:
                 side = watch["side"]
                 watched_strike = _number(watch["watched_strike"])
                 current_wall, side_present = walls.get(side, (None, False))
+                side_freshness = snapshot.get("_side_freshness")
+                if isinstance(side_freshness, dict) and not side_freshness.get(side, False):
+                    continue
                 if not side_present or watched_strike is None:
                     continue
                 if current_wall is not None and abs(float(current_wall) - watched_strike) < 1e-6:
@@ -266,7 +376,10 @@ class WallWatchManager:
                 strikes = sorted({row["strike"] for row in rows})
                 atm = min(strikes, key=lambda strike: abs(strike - spot)) if spot is not None and strikes else None
                 all_walls = {s: w for s, (w, present) in walls.items() if present}
-                market_state = dict(snapshot)
+                market_state = {
+                    key: value for key, value in snapshot.items()
+                    if key != "_side_freshness"
+                }
                 market_state["wall_watch"] = {
                     "symbol": symbol,
                     "side": side,
