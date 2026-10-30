@@ -5,6 +5,7 @@ import { InstrumentsTab } from './InstrumentsTab';
 import { ConnectionsTab } from './ConnectionsTab';
 import { AnalyticsTab } from './AnalyticsTab';
 import { DisplayTab } from './DisplayTab';
+import { SettingsSwitch } from './SettingsSwitch';
 import './settings-typography.css';
 
 type Tab = 'stocks' | 'alerts' | 'analytics' | 'display' | 'connections';
@@ -58,8 +59,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, fullMode,
     setTimeout(() => setFlash(''), 1500);
   }, []);
 
-  const toggleArmed = async () => {
-    const next = !armed;
+  const toggleArmedTo = async (next: boolean) => {
     setArmed(next);
     try {
       await fetch('/api/settings', {
@@ -105,17 +105,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, fullMode,
       case 'alerts':
         return (
           <div className="space-y-3">
-            <div className="border border-terminal-border rounded-lg px-4 py-3 flex items-center justify-between bg-terminal-bg">
-              <div>
+            <div className="grid grid-cols-[minmax(0,1fr)_36px] items-center gap-4 border border-terminal-border rounded-lg px-4 py-3 bg-terminal-bg">
+              <div className="min-w-0">
                 <div className="st-card-title">Alerts master switch</div>
                 <div className="st-helper mt-0.5">Disarms all rules without losing their configuration</div>
               </div>
-              <button
-                onClick={toggleArmed}
-                className={`relative w-9 h-5 rounded-full transition-colors shrink-0 ${armed ? 'bg-terminal-pe' : 'bg-terminal-border'}`}
-              >
-                <span className={`absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${armed ? 'translate-x-4' : 'translate-x-0'}`} />
-              </button>
+              <SettingsSwitch
+                checked={armed}
+                onChange={(checked) => { void toggleArmedTo(checked); }}
+                label="Arm all alerts"
+              />
             </div>
             <div className="border border-terminal-border rounded-lg px-4 py-3 flex flex-wrap items-center justify-between gap-3 bg-terminal-bg">
               <div className="min-w-[220px]">
@@ -195,16 +194,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, fullMode,
           <div className="st-nav-group px-3 pt-3 pb-1.5">Monitor</div>
           {MONITOR_TABS.map((t) => tabBtn(t, true))}
         </nav>
-        <div className="flex-1 flex flex-col min-w-0">
-          <div className="flex-1 overflow-y-auto p-4 pr-12">{renderTab()}</div>
-          <footer className="st-foot flex items-center gap-2 px-4 py-2.5 border-t border-terminal-border">
+        <div className="flex min-h-0 flex-1 flex-col min-w-0">
+          <div className="flex shrink-0 items-center justify-end px-4 pt-3">
+            <button
+              onClick={onClose}
+              aria-label="Close settings"
+              className="p-1 rounded hover:bg-white/10 text-terminal-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terminal-atm"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-4 pt-2">{renderTab()}</div>
+          <footer className="st-foot flex shrink-0 items-center gap-2 px-4 py-2.5 border-t border-terminal-border">
             <span className={flash ? 'text-terminal-pe' : ''}>{flash || 'Autosaves on change'}</span>
             <span className="ml-auto">Esc to close · Ctrl+, reopens</span>
           </footer>
         </div>
-        <button onClick={onClose} className="absolute top-3 right-3 p-1 rounded hover:bg-white/10 text-terminal-muted z-10">
-          <X className="w-4 h-4" />
-        </button>
       </div>
     </div>
   );

@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { useAlertSettings, useSounds, AlertRuleConfig, AlertSettings as AlertSettingsType } from '../hooks/useAlerts';
 import { SoundUploader } from './SoundUploader';
+import { SettingsSwitch } from './SettingsSwitch';
 
 interface AlertSettingsPanelProps {
   onTestToast?: () => void;
@@ -222,22 +223,15 @@ export const AlertSettingsPanel: React.FC<AlertSettingsPanelProps> = ({ onTestTo
             <VolumeX className="w-4 h-4 text-terminal-muted" />
           )}
           <span className="text-xs font-semibold">Global Sound</span>
-          <button
-            onClick={() =>
+          <SettingsSwitch
+            checked={localSettings.sound.master_enabled}
+            onChange={(checked) =>
               setLocalSettings((prev) =>
-                prev ? { ...prev, sound: { ...prev.sound, master_enabled: !prev.sound.master_enabled } } : prev
+                prev ? { ...prev, sound: { ...prev.sound, master_enabled: checked } } : prev
               )
             }
-            className={`relative w-9 h-5 rounded-full transition-colors ${
-              localSettings.sound.master_enabled ? 'bg-terminal-pe' : 'bg-terminal-border'
-            }`}
-          >
-            <span
-              className={`absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
-                localSettings.sound.master_enabled ? 'translate-x-4' : 'translate-x-0'
-              }`}
-            />
-          </button>
+            label="Enable global alert sound"
+          />
           <span className="text-[10px] font-mono text-terminal-muted ml-2">
             {localSettings.sound.master_enabled ? 'ON' : 'OFF'}
           </span>
@@ -294,31 +288,20 @@ export const AlertSettingsPanel: React.FC<AlertSettingsPanelProps> = ({ onTestTo
             >
               {/* Rule Header */}
               <div
-                className="flex items-center justify-between px-3 py-2.5 cursor-pointer hover:bg-white/5"
+                className="grid grid-cols-[36px_minmax(0,1fr)_auto] items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-white/5"
                 onClick={() => setExpandedRule(isExpanded ? null : rule.rule_type)}
               >
-                <div className="flex items-center gap-2.5">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      updateRule(rule.rule_type, { enabled: !rule.enabled });
-                    }}
-                    className={`relative w-9 h-5 rounded-full transition-colors ${
-                      rule.enabled ? 'bg-terminal-pe' : 'bg-terminal-border'
-                    }`}
-                  >
-                    <span
-                      className={`absolute left-0.5 top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${
-                        rule.enabled ? 'translate-x-3.5' : 'translate-x-0'
-                      }`}
-                    />
-                  </button>
-                  <div>
-                    <div className="text-xs font-semibold">{ruleName}</div>
-                    <div className="text-[10px] font-mono text-terminal-muted">{ruleDesc}</div>
-                  </div>
+                <SettingsSwitch
+                  checked={rule.enabled}
+                  onChange={(checked) => updateRule(rule.rule_type, { enabled: checked })}
+                  label={`Enable ${ruleName}`}
+                  stopPropagation
+                />
+                <div className="min-w-0">
+                  <div className="text-xs font-semibold leading-snug">{ruleName}</div>
+                  <div className="break-words text-[10px] font-mono leading-relaxed text-terminal-muted">{ruleDesc}</div>
                 </div>
-                <div className="flex items-center gap-1.5">
+                <div className="flex shrink-0 items-center gap-1.5">
                   {rule.enabled && rule.channels.includes('toast') && (
                     <MessageSquare className="w-3.5 h-3.5 text-terminal-atm" aria-label="Toast" />
                   )}
@@ -473,24 +456,18 @@ export const AlertSettingsPanel: React.FC<AlertSettingsPanelProps> = ({ onTestTo
 
         {/* master enable/disable */}
         <div className="flex items-center gap-3">
-          <button
-            onClick={() =>
+          <SettingsSwitch
+            checked={!!localSettings.tier4?.enabled}
+            tone="violet"
+            onChange={(checked) =>
               setLocalSettings((prev) =>
                 prev?.tier4
-                  ? { ...prev, tier4: { ...prev.tier4, enabled: !prev.tier4.enabled } }
+                  ? { ...prev, tier4: { ...prev.tier4, enabled: checked } }
                   : prev
               )
             }
-            className={`relative w-9 h-5 rounded-full transition-colors ${
-              localSettings.tier4?.enabled ? 'bg-violet-500' : 'bg-terminal-border'
-            }`}
-          >
-            <span
-              className={`absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
-                localSettings.tier4?.enabled ? 'translate-x-4' : 'translate-x-0'
-              }`}
-            />
-          </button>
+            label="Enable Tier 4 alerts"
+          />
           <span className="text-[10px] font-mono text-terminal-muted">
             {localSettings.tier4?.enabled ? 'Tier 4 alerts enabled' : 'Tier 4 alerts disabled'}
           </span>
@@ -552,30 +529,24 @@ export const AlertSettingsPanel: React.FC<AlertSettingsPanelProps> = ({ onTestTo
             {/* dedicated Telegram destination (falls back to shared) */}
             <div className="space-y-2 border border-violet-500/20 rounded-lg px-3 py-2.5">
               <div className="flex items-center gap-3">
-                <button
-                  onClick={() =>
+                <SettingsSwitch
+                  checked={!!localSettings.tier4?.telegram.enabled}
+                  tone="violet"
+                  onChange={(checked) =>
                     setLocalSettings((prev) =>
                       prev?.tier4
                         ? {
                             ...prev,
                             tier4: {
                               ...prev.tier4,
-                              telegram: { ...prev.tier4.telegram, enabled: !prev.tier4.telegram.enabled },
+                              telegram: { ...prev.tier4.telegram, enabled: checked },
                             },
                           }
                         : prev
                     )
                   }
-                  className={`relative w-8 h-5 rounded-full transition-colors ${
-                    localSettings.tier4?.telegram.enabled ? 'bg-violet-500' : 'bg-terminal-border'
-                  }`}
-                >
-                  <span
-                    className={`absolute left-0.5 top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${
-                      localSettings.tier4?.telegram.enabled ? 'translate-x-3.5' : 'translate-x-0'
-                    }`}
-                  />
-                </button>
+                  label="Enable dedicated Tier 4 Telegram destination"
+                />
                 <span className="text-[10px] font-mono text-terminal-muted">
                   Dedicated Tier 4 Telegram destination
                 </span>
@@ -649,24 +620,16 @@ export const AlertSettingsPanel: React.FC<AlertSettingsPanelProps> = ({ onTestTo
       <div className="px-4 space-y-3">
         <div className="text-xs font-semibold text-terminal-muted uppercase tracking-wider">Telegram</div>
         <div className="flex items-center gap-3">
-          <button
-            onClick={() =>
+          <SettingsSwitch
+            checked={localSettings.telegram.enabled}
+            tone="cyan"
+            onChange={(checked) =>
               setLocalSettings((prev) =>
-                prev
-                  ? { ...prev, telegram: { ...prev.telegram, enabled: !prev.telegram.enabled } }
-                  : prev
+                prev ? { ...prev, telegram: { ...prev.telegram, enabled: checked } } : prev
               )
             }
-            className={`relative w-9 h-5 rounded-full transition-colors ${
-              localSettings.telegram.enabled ? 'bg-cyan-500' : 'bg-terminal-border'
-            }`}
-          >
-            <span
-              className={`absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
-                localSettings.telegram.enabled ? 'translate-x-4' : 'translate-x-0'
-              }`}
-            />
-          </button>
+            label="Enable Telegram alerts"
+          />
           <span className="text-[10px] font-mono text-terminal-muted">
             {localSettings.telegram.enabled ? 'Enabled' : 'Disabled'}
           </span>
