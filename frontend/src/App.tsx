@@ -348,6 +348,13 @@ function App() {
   });
   const isLiveDataStale = liveMode && marketOpen && liveStatusLabel === 'STALE';
   const isTrulyLive = liveStatusLabel === 'LIVE';
+  // Wall watches are anchored against a fresh backend snapshot. Do not make
+  // missing age telemetry alone disable the control: UNVERIFIED means the
+  // freshness proof is incomplete, not that the live option chain is unusable.
+  // Explicitly stale, disconnected, closed-session, or errored feeds remain
+  // ineligible; the arm endpoint performs the final server-side validation.
+  const canArmWallWatch = liveMode && marketOpen && connected &&
+    !!hasLiveData && !hasStaleMarketSources && !wsError;
 
   const spot = displayData?.spot ?? null;
   const futures = displayData?.futures ?? null;
@@ -695,7 +702,7 @@ function App() {
           <BuildupCard indexName={selectedIndex} date={selectedDate} live={liveMode} timestamp={currentTimestamp || undefined} />
         )}
         <ReplayControls timestamps={timestamps} currentIndex={currentIndex} isFetching={snapshotLoading} isPlaying={isPlaying} onPlay={handlePlay} onPause={handlePause} onSeek={handleSeek} onRefresh={handleRefresh} selectedDate={selectedDate} onDateChange={handleDateChange} selectedIndex={selectedIndex} onIndexChange={handleIndexChange} availableDates={availableDates} sessionHours={sessionHours} />
-        <OptionChain options={normalizedOptions} spot={spot} futures={futures} maxPain={maxPain} gammaFlip={gammaFlip} fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike} indexName={selectedIndex} timestamp={timestamp} canArm={isTrulyLive} />
+        <OptionChain options={normalizedOptions} spot={spot} futures={futures} maxPain={maxPain} gammaFlip={gammaFlip} fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike} indexName={selectedIndex} timestamp={timestamp} canArm={canArmWallWatch} />
         {instrumentTier === 1 && (
           <GexChart data={displayedGexByStrike} atmStrike={atmStrike} maxPain={maxPain} gammaFlip={gammaFlip}
                     ceWall={ceWall} peWall={peWall} indexName={selectedIndex} timestamp={timestamp} />

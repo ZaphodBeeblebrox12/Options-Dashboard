@@ -69,32 +69,30 @@ def normalize_wall_options(options: Any) -> List[dict]:
     return rows
 
 
-def calculate_wall_strikes(options: Any, spot: Optional[float]) -> Dict[str, Tuple[Optional[float], bool]]:
-    """Return side-specific walls using the dashboard rule: CE >= spot, PE <= spot.
+def calculate_wall_strikes(options: Any, spot: Optional[float] = None) -> Dict[str, Tuple[Optional[float], bool]]:
+    """Return the strongest CE and PE OI concentrations in the loaded expiry chain.
 
-    The boolean indicates whether contracts for that side were present at all.
-    A present side with no eligible strikes represents a genuine vacant wall;
-    a missing side is treated as incomplete data and does not fire.
+    Spot is accepted for call-site compatibility but intentionally does not
+    participate in wall selection. A price crossing above a Call Wall or
+    below a Put Wall is not an OI-wall migration and must not trigger a
+    departure alert. Only a change in the side's OI distribution can move it.
+
+    The boolean reports whether contracts for that side were present at all.
+    Equal-OI ties resolve to the lower strike for deterministic results.
     """
     rows = normalize_wall_options(options)
-    spot_value = _number(spot)
     results: Dict[str, Tuple[Optional[float], bool]] = {}
     for side in SIDES:
         side_rows = [row for row in rows if row["option_type"] == side]
         if not side_rows:
             results[side] = (None, False)
             continue
-        if spot_value is None:
-            eligible = side_rows
-        elif side == "CE":
-            eligible = [row for row in side_rows if row["strike"] >= spot_value]
-        else:
-            eligible = [row for row in side_rows if row["strike"] <= spot_value]
-        if not eligible:
-            results[side] = (None, True)
-            continue
-        max_oi = max(row["oi"] for row in eligible)
-        winner = min((row for row in eligible if row["oi"] == max_oi), key=lambda row: row["strike"])
+
+        max_oi = max(row["oi"] for row in side_rows)
+        winner = min(
+            (row for row in side_rows if row["oi"] == max_oi),
+            key=lambda row: row["strike"],
+        )
         strike = winner["strike"]
         results[side] = (int(strike) if strike.is_integer() else strike, True)
     return results
