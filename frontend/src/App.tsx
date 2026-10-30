@@ -714,6 +714,7 @@ function App() {
           timestamp={timestamp}
           isLive={isTrulyLive}
           isStale={isLiveDataStale}
+          statusLabel={liveStatusLabel}
         />
 
         {(!liveMode || isTrulyLive) && (
