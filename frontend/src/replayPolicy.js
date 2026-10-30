@@ -24,11 +24,16 @@ export function resolveLiveStatus({
   connected,
   hasLiveData,
   hasFreshMarketSources,
+  hasStaleMarketSources = false,
+  hasUnknownMarketSources = false,
   hasError,
 }) {
   if (!liveMode) return 'REPLAY';
   if (!marketOpen) return 'CLOSED';
   if (!connected || !hasLiveData) return 'NO FEED';
-  if (!hasFreshMarketSources || hasError) return 'STALE';
+  if (hasError || hasStaleMarketSources) return 'STALE';
+  // Missing telemetry is not evidence of a stopped feed. Keep it visibly
+  // unverified rather than falsely labelling changing market data as stale.
+  if (hasUnknownMarketSources || !hasFreshMarketSources) return 'UNVERIFIED';
   return 'LIVE';
 }
