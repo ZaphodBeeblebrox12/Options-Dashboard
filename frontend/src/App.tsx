@@ -12,7 +12,7 @@ import { AlertToastContainer } from './components/AlertToast';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useSnapshots, useSnapshot, useGexHistory, useStrikeHistory, useGexByStrike, useAvailableDates } from './hooks/useApi';
 import { useAlertSettings, useAlertNotifications, AlertFiring } from './hooks/useAlerts';
-import { Monitor, AlertTriangle, Info, WifiOff, Bell, Settings, X } from 'lucide-react';
+import { Monitor, AlertTriangle, Info, WifiOff, Bell, Settings, X, ChevronDown } from 'lucide-react';
 import { hoursForType, isSessionOpen, fmtSessionRange, getMarketDateIST, InstrumentKind, SessionHours } from './session';
 import { canReturnToLive, isSourceFresh, resolveLiveStatus } from './replayPolicy.js';
 import { useIsMobile } from "./components/mobile/useIsMobile";
@@ -80,6 +80,8 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showAlertHistory, setShowAlertHistory] = useState(false);
   const [unseenAlertCount, setUnseenAlertCount] = useState(0);
+  const [showFeedDetails, setShowFeedDetails] = useState(false);
+  const feedDetailsRef = useRef<HTMLDivElement>(null);
   // Re-evaluate feed health even if the WebSocket stops delivering messages.
   const [now, setNow] = useState(() => Date.now());
   const playTimerRef = useRef<ReturnType<typeof setInterval>>();
@@ -112,6 +114,22 @@ function App() {
     const t = setInterval(() => setNow(Date.now()), 10_000);
     return () => clearInterval(t);
   }, []);
+
+  useEffect(() => {
+    if (!showFeedDetails) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!feedDetailsRef.current?.contains(event.target as Node)) setShowFeedDetails(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setShowFeedDetails(false);
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showFeedDetails]);
 
   useEffect(() => {
     const load = () =>
@@ -297,10 +315,18 @@ function App() {
   // no new payload arrives to advance the backend's source-age measurements.
   const needsFuturesFreshness = !!liveData &&
     (liveData.instrument_kind === 'commodity' || liveData.futures != null);
+  const feedAgeSeconds = (age: unknown): number | null =>
+    typeof age === 'number' && Number.isFinite(age) && age >= 0 && Number.isFinite(liveMessageAgeMs)
+      ? Math.max(0, age + liveMessageAgeMs / 1000)
+      : null;
+  const spotFeedAge = feedAgeSeconds(liveData?.spot_age_sec);
+  const optionsFeedAge = feedAgeSeconds(liveData?.option_age_sec);
+  const futuresFeedAge = feedAgeSeconds(liveData?.futures_age_sec);
   const hasFreshMarketSources = !!liveData &&
     isSourceFresh(liveData.spot_age_sec, liveMessageAgeMs, STALE_AFTER_MS) &&
     isSourceFresh(liveData.option_age_sec, liveMessageAgeMs, STALE_AFTER_MS) &&
     (!needsFuturesFreshness || isSourceFresh(liveData.futures_age_sec, liveMessageAgeMs, STALE_AFTER_MS));
+  const formatFeedAge = (age: number | null) => age === null ? 'No tick yet' : `${Math.round(age)}s`;
   const liveStatusLabel = resolveLiveStatus({
     liveMode,
     marketOpen,
@@ -561,30 +587,25 @@ function App() {
             {liveMode ? 'LIVE' : 'REPLAY'}
           </button>
           {liveMode && (
-            <div
-              role="status"
-              aria-live="polite"
-              title={
-                liveStatusLabel === 'LIVE'
-                  ? 'All required market data feeds are fresh'
-                  : liveStatusLabel === 'STALE'
-                    ? 'Market data is too old to be treated as current'
-                    : liveStatusLabel === 'NO FEED'
-                      ? 'No usable live market feed is currently available'
-                      : 'The selected instrument market session is closed'
-              }
-              className={`flex items-center gap-1.5 px-2 py-1.5 rounded text-[10px] font-mono font-semibold ${
-                liveStatusLabel === 'LIVE'
-                  ? 'bg-terminal-pe/10 text-terminal-pe'
-                  : liveStatusLabel === 'STALE'
-                    ? 'bg-amber-500/15 text-amber-400'
-                    : liveStatusLabel === 'NO FEED'
-                      ? 'bg-terminal-ce/15 text-terminal-ce'
-                      : 'bg-terminal-bg text-terminal-muted'
-              }`}
-            >
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
+            <div className="relative" ref={feedDetailsRef}>
+              <button
+                type="button"
+                onClick={() => setShowFeedDetails((open) => !open)}
+                aria-expanded={showFeedDetails}
+                aria-controls="live-feed-details"
+                aria-label={`Feed status: ${liveStatusLabel}. Open feed details`}
+                title="Show market feed freshness details"
+                className={`flex items-center gap-1.5 px-2 py-1.5 rounded text-[10px] font-mono font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terminal-atm ${
+                  liveStatusLabel === 'LIVE'
+                    ? 'bg-terminal-pe/10 text-terminal-pe hover:bg-terminal-pe/20'
+                    : liveStatusLabel === 'STALE'
+                      ? 'bg-amber-500/15 text-amber-400 hover:bg-amber-500/25'
+                      : liveStatusLabel === 'NO FEED'
+                        ? 'bg-terminal-ce/15 text-terminal-ce hover:bg-terminal-ce/25'
+                        : 'bg-terminal-bg text-terminal-muted hover:text-terminal-text'
+                }`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${
                   liveStatusLabel === 'LIVE'
                     ? 'bg-terminal-pe'
                     : liveStatusLabel === 'STALE'
@@ -592,9 +613,61 @@ function App() {
                       : liveStatusLabel === 'NO FEED'
                         ? 'bg-terminal-ce'
                         : 'bg-terminal-muted'
-                }`}
-              />
-              {liveStatusLabel === 'LIVE' ? 'FEED OK' : liveStatusLabel}
+                }`} />
+                {liveStatusLabel === 'LIVE' ? 'FEED OK' : liveStatusLabel}
+                <ChevronDown className={`w-3 h-3 transition-transform ${showFeedDetails ? 'rotate-180' : ''}`} />
+              </button>
+
+              {showFeedDetails && (
+                <div
+                  id="live-feed-details"
+                  role="dialog"
+                  aria-label="Live market feed details"
+                  className="absolute right-0 top-full z-50 mt-2 w-64 rounded-md border border-terminal-border bg-terminal-panel shadow-xl"
+                >
+                  <div className="flex items-center justify-between border-b border-terminal-border px-3 py-2">
+                    <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-terminal-text">Feed health</span>
+                    <span className="text-[9px] font-mono text-terminal-muted">75s limit</span>
+                  </div>
+                  <div className="space-y-2 px-3 py-2.5">
+                    {[
+                      { label: 'Spot', age: spotFeedAge },
+                      { label: 'Options', age: optionsFeedAge },
+                      ...(needsFuturesFreshness ? [{ label: 'Futures', age: futuresFeedAge }] : []),
+                    ].map((feed) => {
+                      const fresh = feed.age !== null && feed.age * 1000 <= STALE_AFTER_MS;
+                      const status = feed.age === null ? 'NO TICK' : fresh ? 'FRESH' : 'STALE';
+                      return (
+                        <div key={feed.label} className="flex items-center justify-between gap-3">
+                          <span className="text-[11px] font-mono text-terminal-muted">{feed.label}</span>
+                          <span className={`text-[10px] font-mono tabular-nums ${fresh ? 'text-terminal-pe' : 'text-amber-400'}`}>
+                            {formatFeedAge(feed.age)}
+                          </span>
+                          <span className={`w-14 text-right text-[9px] font-mono font-bold ${fresh ? 'text-terminal-pe' : 'text-amber-400'}`}>
+                            {status}
+                          </span>
+                        </div>
+                      );
+                    })}
+                    <div className="flex items-center justify-between border-t border-terminal-border pt-2">
+                      <span className="text-[11px] font-mono text-terminal-muted">WebSocket</span>
+                      <span className={`text-[10px] font-mono font-bold ${connected ? 'text-terminal-pe' : 'text-terminal-ce'}`}>
+                        {connected ? 'CONNECTED' : 'DISCONNECTED'}
+                      </span>
+                    </div>
+                    {wsError && (
+                      <div className="rounded bg-terminal-ce/10 px-2 py-1.5 text-[10px] leading-relaxed text-terminal-ce break-words">
+                        {wsError}
+                      </div>
+                    )}
+                    {!marketOpen && (
+                      <p className="text-[10px] leading-relaxed text-terminal-muted">
+                        Market is closed. Feed ages show when the last ticks were received.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
