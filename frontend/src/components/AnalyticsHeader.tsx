@@ -1,5 +1,4 @@
 import React, { useRef } from 'react';
-import { Activity, TrendingUp, BarChart3, Crosshair, Zap, Layers, WifiOff } from 'lucide-react';
 import { ScreenshotButton } from './ScreenshotButton';
 
 interface AnalyticsHeaderProps {
@@ -12,26 +11,33 @@ interface AnalyticsHeaderProps {
   maxGexStrike: number | null;
   maxPain: number | null;
   gammaFlip: number | null;
+  ceWall?: number | null;
+  peWall?: number | null;
+  atmStrike?: number | null;
   timestamp: string;
   isLive: boolean;
-  isStale?: boolean;   // P1: feed frozen — data on screen has stopped updating
+  isStale?: boolean;
   isFetching?: boolean;
 }
 
-const MetricCard: React.FC<{
+const formatPrice = (value: number | null) =>
+  value !== null
+    ? value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : '—';
+
+const formatInt = (value: number | null | undefined) =>
+  value != null ? value.toLocaleString('en-IN', { maximumFractionDigits: 0 }) : '—';
+
+const SummaryMetric: React.FC<{
   label: string;
-  value: string | number;
-  subValue?: string;
-  icon: React.ReactNode;
-  color?: string;
-}> = ({ label, value, subValue, icon, color = 'text-terminal-text' }) => (
-  <div className="flex items-center gap-2 sm:gap-3 px-2 sm:px-4 py-1.5 sm:py-2 sm:border-r sm:border-terminal-border last:sm:border-r-0 sm:min-w-[160px]">
-    <div className={`hidden sm:block ${color} opacity-60 shrink-0`}>{icon}</div>
-    <div className="min-w-0">
-      <div className="text-[9px] sm:text-[10px] font-mono uppercase tracking-wider text-terminal-muted">{label}</div>
-      <div className={`font-mono font-bold text-base sm:text-lg ${color}`}>{value}</div>
-      {subValue && <div className="text-[9px] sm:text-[10px] font-mono text-terminal-muted">{subValue}</div>}
-    </div>
+  value: string;
+  note: string;
+  tone?: 'positive' | 'negative' | 'neutral' | 'call' | 'put';
+}> = ({ label, value, note, tone = 'neutral' }) => (
+  <div className={`premium-market-metric tone-${tone}`}>
+    <span>{label}</span>
+    <strong>{value}</strong>
+    <small>{note}</small>
   </div>
 );
 
@@ -45,96 +51,73 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
   maxGexStrike,
   maxPain,
   gammaFlip,
+  ceWall,
+  peWall,
+  atmStrike,
   timestamp,
   isLive,
   isStale = false,
-  isFetching,
+  isFetching = false,
 }) => {
   const panelRef = useRef<HTMLDivElement>(null);
-
-  const formatPrice = (p: number | null) => p !== null ? p.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
-  const formatInt = (n: number | null) => n !== null ? n.toLocaleString('en-IN') : '—';
-
-  const spreadColor = spreadLabel === 'PREMIUM'
-    ? 'text-terminal-pe'
-    : spreadLabel === 'DISCOUNT'
-    ? 'text-terminal-ce'
-    : 'text-terminal-muted';
-  const gexColor = (netGex ?? 0) >= 0 ? 'text-terminal-pe' : 'text-terminal-ce';
-
-  const tsLabel = timestamp ? timestamp.replace(/[:\s]/g, '-') : new Date().toISOString().slice(0,16).replace(/T/g,'-');
-  const screenshotFilename = `${indexName}-analytics-${tsLabel}`;
+  const tsLabel = timestamp
+    ? timestamp.replace(/[:\\s]/g, '-')
+    : new Date().toISOString().slice(0, 16).replace('T', '-');
+  const screenshotFilename = `${indexName}-market-snapshot-${tsLabel}`;
+  const status = isStale ? 'STALE FEED' : isLive ? 'LIVE VERIFIED' : 'SNAPSHOT';
+  const spreadValue = futuresSpread !== null
+    ? `${futuresSpread >= 0 ? '+' : ''}${futuresSpread.toFixed(2)}`
+    : '—';
+  const gexTone = netGex == null ? 'neutral' : netGex >= 0 ? 'positive' : 'negative';
+  const spreadTone = spreadLabel === 'PREMIUM' ? 'positive' : spreadLabel === 'DISCOUNT' ? 'negative' : 'neutral';
 
   return (
-    <div className="terminal-panel relative overflow-hidden" ref={panelRef}>
-      {isFetching && (
-        <div
-          className="absolute top-0 left-0 right-0 h-[2px] z-10"
-          style={{
-            background: 'linear-gradient(90deg, transparent 0%, #eab308 50%, transparent 100%)',
-            animation: 'sweep 1.2s ease-in-out infinite',
-          }}
-        />
-      )}
+    <section className="terminal-panel premium-market-card" ref={panelRef} aria-label={`${indexName} market summary`}>
+      {isFetching && <div className="premium-sync-line" />}
 
-      <div className="flex items-center justify-between px-3 sm:px-4 py-2 border-b border-terminal-border">
-        <div className="flex items-center gap-2">
-          <Activity className="w-4 h-4 sm:w-4 sm:h-4 text-terminal-atm" />
-          <span className="text-sm font-semibold tracking-wide">{indexName}</span>
-          {/* P1: amber STALE state when the tick stream has frozen but the
-              socket to our own backend is still up (backend rebroadcasts
-              cached state every 5s, so ticks keep arriving — just ancient). */}
-          {isStale ? (
-            <span
-              className="flex items-center gap-1 text-[10px] font-mono text-amber-400"
-              title="Live feed unavailable or stale — do not treat these values as current market data."
-            >
-              <WifiOff className="w-3 h-3" />
-              STALE
-            </span>
-          ) : isLive ? (
-            <span className="flex items-center gap-1 text-[10px] font-mono text-terminal-pe">
-              <span className="w-1.5 h-1.5 rounded-full bg-terminal-pe animate-pulse" />
-              LIVE
-            </span>
-          ) : null}
-          {isFetching && (
-            <span className="flex items-center gap-1 text-[10px] font-mono text-terminal-atm/70">
-              <span className="w-1 h-1 rounded-full bg-terminal-atm animate-pulse" />
-              syncing
-            </span>
+      <div className="premium-market-heading">
+        <div className="premium-market-heading-left">
+          <span className="premium-market-eyebrow">MARKET SNAPSHOT</span>
+          <strong>{indexName}</strong>
+          <span className={`premium-market-status ${isStale ? 'is-stale' : isLive ? 'is-live' : 'is-snapshot'}`}>
+            <i />
+            {status}
+          </span>
+          {atmStrike != null && (
+            <span className="premium-atm-chip">ATM <b>{formatInt(atmStrike)}</b></span>
           )}
         </div>
-        <div className="flex items-center gap-2">
-          <div className={`text-[10px] font-mono transition-opacity duration-300 ${isFetching ? 'opacity-40' : 'opacity-100 text-terminal-muted'}`}>
-            {timestamp ? new Date(timestamp).toLocaleString('en-IN') : '—'}
-          </div>
+        <div className="premium-market-heading-right">
+          <span>{timestamp ? new Date(timestamp).toLocaleString('en-IN') : 'Waiting for a market snapshot'}</span>
           <ScreenshotButton targetRef={panelRef} filename={screenshotFilename} />
         </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:flex lg:flex-wrap lg:items-center">
-        <MetricCard label="SPOT" value={formatPrice(spot)} icon={<TrendingUp className="w-4 h-4" />} color="text-terminal-atm" />
-        <MetricCard label="FUTURES" value={formatPrice(futures)} icon={<BarChart3 className="w-4 h-4" />} color="text-terminal-futures" />
-        <MetricCard
-          label="SPREAD"
-          value={futuresSpread !== null ? `${futuresSpread >= 0 ? '+' : ''}${futuresSpread.toFixed(2)}` : '—'}
-          subValue={spreadLabel || ''}
-          icon={<Layers className="w-4 h-4" />}
-          color={spreadColor}
-        />
-        <MetricCard label="NET GEX" value={formatInt(netGex)} icon={<Zap className="w-4 h-4" />} color={gexColor} />
-        <MetricCard label="MAX GEX" value={formatInt(maxGexStrike)} icon={<Crosshair className="w-4 h-4" />} color="text-terminal-maxpain" />
-        <MetricCard label="MAX PAIN" value={formatInt(maxPain)} icon={<Crosshair className="w-4 h-4" />} color="text-terminal-maxpain" />
-        <MetricCard label="GAMMA FLIP" value={formatInt(gammaFlip)} icon={<Zap className="w-4 h-4" />} color="text-terminal-gammaflip" />
-      </div>
+      <div className="premium-market-body">
+        <div className="premium-price-block">
+          <span className="premium-price-label">SPOT INDEX</span>
+          <strong>{formatPrice(spot)}</strong>
+          <div className="premium-price-context">
+            <span>FUTURES <b>{formatPrice(futures)}</b></span>
+            <span className="premium-context-divider" />
+            <span>BASIS <b className={`tone-${spreadTone}`}>{spreadValue} <i>{spreadLabel || ''}</i></b></span>
+          </div>
+        </div>
 
-      <style>{`
-        @keyframes sweep {
-          0% { transform: translateX(-100%); }
-          100% { transform: translateX(100%); }
-        }
-      `}</style>
-    </div>
+        <div className="premium-market-metrics">
+          <SummaryMetric
+            label="NET GEX"
+            value={formatInt(netGex)}
+            note={netGex == null ? 'Exposure unavailable' : netGex >= 0 ? 'Positive gamma' : 'Negative gamma'}
+            tone={gexTone}
+          />
+          <SummaryMetric label="GAMMA FLIP" value={formatInt(gammaFlip)} note="Regime reference" />
+          <SummaryMetric label="MAX GEX STRIKE" value={formatInt(maxGexStrike)} note="Peak exposure" />
+          <SummaryMetric label="MAX PAIN" value={formatInt(maxPain)} note="Expiry reference" />
+          <SummaryMetric label="CALL WALL" value={formatInt(ceWall)} note="Highest call OI" tone="call" />
+          <SummaryMetric label="PUT WALL" value={formatInt(peWall)} note="Highest put OI" tone="put" />
+        </div>
+      </div>
+    </section>
   );
 };
