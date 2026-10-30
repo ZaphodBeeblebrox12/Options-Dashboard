@@ -87,3 +87,105 @@ def test_equal_oi_ties_choose_lowest_strike_deterministically():
         {"strike": 25200, "option_type": "CE", "oi": 500},
     ]
     assert calculate_wall_strikes(options, 25000)["CE"] == (25100, True)
+
+
+
+def _wall_watch_manager_with_test_db(monkeypatch):
+    """Create an isolated manager whose state survives its DB context calls."""
+    import sqlite3
+    from contextlib import contextmanager
+
+    import wall_watch
+
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """CREATE TABLE wall_watch_state (
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL,
+            armed INTEGER NOT NULL DEFAULT 0,
+            watched_strike REAL,
+            last_wall_strike REAL,
+            new_wall_strike REAL,
+            last_event TEXT,
+            last_triggered_at TEXT,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(symbol, side)
+        )"""
+    )
+    conn.commit()
+
+    @contextmanager
+    def fake_get_alert_db():
+        yield conn
+
+    monkeypatch.setattr(wall_watch, "get_alert_db", fake_get_alert_db)
+    monkeypatch.setattr(wall_watch, "save_alert_history", lambda **kwargs: None)
+    monkeypatch.setattr(
+        wall_watch.alert_engine,
+        "get_settings",
+        lambda: {
+            "rules": [{
+                "rule_type": "wall_vacated",
+                "enabled": False,
+                "channels": ["toast"],
+                "sound_enabled": False,
+                "telegram_enabled": False,
+            }],
+            "sound": {"master_enabled": True},
+            "telegram": {"enabled": False},
+        },
+    )
+    monkeypatch.setattr(wall_watch.app_settings, "get_alerts_armed", lambda: False)
+    monkeypatch.setattr(wall_watch.app_settings, "get_instrument_tier", lambda symbol: 1)
+    monkeypatch.setattr(
+        wall_watch,
+        "resolve_telegram_destination",
+        lambda settings, tier: {"enabled": False, "bot_token": "", "chat_id": ""},
+    )
+    return wall_watch.WallWatchManager(), conn
+
+
+def test_manual_watch_fires_even_when_automatic_alert_switch_and_rule_are_off(monkeypatch):
+    manager, conn = _wall_watch_manager_with_test_db(monkeypatch)
+    try:
+        manager.arm("NIFTY", "CE", 25000)
+
+        # OI migrates the Call Wall from 25,000 to 25,100. The global automatic
+        # alerts switch and WALL_VACATED rule are both deliberately disabled;
+        # the explicit bell arm must still be honored.
+        fired = manager.evaluate_snapshot(
+            {
+                "timestamp": "2026-10-30T10:00:00",
+                "spot": 25050,
+                "options": [
+                    {"strike": 25000, "option_type": "CE", "oi": 900},
+                    {"strike": 25100, "option_type": "CE", "oi": 1200},
+                ],
+            },
+            "NIFTY",
+        )
+
+        assert len(fired) == 1
+        assert fired[0].wall_side == "CE"
+        assert fired[0].watched_strike == 25000
+        assert fired[0].new_wall_strike == 25100
+        assert fired[0].wall_event == "moved"
+        assert fired[0].channels_fired
+        assert manager.get_watches("NIFTY")["CE"]["armed"] is False
+        assert manager.get_watches("NIFTY")["CE"]["last_event"] == "moved"
+    finally:
+        conn.close()
+
+
+def test_armed_symbol_index_only_includes_active_manual_watches(monkeypatch):
+    manager, conn = _wall_watch_manager_with_test_db(monkeypatch)
+    try:
+        manager.arm("NIFTY", "CE", 25000)
+        manager.arm("SENSEX", "PE", 81000)
+        assert manager.get_armed_symbols() == ["NIFTY", "SENSEX"]
+
+        manager.disarm("NIFTY", "CE")
+        assert manager.get_armed_symbols() == ["SENSEX"]
+    finally:
+        conn.close()
