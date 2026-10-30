@@ -48,7 +48,6 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   options,
   spot,
   futures,
-  maxPain,
   gammaFlip,
   fullMode,
   selectedStrike,
