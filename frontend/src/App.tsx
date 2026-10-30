@@ -14,7 +14,7 @@ import { useSnapshots, useSnapshot, useGexHistory, useStrikeHistory, useGexByStr
 import { useAlertSettings, useAlertNotifications, AlertFiring } from './hooks/useAlerts';
 import { Monitor, AlertTriangle, Info, WifiOff, Bell, Settings, X, ChevronDown } from 'lucide-react';
 import { hoursForType, isSessionOpen, fmtSessionRange, getMarketDateIST, InstrumentKind, SessionHours } from './session';
-import { canReturnToLive, isSourceFresh, resolveLiveStatus } from './replayPolicy.js';
+import { canReturnToLive, resolveLiveStatus } from './replayPolicy.js';
 import { useIsMobile } from "./components/mobile/useIsMobile";
 import MobileApp from "./components/mobile/MobileApp";
 
