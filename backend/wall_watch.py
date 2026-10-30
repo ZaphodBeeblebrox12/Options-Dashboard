@@ -69,20 +69,18 @@ def normalize_wall_options(options: Any) -> List[dict]:
     return rows
 
 
-def calculate_wall_strikes(options: Any, spot: Optional[float]) -> Dict[str, Tuple[Optional[float], bool]]:
-    """Return the strongest nearby CE and PE OI concentrations.
+def calculate_wall_strikes(options: Any, spot: Optional[float] = None) -> Dict[str, Tuple[Optional[float], bool]]:
+    """Return the strongest CE and PE OI concentrations in the loaded expiry chain.
 
-    Walls are based on OI, not whether a strike is currently OTM. The
-    symmetric +/-5% spot window matches the dashboard's OI-rank universe.
-    In particular, spot crossing above a Call Wall (or below a Put Wall)
-    must not by itself make that wall disappear or trigger a departure alert.
+    Spot is accepted for call-site compatibility but intentionally does not
+    participate in wall selection. A price crossing above a Call Wall or
+    below a Put Wall is not an OI-wall migration and must not trigger a
+    departure alert. Only a change in the side's OI distribution can move it.
 
-    If the symmetric window contains no contracts for a side, fall back to
-    that side's available chain rows, matching the frontend's rank-window
-    fallback. The boolean reports whether that side was present at all.
+    The boolean reports whether contracts for that side were present at all.
+    Equal-OI ties resolve to the lower strike for deterministic results.
     """
     rows = normalize_wall_options(options)
-    spot_value = _number(spot)
     results: Dict[str, Tuple[Optional[float], bool]] = {}
     for side in SIDES:
         side_rows = [row for row in rows if row["option_type"] == side]
@@ -90,19 +88,9 @@ def calculate_wall_strikes(options: Any, spot: Optional[float]) -> Dict[str, Tup
             results[side] = (None, False)
             continue
 
-        if spot_value is not None and spot_value > 0:
-            window = spot_value * 0.05
-            in_window = [
-                row for row in side_rows
-                if abs(row["strike"] - spot_value) <= window
-            ]
-            eligible = in_window or side_rows
-        else:
-            eligible = side_rows
-
-        max_oi = max(row["oi"] for row in eligible)
+        max_oi = max(row["oi"] for row in side_rows)
         winner = min(
-            (row for row in eligible if row["oi"] == max_oi),
+            (row for row in side_rows if row["oi"] == max_oi),
             key=lambda row: row["strike"],
         )
         strike = winner["strike"]
