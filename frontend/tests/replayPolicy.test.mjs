@@ -66,3 +66,30 @@ test('market closed is not reported as live or stale', () => {
     hasError: false,
   }), 'CLOSED');
 });
+
+
+test('missing source-age telemetry is unverified, not falsely stale', () => {
+  assert.equal(resolveLiveStatus({
+    liveMode: true,
+    marketOpen: true,
+    connected: true,
+    hasLiveData: true,
+    hasFreshMarketSources: false,
+    hasStaleMarketSources: false,
+    hasUnknownMarketSources: true,
+    hasError: false,
+  }), 'UNVERIFIED');
+});
+
+test('a measured old source remains stale even when another source age is unknown', () => {
+  assert.equal(resolveLiveStatus({
+    liveMode: true,
+    marketOpen: true,
+    connected: true,
+    hasLiveData: true,
+    hasFreshMarketSources: false,
+    hasStaleMarketSources: true,
+    hasUnknownMarketSources: true,
+    hasError: false,
+  }), 'STALE');
+});
