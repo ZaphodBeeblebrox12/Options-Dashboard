@@ -15,6 +15,7 @@ import { useAlertSettings, useAlertNotifications, AlertFiring } from './hooks/us
 import { Monitor, AlertTriangle, Info, WifiOff, Bell, Settings, X, ChevronDown } from 'lucide-react';
 import { hoursForType, isSessionOpen, fmtSessionRange, getMarketDateIST, InstrumentKind, SessionHours } from './session';
 import { canReturnToLive, resolveLiveStatus } from './replayPolicy.js';
+import { computeOiWalls } from './oiWalls.js';
 import { useIsMobile } from "./components/mobile/useIsMobile";
 import MobileApp from "./components/mobile/MobileApp";
 
@@ -366,20 +367,6 @@ function App() {
   const gammaFlip = displayData?.gamma_flip ?? null;
   const timestamp = displayData?.timestamp ?? '';
   const options = displayData?.options ?? [];
-  // ── FIX: walls must sit on the correct side of spot ──────────
-  // A CE wall is resistance ABOVE spot; a PE wall is support BELOW it.
-  // Without this filter, the max-OI strike from anywhere in the chain
-  // (e.g. a far ITM put 14% above spot) gets labeled as a "wall" and
-  // drawn on the GEX chart, compressing the meaningful near-ATM bars.
-  const { ceWall, peWall } = React.useMemo(() => {
-    let cew: number | null = null, pew: number | null = null, ceo = -1, peo = -1;
-    for (const o of (options as any[])) {
-      const oi = o?.oi ?? 0;
-      if (o?.option_type === 'CE' && (spot == null || o.strike >= spot) && oi > ceo) { ceo = oi; cew = o.strike; }
-      if (o?.option_type === 'PE' && (spot == null || o.strike <= spot) && oi > peo) { peo = oi; pew = o.strike; }
-    }
-    return { ceWall: cew, peWall: pew };
-  }, [options, spot]);
   const instrumentTier = (displayData as any)?.tier ?? (selectedIndex === 'NIFTY' || selectedIndex === 'SENSEX' ? 1 : 2);
 
 
@@ -393,6 +380,14 @@ function App() {
     });
     return result;
   }, [options]);
+
+  // Use the same OI-only wall selector as the option chain and backend wall
+  // watches. Spot is deliberately not an input: price crossing a wall must
+  // never make the GEX overlay jump to another strike.
+  const { ceWall, peWall } = React.useMemo(
+    () => computeOiWalls(normalizedOptions),
+    [normalizedOptions]
+  );
 
   // Live GEX bars must be derived from the same live payload as the option
   // chain; historical replay continues to use the selected DB snapshot.
