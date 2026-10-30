@@ -54,7 +54,9 @@ import faulthandler
 # ── Alert System Imports ──────────────────────────────────────
 from alert_db import init_alert_db
 from alert_engine import alert_engine
-from wall_watch import wall_watch_manager, calculate_wall_strikes
+from wall_watch import (
+    wall_watch_manager, calculate_wall_strikes, build_live_wall_watch_snapshot,
+)
 from alert_models import (
     AlertSettings, AlertHistoryResponse, BacktestRequest, BacktestResponse,
     AlertStatus, AlertTriggerPayload, NotificationChannel,
@@ -577,25 +579,29 @@ async def wall_watch_loop():
                 continue
 
             with streamer_adapter._stocks_lock:
-                available = set(streamer_adapter.streamers.keys())
+                live_streamers = {
+                    symbol: streamer_adapter.streamers.get(symbol)
+                    for symbol in armed_symbols
+                }
 
-            for symbol in armed_symbols:
-                if symbol not in available:
+            for symbol, streamer in live_streamers.items():
+                if streamer is None:
                     continue
                 try:
-                    state = await asyncio.to_thread(
-                        streamer_adapter.get_current_state,
+                    # Raw OI-only read: avoid recalculating Greeks/GEX for a
+                    # manually armed watch. Paused, non-active-window, and
+                    # stale feeds are deliberately not allowed to move a wall.
+                    snapshot = await asyncio.to_thread(
+                        build_live_wall_watch_snapshot,
+                        streamer,
                         symbol,
+                        is_market_open,
                     )
-                    data = (state or {}).get("data") or {}
-                    if not isinstance(data, dict) or data.get("error"):
+                    if snapshot is None:
                         continue
-                    if data.get("market_open") is False or not data.get("options"):
-                        continue
-
                     fired = await asyncio.to_thread(
                         wall_watch_manager.evaluate_snapshot,
-                        data,
+                        snapshot,
                         symbol,
                     )
                     if fired:
@@ -1373,13 +1379,28 @@ async def arm_wall_watch(symbol: str, side: str):
         raise HTTPException(status_code=422, detail="side must be CE (Call Wall) or PE (Put Wall)")
     if streamer_adapter.mode != "real":
         raise HTTPException(status_code=503, detail="Live broker feed is unavailable")
-    state = await asyncio.to_thread(streamer_adapter.get_current_state, symbol)
-    data = (state or {}).get("data") or {}
-    if data.get("error"):
-        raise HTTPException(status_code=503, detail=str(data["error"]))
-    if data.get("market_open") is False:
-        raise HTTPException(status_code=409, detail="Arm wall alerts while the market feed is live")
-    walls = calculate_wall_strikes(data.get("options") or [], data.get("spot"))
+    with streamer_adapter._stocks_lock:
+        streamer = streamer_adapter.streamers.get(symbol)
+    if streamer is None:
+        raise HTTPException(status_code=503, detail=f"Streamer not available for {symbol}")
+    data = await asyncio.to_thread(
+        build_live_wall_watch_snapshot,
+        streamer,
+        symbol,
+        is_market_open,
+    )
+    if data is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot arm: option feed must be active, unpaused, and fresh (within 90 seconds)",
+        )
+    if not data.get("_side_freshness", {}).get(side, False):
+        side_name = "Call" if side == "CE" else "Put"
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot arm: no fresh {side_name} option ticks in the last 90 seconds",
+        )
+    walls = calculate_wall_strikes(data.get("options") or {})
     strike, side_present = walls.get(side, (None, False))
     if not side_present or strike is None:
         raise HTTPException(status_code=409, detail=f"No current {('Call' if side == 'CE' else 'Put')} Wall is available to arm")
