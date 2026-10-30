@@ -322,20 +322,31 @@ function App() {
   const spotFeedAge = feedAgeSeconds(liveData?.spot_age_sec);
   const optionsFeedAge = feedAgeSeconds(liveData?.option_age_sec);
   const futuresFeedAge = feedAgeSeconds(liveData?.futures_age_sec);
-  const hasFreshMarketSources = !!liveData &&
-    isSourceFresh(liveData.spot_age_sec, liveMessageAgeMs, STALE_AFTER_MS) &&
-    isSourceFresh(liveData.option_age_sec, liveMessageAgeMs, STALE_AFTER_MS) &&
-    (!needsFuturesFreshness || isSourceFresh(liveData.futures_age_sec, liveMessageAgeMs, STALE_AFTER_MS));
-  const formatFeedAge = (age: number | null) => age === null ? 'No tick yet' : `${Math.round(age)}s`;
+  // Missing age telemetry is not proof that a source feed has stopped.
+  // Report measured-old feeds as STALE, but keep missing measurements UNKNOWN.
+  const requiredFeedAges = [
+    spotFeedAge,
+    optionsFeedAge,
+    ...(needsFuturesFreshness ? [futuresFeedAge] : []),
+  ];
+  const hasStaleMarketSources = requiredFeedAges.some(
+    (age) => age !== null && age * 1000 > STALE_AFTER_MS
+  );
+  const hasUnknownMarketSources = requiredFeedAges.some((age) => age === null);
+  const hasFreshMarketSources = requiredFeedAges.length > 0 &&
+    requiredFeedAges.every((age) => age !== null && age * 1000 <= STALE_AFTER_MS);
+  const formatFeedAge = (age: number | null) => age === null ? 'Age unknown' : `${Math.round(age)}s`;
   const liveStatusLabel = resolveLiveStatus({
     liveMode,
     marketOpen,
     connected,
     hasLiveData: !!hasLiveData,
     hasFreshMarketSources,
+    hasStaleMarketSources,
+    hasUnknownMarketSources,
     hasError: !!wsError,
   });
-  const isLiveDataStale = liveMode && marketOpen && liveStatusLabel !== 'LIVE';
+  const isLiveDataStale = liveMode && marketOpen && liveStatusLabel === 'STALE';
   const isTrulyLive = liveStatusLabel === 'LIVE';
 
   const spot = displayData?.spot ?? null;
@@ -594,7 +605,9 @@ function App() {
                 aria-expanded={showFeedDetails}
                 aria-controls="live-feed-details"
                 aria-label={`Feed status: ${liveStatusLabel}. Open feed details`}
-                title="Show market feed freshness details"
+                title={liveStatusLabel === 'UNVERIFIED'
+                  ? 'Source age telemetry is unavailable; values may still be updating'
+                  : 'Show market feed freshness details'}
                 className={`flex items-center gap-1.5 px-2 py-1.5 rounded text-[10px] font-mono font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terminal-atm ${
                   liveStatusLabel === 'LIVE'
                     ? 'bg-terminal-pe/10 text-terminal-pe hover:bg-terminal-pe/20'
@@ -636,14 +649,17 @@ function App() {
                       ...(needsFuturesFreshness ? [{ label: 'Futures', age: futuresFeedAge }] : []),
                     ].map((feed) => {
                       const fresh = feed.age !== null && feed.age * 1000 <= STALE_AFTER_MS;
-                      const status = feed.age === null ? 'NO TICK' : fresh ? 'FRESH' : 'STALE';
+                      const status = feed.age === null ? 'UNMEASURED' : fresh ? 'FRESH' : 'STALE';
+                      const statusColor = feed.age === null
+                        ? 'text-terminal-muted'
+                        : fresh ? 'text-terminal-pe' : 'text-amber-400';
                       return (
                         <div key={feed.label} className="flex items-center justify-between gap-3">
                           <span className="text-[11px] font-mono text-terminal-muted">{feed.label}</span>
-                          <span className={`text-[10px] font-mono tabular-nums ${fresh ? 'text-terminal-pe' : 'text-amber-400'}`}>
+                          <span className={`text-[10px] font-mono tabular-nums ${statusColor}`}>
                             {formatFeedAge(feed.age)}
                           </span>
-                          <span className={`w-14 text-right text-[9px] font-mono font-bold ${fresh ? 'text-terminal-pe' : 'text-amber-400'}`}>
+                          <span className={`w-20 text-right text-[9px] font-mono font-bold ${statusColor}`}>
                             {status}
                           </span>
                         </div>
