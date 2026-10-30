@@ -38,36 +38,10 @@ interface RefLineConfig {
   text: string;
 }
 
-export interface OiWallInput {
-  strike: number;
-  option_type: string;
-  oi?: number;
-}
-
-export function computeOiWalls(
-  options: OiWallInput[] | undefined | null,
-  spot?: number | null,
-): { ceWall: number | null; peWall: number | null } {
-  let ceWall: number | null = null;
-  let peWall: number | null = null;
-  let ceOi = -1;
-  let peOi = -1;
-  for (const o of options ?? []) {
-    const oi = o.oi ?? 0;
-    // FIX: a CE wall must sit AT/ABOVE spot (resistance); a PE wall must sit
-    // AT/BELOW spot (support). Without the side filter, max-OI strikes from
-    // anywhere in the chain (e.g. a far ITM put 14% above spot) get labeled
-    // as "walls". When spot is unknown, fall back to the old unfiltered max.
-    if (o.option_type === 'CE' && (spot == null || o.strike >= spot) && oi > ceOi) {
-      ceOi = oi;
-      ceWall = o.strike;
-    } else if (o.option_type === 'PE' && (spot == null || o.strike <= spot) && oi > peOi) {
-      peOi = oi;
-      peWall = o.strike;
-    }
-  }
-  return { ceWall, peWall };
-}
+// Keep the historical export path available while sharing one canonical
+// OI-wall definition with App.tsx and the option-chain overlay.
+export { computeOiWalls } from '../oiWalls.js';
+export type { OiWallInput } from '../oiWalls.js';
 
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (!active || !payload || !payload.length) return null;
