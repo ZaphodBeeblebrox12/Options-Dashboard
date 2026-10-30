@@ -172,12 +172,12 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     return ranks;
   }, [rankableRows]);
 
-  // Walls are OI concentrations, not "currently OTM" strikes. Use the
-  // same symmetric near-spot universe as the OI rank badges so a spot-price
-  // cross above/below a wall does not itself make that wall disappear.
+  // Walls are the strongest OI concentrations in the loaded expiry chain.
+  // Spot crossing a wall, or moving far away from it, must never reclassify
+  // the wall. Only a change in relative CE/PE OI can move these levels.
   const currentWalls = useMemo(() => {
     const find = (side: 'CE' | 'PE') => {
-      const sideRows = rankableRows.filter(row => side === 'CE' ? !!row.CE : !!row.PE);
+      const sideRows = chainData.filter(row => side === 'CE' ? !!row.CE : !!row.PE);
       sideRows.sort((a, b) =>
         ((side === 'CE' ? b.CE?.oi ?? 0 : b.PE?.oi ?? 0) -
           (side === 'CE' ? a.CE?.oi ?? 0 : a.PE?.oi ?? 0)) ||
@@ -186,7 +186,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
       return sideRows[0]?.strike ?? null;
     };
     return { CE: find('CE'), PE: find('PE') };
-  }, [rankableRows]);
+  }, [chainData]);
 
   // ── Center view around ATM ──
   const displayRows = useMemo(() => {
