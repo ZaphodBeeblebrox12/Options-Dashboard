@@ -543,12 +543,60 @@ function App() {
             <Settings className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Settings</span>
           </button>
-          {/* P1 FIX: the toggle reflects mode, but warns when the live data
-              stream itself has gone stale (frozen feed, socket still up). */}
-          <button onClick={toggleLiveMode} className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono font-semibold transition-colors ${liveStatusLabel === 'LIVE' ? 'bg-terminal-pe/20 text-terminal-pe' : liveStatusLabel === 'STALE' ? 'bg-amber-500/20 text-amber-400' : 'bg-terminal-bg text-terminal-muted hover:text-terminal-text'}`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${liveStatusLabel === 'LIVE' ? 'bg-terminal-pe animate-pulse' : liveStatusLabel === 'STALE' ? 'bg-amber-400' : 'bg-terminal-muted'}`} />
-            {liveStatusLabel}
+          {/* Mode control stays independent from feed health. A stale feed must
+              never replace the LIVE/REPLAY mode label or change its action. */}
+          <button
+            type="button"
+            onClick={toggleLiveMode}
+            aria-pressed={liveMode}
+            aria-label={liveMode ? 'Switch to replay mode' : 'Switch to live mode'}
+            title={liveMode ? 'Live mode selected — click to switch to replay' : 'Replay mode selected — click to return to live'}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terminal-atm ${
+              liveMode
+                ? 'bg-terminal-pe/20 text-terminal-pe hover:bg-terminal-pe/30'
+                : 'bg-terminal-atm/15 text-terminal-atm hover:bg-terminal-atm/25'
+            }`}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full ${liveMode ? 'bg-terminal-pe animate-pulse' : 'bg-terminal-atm'}`} />
+            {liveMode ? 'LIVE' : 'REPLAY'}
           </button>
+          {liveMode && (
+            <div
+              role="status"
+              aria-live="polite"
+              title={
+                liveStatusLabel === 'LIVE'
+                  ? 'All required market data feeds are fresh'
+                  : liveStatusLabel === 'STALE'
+                    ? 'Market data is too old to be treated as current'
+                    : liveStatusLabel === 'NO FEED'
+                      ? 'No usable live market feed is currently available'
+                      : 'The selected instrument market session is closed'
+              }
+              className={`flex items-center gap-1.5 px-2 py-1.5 rounded text-[10px] font-mono font-semibold ${
+                liveStatusLabel === 'LIVE'
+                  ? 'bg-terminal-pe/10 text-terminal-pe'
+                  : liveStatusLabel === 'STALE'
+                    ? 'bg-amber-500/15 text-amber-400'
+                    : liveStatusLabel === 'NO FEED'
+                      ? 'bg-terminal-ce/15 text-terminal-ce'
+                      : 'bg-terminal-bg text-terminal-muted'
+              }`}
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  liveStatusLabel === 'LIVE'
+                    ? 'bg-terminal-pe'
+                    : liveStatusLabel === 'STALE'
+                      ? 'bg-amber-400'
+                      : liveStatusLabel === 'NO FEED'
+                        ? 'bg-terminal-ce'
+                        : 'bg-terminal-muted'
+                }`}
+              />
+              {liveStatusLabel === 'LIVE' ? 'FEED OK' : liveStatusLabel}
+            </div>
+          )}
         </div>
       </div>
 
