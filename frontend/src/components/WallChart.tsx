@@ -169,7 +169,7 @@ export function WallChart({ symbol, tier, atm, ceWall, peWall, negGex, replayDat
         positionBadges();
       }
       const marks = alerts.filter(a => a.timeframe === tf).map(a => {
-        const ts = a.kind === 'SETUP_FORMING' ? (a.five_m_ts ?? a.c2_ts) : (a.c3_ts ?? a.c2_ts);
+        const ts = a.kind === 'SETUP_FORMING' ? a.five_m_ts : a.c3_ts;
         if (!ts) return null;
         const b = bucketStart(ts, tf);
         const tss = minsToTs(ts.slice(0, 10), b);

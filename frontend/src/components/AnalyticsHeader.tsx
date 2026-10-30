@@ -87,7 +87,7 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
           {isStale ? (
             <span
               className="flex items-center gap-1 text-[10px] font-mono text-amber-400"
-              title="Feed frozen — prices stopped updating. Do not trade or share from this view."
+              title="Live feed unavailable or stale — do not treat these values as current market data."
             >
               <WifiOff className="w-3 h-3" />
               STALE

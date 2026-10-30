@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 /** Mobile instrument picker — bottom sheet with a current-instrument hero,
  *  sticky search, kind-grouped sections (handles long lists), and an

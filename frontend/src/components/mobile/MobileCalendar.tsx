@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 /** Reusable month calendar for picking a date that has data.
  *  - only days present in `available` (YYYY-MM-DD) are tappable

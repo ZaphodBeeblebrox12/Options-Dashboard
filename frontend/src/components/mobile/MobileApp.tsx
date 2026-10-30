@@ -13,7 +13,7 @@ import MobileSettings from "./MobileSettings";
 import MobileLevelsRail from "./MobileLevelsRail";
 import MobileWalls from "./MobileWalls";
 import MobileStrikeSheet from "./MobileStrikeSheet";
-import { fmtExpiry, fmtPx, fmtGex, fmtNum } from "./mobileFormat";
+import { fmtExpiry, fmtPx, fmtGex } from "./mobileFormat";
 import { nearestStrike } from "../../strikeUtils";
 import "./mobile.css";
 
@@ -107,7 +107,7 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
   }, [selected, onInstrumentChange]);
 
   // ── Replay ────────────────────────────────────────────────────────────
-  const loadSnapshot = async (date: string, i: number, ts: string[]) => {
+  const loadSnapshot = async (_date: string, i: number, ts: string[]) => {
     const seq = ++snapSeq.current; // ignore out-of-order responses when scrubbing fast
     const t = ts[i];
     if (!t) return undefined;
@@ -118,7 +118,10 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
         const r = await fetch(`/api/snapshot/${encodeURIComponent(t)}?index=${encodeURIComponent(selected)}`);
         if (!r.ok) return;
         snap = await r.json();
-        if (snapCache.current.size >= SNAP_CACHE_MAX) snapCache.current.delete(snapCache.current.keys().next().value);
+        if (snapCache.current.size >= SNAP_CACHE_MAX) {
+          const oldestKey = snapCache.current.keys().next().value;
+          if (oldestKey !== undefined) snapCache.current.delete(oldestKey);
+        }
         snapCache.current.set(key, snap);
       } catch { return undefined; }
     }

@@ -1,4 +1,3 @@
-import React from "react";
 
 /** Display — mobile native. Compact/Full as a proper segmented control. */
 export default function MobileDisplayTab({ fullMode, onFullModeChange }: {

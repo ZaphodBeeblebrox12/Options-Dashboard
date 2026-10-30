@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /** Instruments v2 — mobile-first. Each instrument is its own card; symbol
  *  dominates, metadata is a quiet line, actions are proper pill buttons.

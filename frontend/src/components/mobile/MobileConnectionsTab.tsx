@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 /** Connections — mobile native: live health grade, WS slot capacity bars,
  *  per-instrument token usage. Polls the existing /api/ws/usage and

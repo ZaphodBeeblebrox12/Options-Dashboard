@@ -8,6 +8,7 @@ interface WSMessage {
 export function useWebSocket(url: string, onError?: (msg: string) => void) {
   const [connected, setConnected] = useState(false);
   const [lastMessage, setLastMessage] = useState<WSMessage | null>(null);
+  const socketRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -23,6 +24,7 @@ export function useWebSocket(url: string, onError?: (msg: string) => void) {
       if (ws) {
         const oldWs = ws;
         ws = null;
+        if (socketRef.current === oldWs) socketRef.current = null;
         oldWs.onopen = null;
         oldWs.onmessage = null;
         oldWs.onerror = null;
@@ -45,6 +47,7 @@ export function useWebSocket(url: string, onError?: (msg: string) => void) {
 
       console.log('[WS] Connecting...');
       ws = new WebSocket(url);
+      socketRef.current = ws;
 
       ws.onopen = () => {
         console.log('[WS] Connected');
@@ -70,6 +73,7 @@ export function useWebSocket(url: string, onError?: (msg: string) => void) {
       ws.onclose = (event) => {
         console.log(`[WS] Disconnected (code=${event.code})`);
         setConnected(false);
+        if (socketRef.current === ws) socketRef.current = null;
         if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
         if (!shouldReconnect) return;
         if (event.code === 1000) return; // intentional close
@@ -95,10 +99,19 @@ export function useWebSocket(url: string, onError?: (msg: string) => void) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [url]);
 
-  const send = (data: any) => {
-    // We need to access the current ws, but it's scoped inside useEffect.
-    // This is a limitation of the simple approach.
-    console.warn('[WS] send() not implemented in simple hook');
+  const send = (data: unknown): boolean => {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      console.warn('[WS] send() skipped: socket is not open');
+      return false;
+    }
+    try {
+      socket.send(JSON.stringify(data) ?? "null");
+      return true;
+    } catch (error) {
+      console.error('[WS] send() failed:', error);
+      return false;
+    }
   };
 
   return { connected, lastMessage, send };

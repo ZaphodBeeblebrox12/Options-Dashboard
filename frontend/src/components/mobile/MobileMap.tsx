@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import { useMemo } from "react";
 import { GexChart } from "../GexChart";
 import { fmtGex, fmtNum } from "./mobileFormat";
 
@@ -52,7 +52,7 @@ export default function MobileMap({ data, isScanner }: { data: any; isScanner: b
   }
 
   const atmStrike = data.spot != null && gexByStrike.length
-    ? gexByStrike.reduce((b, r) => Math.abs(r.strike - data.spot) < Math.abs(b - data.spot) ? r : b, gexByStrike[0]).strike
+    ? gexByStrike.reduce((b, r) => Math.abs(r.strike - data.spot) < Math.abs(b.strike - data.spot) ? r : b, gexByStrike[0]).strike
     : null;
 
   return (

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /** Mobile-native Sounds: compact add + per-sound player cards with
  *  play/pause, duration and progress — preview without leaving Settings.

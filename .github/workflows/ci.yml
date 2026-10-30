@@ -13,6 +13,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  frontend-policy-tests:
+    name: Frontend replay and freshness regression tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Test replay and live-status policies
+        run: node --test frontend/tests/*.test.mjs
+
   frontend:
     name: Frontend typecheck and build
     runs-on: ubuntu-latest

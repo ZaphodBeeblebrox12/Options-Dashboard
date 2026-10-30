@@ -129,10 +129,6 @@ export const AlertSettingsPanel: React.FC<AlertSettingsPanelProps> = ({ onTestTo
     }
   };
 
-  const allSounds = [
-    ...BUILT_IN_SOUNDS,
-    ...sounds.filter((s) => s.type === 'custom').map((s) => ({ id: s.id, name: s.name })),
-  ];
 
   const toastSec = Math.round((localSettings.toast_duration_ms ?? 6000) / 1000);
 
@@ -324,13 +320,13 @@ export const AlertSettingsPanel: React.FC<AlertSettingsPanelProps> = ({ onTestTo
                 </div>
                 <div className="flex items-center gap-1.5">
                   {rule.enabled && rule.channels.includes('toast') && (
-                    <MessageSquare className="w-3.5 h-3.5 text-terminal-atm" title="Toast" />
+                    <MessageSquare className="w-3.5 h-3.5 text-terminal-atm" aria-label="Toast" />
                   )}
                   {rule.enabled && rule.sound_enabled && (
-                    <Volume2 className="w-3.5 h-3.5 text-terminal-pe" title="Sound" />
+                    <Volume2 className="w-3.5 h-3.5 text-terminal-pe" aria-label="Sound" />
                   )}
                   {rule.enabled && rule.telegram_enabled && (
-                    <Send className="w-3.5 h-3.5 text-cyan-400" title="Telegram" />
+                    <Send className="w-3.5 h-3.5 text-cyan-400" aria-label="Telegram" />
                   )}
                   {isExpanded ? (
                     <ChevronUp className="w-4 h-4 text-terminal-muted" />

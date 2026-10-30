@@ -24,6 +24,18 @@ export function hoursForType(type: string | undefined | null): SessionHours {
   return HOURS_BY_TYPE[type ?? ""] ?? EQUITY_HOURS;
 }
 
+/** Return the current calendar date in the Indian market timezone, independent of browser/host timezone. */
+export function getMarketDateIST(now: Date = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(now);
+  const part = (type: string) => parts.find((item) => item.type === type)?.value ?? '';
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}
+
 function toMinutes(hhmm: string): number {
   const [h, m] = hhmm.split(":").map(Number);
   return h * 60 + m;

@@ -155,6 +155,8 @@ class LiveDataStore:
         self.baseline_loaded_from_db = False
         self.msg_count = 0
         self.last_update = None
+        # Monotonic time measures source-feed age without clock/timezone drift.
+        self.last_update_monotonic = None
         self.lock = threading.Lock()
         # Persistent per-instrument IV cache, shared by the 5s broadcast path,
         # the 30s snapshot path and Tier-3 triggered analytics. Thread-safe.
@@ -164,6 +166,7 @@ class LiveDataStore:
         with self.lock:
             self.msg_count += 1
             self.last_update = datetime.now().isoformat()
+            self.last_update_monotonic = time.monotonic()
             if strike not in self.data:
                 self.data[strike] = {"CE": {}, "PE": {}}
             old_oi = self.data[strike].get(option_type, {}).get("oi", 0)
@@ -188,6 +191,13 @@ class LiveDataStore:
     def get_data(self):
         with self.lock:
             return copy.deepcopy(self.data)
+
+    def age_sec(self):
+        """Seconds since the last option-chain tick (None if never)."""
+        with self.lock:
+            if self.last_update_monotonic is None:
+                return None
+            return round(max(0.0, time.monotonic() - self.last_update_monotonic), 1)
 
     def get_stats(self):
         with self.lock:
@@ -230,6 +240,8 @@ class SpotPricePoller:
         self.futures_volume = None   # v3.15: from mode-3 futures ticks
         self.last_ws_update = 0
         self.last_futures_ws_update = 0
+        self.last_ws_update_monotonic = None
+        self.last_futures_ws_update_monotonic = None
         self.spot_lock = threading.Lock()
 
     def get_spot(self):
@@ -259,19 +271,28 @@ class SpotPricePoller:
             self.spot_price = ltp
             self.spot_source = "WS"
             self.last_ws_update = time.time()
+            self.last_ws_update_monotonic = time.monotonic()
 
     def spot_age_sec(self):
         """Seconds since the last underlying tick (None if never)."""
         with self.spot_lock:
-            if not self.last_ws_update:
+            if self.last_ws_update_monotonic is None:
                 return None
-            return round(time.time() - self.last_ws_update)
+            return round(max(0.0, time.monotonic() - self.last_ws_update_monotonic), 1)
+
+    def futures_age_sec(self):
+        """Seconds since the last futures tick (None if never)."""
+        with self.spot_lock:
+            if self.last_futures_ws_update_monotonic is None:
+                return None
+            return round(max(0.0, time.monotonic() - self.last_futures_ws_update_monotonic), 1)
 
     def update_futures_from_ws(self, ltp, oi=None, volume=None):
         with self.spot_lock:
             self.futures_price = ltp
             self.futures_source = "WS"
             self.last_futures_ws_update = time.time()
+            self.last_futures_ws_update_monotonic = time.monotonic()
             if oi is not None:
                 self.futures_oi = oi
             if volume is not None:
@@ -516,10 +537,16 @@ if ANGEL_ONE_AVAILABLE:
         def get_current_state(self):
             now = time.time()
             if self._state_cache is not None and now - self._state_cache_time < 1.0:
-                return {
-                    **self._state_cache,
-                    "data": {**self._state_cache["data"], "timestamp": datetime.now().isoformat()}
+                # Refresh the age measurements on each rebroadcast. A new
+                # payload timestamp must never make old source data look fresh.
+                cached_data = {
+                    **self._state_cache["data"],
+                    "timestamp": datetime.now().isoformat(),
+                    "spot_age_sec": self.spot_poller.spot_age_sec(),
+                    "futures_age_sec": self.spot_poller.futures_age_sec(),
+                    "option_age_sec": self.data_store.age_sec(),
                 }
+                return {**self._state_cache, "data": cached_data}
 
             data = self.data_store.get_data()
             spot = self.spot_poller.get_spot()
@@ -536,6 +563,9 @@ if ANGEL_ONE_AVAILABLE:
                         "timestamp": datetime.now().isoformat(),
                         "options": [],
                         "market_open": is_market_open(),
+                        "spot_age_sec": self.spot_poller.spot_age_sec(),
+                        "futures_age_sec": self.spot_poller.futures_age_sec(),
+                        "option_age_sec": self.data_store.age_sec(),
                         "message": "Waiting for market data..." if is_market_open() else None,
                     }
                 }
@@ -577,6 +607,8 @@ if ANGEL_ONE_AVAILABLE:
                     }
 
             _age = self.spot_poller.spot_age_sec()
+            _futures_age = self.spot_poller.futures_age_sec()
+            _option_age = self.data_store.age_sec()
             if (_age is not None and _age > 90 and is_market_open()
                     and now - getattr(self, "_last_stale_warn", 0) > 60):
                 self._last_stale_warn = now
@@ -622,6 +654,8 @@ if ANGEL_ONE_AVAILABLE:
                         "instrument_kind": "index",
                         "tier": 1,
                         "spot_age_sec": _age,
+                        "futures_age_sec": _futures_age,
+                        "option_age_sec": _option_age,
                     }
                 }
                 self._state_cache = result

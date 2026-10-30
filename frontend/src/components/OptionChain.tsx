@@ -272,9 +272,6 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     );
   }
 
-  // Column count for grid templates
-  const ceCols = fullMode ? 7 : 4;
-  const peCols = fullMode ? 7 : 4;
   const totalMinWidth = fullMode ? 'min-w-[900px]' : 'min-w-[680px]';
 
   return (
