@@ -17,6 +17,7 @@ interface AnalyticsHeaderProps {
   timestamp: string;
   isLive: boolean;
   isStale?: boolean;
+  statusLabel?: string;
   isFetching?: boolean;
 }
 
@@ -57,14 +58,23 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
   timestamp,
   isLive,
   isStale = false,
+  statusLabel,
   isFetching = false,
 }) => {
   const panelRef = useRef<HTMLDivElement>(null);
   const tsLabel = timestamp
-    ? timestamp.replace(/[:\\s]/g, '-')
+    ? timestamp.replace(/[:\s]/g, '-')
     : new Date().toISOString().slice(0, 16).replace('T', '-');
   const screenshotFilename = `${indexName}-market-snapshot-${tsLabel}`;
-  const status = isStale ? 'STALE FEED' : isLive ? 'LIVE VERIFIED' : 'SNAPSHOT';
+  const status = isStale || statusLabel === 'STALE' ? 'STALE FEED'
+    : isLive || statusLabel === 'LIVE' ? 'LIVE VERIFIED'
+    : statusLabel === 'UNVERIFIED' ? 'FEED UNVERIFIED'
+    : statusLabel === 'NO FEED' ? 'NO LIVE FEED'
+    : statusLabel || 'SNAPSHOT';
+  const statusClass = isStale || statusLabel === 'STALE' ? 'is-stale'
+    : isLive || statusLabel === 'LIVE' ? 'is-live'
+    : statusLabel === 'UNVERIFIED' ? 'is-unverified'
+    : 'is-snapshot';
   const spreadValue = futuresSpread !== null
     ? `${futuresSpread >= 0 ? '+' : ''}${futuresSpread.toFixed(2)}`
     : '—';
@@ -79,7 +89,7 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
         <div className="premium-market-heading-left">
           <span className="premium-market-eyebrow">MARKET SNAPSHOT</span>
           <strong>{indexName}</strong>
-          <span className={`premium-market-status ${isStale ? 'is-stale' : isLive ? 'is-live' : 'is-snapshot'}`}>
+          <span className={`premium-market-status ${statusClass}`}>
             <i />
             {status}
           </span>
