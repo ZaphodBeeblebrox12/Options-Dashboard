@@ -109,6 +109,14 @@ class WallWatchManager:
     def __init__(self):
         self._lock = threading.RLock()
 
+    def get_armed_symbols(self) -> List[str]:
+        """Return symbols with at least one manually armed wall watch."""
+        with get_alert_db() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT symbol FROM wall_watch_state WHERE armed = 1 ORDER BY symbol"
+            ).fetchall()
+        return [str(row["symbol"]) for row in rows]
+
     def get_watches(self, symbol: str) -> Dict[str, dict]:
         symbol = symbol.strip().upper()
         with get_alert_db() as conn:
@@ -174,20 +182,16 @@ class WallWatchManager:
     def evaluate_snapshot(self, snapshot: dict, index_name: str) -> List[AlertTriggerPayload]:
         if not isinstance(snapshot, dict) or not snapshot.get("options"):
             return []
-        try:
-            if not app_settings.get_alerts_armed():
-                return []
-        except Exception:
-            pass  # follow the existing alert engine's fail-open master-switch policy
-
+        # A click on the row's bell is an explicit, symbol/side-specific
+        # opt-in. It must not be silently disabled by the unrelated global
+        # automatic-alert switch or by the automatic WALL_VACATED rule toggle.
+        # The rule's channel preferences still control delivery below.
         settings = alert_engine.get_settings()
         config = next(
             (rule for rule in settings.get("rules", [])
              if rule.get("rule_type") == AlertRuleType.WALL_VACATED.value),
-            None,
-        )
-        if not config or not config.get("enabled", True):
-            return []
+            {},
+        ) or {}
 
         spot = _number(snapshot.get("spot"))
         walls = calculate_wall_strikes(snapshot.get("options"), spot)
@@ -247,7 +251,7 @@ class WallWatchManager:
                     and telegram_destination.get("chat_id")
                 )
                 channels = []
-                rule_channels = config.get("channels", ["toast"])
+                rule_channels = config.get("channels") or ["toast"]
                 if NotificationChannel.TOAST.value in rule_channels:
                     channels.append(NotificationChannel.TOAST)
                 if (NotificationChannel.SOUND.value in rule_channels

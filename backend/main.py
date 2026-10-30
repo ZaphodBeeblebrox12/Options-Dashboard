@@ -432,6 +432,7 @@ async def lifespan(app: FastAPI):
 
     broadcast_task = asyncio.create_task(broadcast_loop())
     alert_broadcast_task = asyncio.create_task(alert_broadcast_loop())
+    wall_watch_task = asyncio.create_task(wall_watch_loop())
     print(f"[FastAPI] Server ready at http://localhost:8000")
     print(f"[FastAPI] Mode: {streamer_adapter.mode.upper()}")
     if streamer_adapter.mode == "unavailable":
@@ -444,8 +445,12 @@ async def lifespan(app: FastAPI):
     print("[FastAPI] Shutdown initiated — stopping broadcast tasks...")
     broadcast_task.cancel()
     alert_broadcast_task.cancel()
+    wall_watch_task.cancel()
     try:
-        await asyncio.gather(broadcast_task, alert_broadcast_task, return_exceptions=True)
+        await asyncio.gather(
+            broadcast_task, alert_broadcast_task, wall_watch_task,
+            return_exceptions=True,
+        )
     except Exception:
         pass
     print("[FastAPI] Stopping snapshot engine (timers + DB writer)...")
@@ -535,19 +540,8 @@ def _evaluate_snapshot_alerts(snapshot: dict, index_name: str) -> None:
         logging.error(f"[Alerts] Snapshot evaluation failed for {index_name}: {e}")
         fired = []
 
-    # Manual wall watches are a separate, user-armed one-shot state machine.
-    # They share the normal dispatch pipeline but do not depend on RULE_1/2
-    # being true, and continue to be evaluated even if an unrelated rule fails.
-    try:
-        wall_fired = wall_watch_manager.evaluate_snapshot(snapshot, index_name)
-    except Exception as e:
-        logging.error(f"[WallWatch] Snapshot evaluation failed for {index_name}: {e}")
-        wall_fired = []
-
     if fired:
         _dispatch_fired_alerts(fired)
-    if wall_fired:
-        _dispatch_fired_alerts(wall_fired)
 
 
 async def alert_broadcast_loop():
@@ -562,6 +556,56 @@ async def alert_broadcast_loop():
             break
         except Exception as e:
             logging.error(f"[AlertBroadcast] Error: {e}")
+
+
+async def wall_watch_loop():
+    """Evaluate explicitly armed wall watches against the live broker state.
+
+    The normal analytics snapshot path runs every 30s and excludes Tier 3.
+    Manual watches need a faster, tier-independent path so a visible OI-wall
+    migration is not missed between snapshots and every eligible instrument
+    can actually fire its user-armed watch.
+    """
+    while True:
+        try:
+            await asyncio.sleep(5)
+            if streamer_adapter.mode != "real":
+                continue
+
+            armed_symbols = await asyncio.to_thread(wall_watch_manager.get_armed_symbols)
+            if not armed_symbols:
+                continue
+
+            with streamer_adapter._stocks_lock:
+                available = set(streamer_adapter.streamers.keys())
+
+            for symbol in armed_symbols:
+                if symbol not in available:
+                    continue
+                try:
+                    state = await asyncio.to_thread(
+                        streamer_adapter.get_current_state,
+                        symbol,
+                    )
+                    data = (state or {}).get("data") or {}
+                    if not isinstance(data, dict) or data.get("error"):
+                        continue
+                    if data.get("market_open") is False or not data.get("options"):
+                        continue
+
+                    fired = await asyncio.to_thread(
+                        wall_watch_manager.evaluate_snapshot,
+                        data,
+                        symbol,
+                    )
+                    if fired:
+                        _dispatch_fired_alerts(fired)
+                except Exception as e:
+                    logging.error(f"[WallWatch] Live evaluation failed for {symbol}: {e}")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logging.error(f"[WallWatch] Live loop error: {e}")
 
 
 # ─────────────────────────────────────────────────────────────
