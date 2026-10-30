@@ -201,8 +201,26 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
         visibleRows = chainData.slice(start, end);
       }
     }
-    return strikeOrder === 'asc' ? visibleRows : [...visibleRows].reverse();
-  }, [chainData, atmSpot, atmFutures, strikeOrder]);
+
+    // Keep active OI walls and the original armed strikes visible even when
+    // they sit outside the ordinary ATM-centered 21-row viewport.
+    const pinnedStrikes = new Set<number>();
+    if (currentWalls.CE != null) pinnedStrikes.add(currentWalls.CE);
+    if (currentWalls.PE != null) pinnedStrikes.add(currentWalls.PE);
+    for (const watch of [wallWatches.CE, wallWatches.PE]) {
+      if (watch?.armed && watch.watched_strike != null) {
+        pinnedStrikes.add(Number(watch.watched_strike));
+      }
+    }
+    const visible = new Set(visibleRows.map((row) => row.strike));
+    for (const strike of pinnedStrikes) {
+      if (visible.has(strike)) continue;
+      const row = chainData.find((candidate) => candidate.strike === strike);
+      if (row) visibleRows = [...visibleRows, row];
+    }
+    visibleRows = [...visibleRows].sort((a, b) => a.strike - b.strike);
+    return strikeOrder === 'asc' ? visibleRows : visibleRows.reverse();
+  }, [chainData, atmSpot, atmFutures, strikeOrder, currentWalls, wallWatches]);
 
   // ── Jump to ATM ──
   const scrollToAtm = useCallback(() => {
@@ -480,13 +498,15 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                     )}
                     <div className={`group/ceoi relative px-1 sm:px-2 py-1 text-right flex items-center justify-end ${getCeOiClass(row.strike)}`}>
                       <OiRankBadge rank={ceRank} />
-                      {currentWalls.CE === row.strike && (
+                      {(wallWatches.CE?.armed
+                        ? Number(wallWatches.CE.watched_strike) === row.strike
+                        : currentWalls.CE === row.strike) && (
                         <button
                           type="button"
                           onClick={(event) => void toggleWallWatch('CE', event)}
                           disabled={watchBusy === 'CE' || (!wallWatches.CE?.armed && !canArm)}
                           title={wallWatches.CE?.armed
-                            ? `Disarm Call Wall watch at ${fmt(wallWatches.CE.watched_strike)}`
+                            ? `Disarm Call Wall watch anchored at ${fmt(wallWatches.CE.watched_strike)}; current wall ${fmt(currentWalls.CE)}`
                             : canArm ? `Arm Call Wall watch at ${fmt(row.strike)}` : 'Wall watch requires a connected, non-stale live feed'}
                           aria-label={wallWatches.CE?.armed ? 'Disarm Call Wall alert' : 'Arm Call Wall alert'}
                           aria-busy={watchBusy === 'CE'}
@@ -512,13 +532,15 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                   <div className={`grid ${fullMode ? 'grid-cols-7' : 'grid-cols-4'} gap-0 ${peItm ? ITM_TINT_CLASS : ''}`}>
                     <div className={`group/peoi relative px-1 sm:px-2 py-1 text-left flex items-center ${getPeOiClass(row.strike)}`}>
                       <PeOiRankBadge rank={peRank} />
-                      {currentWalls.PE === row.strike && (
+                      {(wallWatches.PE?.armed
+                        ? Number(wallWatches.PE.watched_strike) === row.strike
+                        : currentWalls.PE === row.strike) && (
                         <button
                           type="button"
                           onClick={(event) => void toggleWallWatch('PE', event)}
                           disabled={watchBusy === 'PE' || (!wallWatches.PE?.armed && !canArm)}
                           title={wallWatches.PE?.armed
-                            ? `Disarm Put Wall watch at ${fmt(wallWatches.PE.watched_strike)}`
+                            ? `Disarm Put Wall watch anchored at ${fmt(wallWatches.PE.watched_strike)}; current wall ${fmt(currentWalls.PE)}`
                             : canArm ? `Arm Put Wall watch at ${fmt(row.strike)}` : 'Wall watch requires a connected, non-stale live feed'}
                           aria-label={wallWatches.PE?.armed ? 'Disarm Put Wall alert' : 'Arm Put Wall alert'}
                           aria-busy={watchBusy === 'PE'}
