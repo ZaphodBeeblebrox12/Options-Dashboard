@@ -189,3 +189,136 @@ def test_armed_symbol_index_only_includes_active_manual_watches(monkeypatch):
         assert manager.get_armed_symbols() == ["SENSEX"]
     finally:
         conn.close()
+
+
+
+def _raw_option_store(now):
+    stamp = now.isoformat()
+    return {
+        25000: {
+            "CE": {"oi": 900, "ltp": 100, "last_update": stamp},
+            "PE": {"oi": 500, "ltp": 100, "last_update": stamp},
+        },
+        25100: {
+            "CE": {"oi": 1200, "ltp": 90, "last_update": stamp},
+            "PE": {"oi": 700, "ltp": 110, "last_update": stamp},
+        },
+    }
+
+
+def test_build_live_wall_watch_snapshot_uses_raw_oi_without_analytics():
+    from datetime import datetime
+    from wall_watch import build_live_wall_watch_snapshot
+
+    now = datetime.now()
+
+    class Store:
+        def get_data(self):
+            return _raw_option_store(now)
+
+        def age_sec(self):
+            return 2.0
+
+    class Spot:
+        def get_spot(self):
+            return 25050.0
+
+    class Streamer:
+        tier = 1
+        data_store = Store()
+        spot_poller = Spot()
+
+        def get_current_state(self):
+            raise AssertionError("wall watch must not call the full analytics path")
+
+    snapshot = build_live_wall_watch_snapshot(Streamer(), "NIFTY", lambda: True, now=now)
+
+    assert snapshot is not None
+    assert snapshot["option_age_sec"] == 2.0
+    assert snapshot["_side_freshness"] == {"CE": True, "PE": True}
+    assert snapshot["spot"] == 25050.0
+
+
+def test_build_live_wall_watch_snapshot_rejects_stale_paused_and_inactive_windows():
+    from datetime import datetime
+    from wall_watch import build_live_wall_watch_snapshot
+
+    now = datetime.now()
+    raw = _raw_option_store(now)
+
+    class Store:
+        def __init__(self, age):
+            self.age = age
+
+        def get_data(self):
+            return raw
+
+        def age_sec(self):
+            return self.age
+
+    class Streamer:
+        tier = 3
+        spot_poller = None
+
+        def __init__(self, age=2.0, paused=False, state="WINDOW_ACTIVE"):
+            self.data_store = Store(age)
+            self.paused = paused
+            self.state = state
+
+    assert build_live_wall_watch_snapshot(Streamer(age=91), "ABC", lambda: True, now) is None
+    assert build_live_wall_watch_snapshot(Streamer(paused=True), "ABC", lambda: True, now) is None
+    assert build_live_wall_watch_snapshot(Streamer(state="WINDOW_PENDING"), "ABC", lambda: True, now) is None
+    assert build_live_wall_watch_snapshot(Streamer(), "ABC", lambda: False, now) is None
+
+
+def test_build_live_wall_watch_snapshot_reports_side_freshness_independently():
+    from datetime import datetime, timedelta
+    from wall_watch import build_live_wall_watch_snapshot
+
+    now = datetime.now()
+    options = _raw_option_store(now)
+    old = (now - timedelta(seconds=120)).isoformat()
+    for contracts in options.values():
+        contracts["PE"]["last_update"] = old
+
+    class Store:
+        def get_data(self):
+            return options
+
+        def age_sec(self):
+            return 1.0
+
+    class Streamer:
+        data_store = Store()
+        spot_poller = None
+        tier = 1
+
+    snapshot = build_live_wall_watch_snapshot(Streamer(), "NIFTY", lambda: True, now)
+    assert snapshot is not None
+    assert snapshot["_side_freshness"] == {"CE": True, "PE": False}
+
+
+def test_wall_watch_waits_for_fresh_ticks_on_the_watched_side(monkeypatch):
+    manager, conn = _wall_watch_manager_with_test_db(monkeypatch)
+    try:
+        manager.arm("NIFTY", "CE", 25000)
+        snapshot = {
+            "timestamp": "2026-10-30T10:00:00",
+            "spot": 25050,
+            "option_age_sec": 2,
+            "_side_freshness": {"CE": False, "PE": True},
+            "options": [
+                {"strike": 25000, "option_type": "CE", "oi": 900},
+                {"strike": 25100, "option_type": "CE", "oi": 1200},
+            ],
+        }
+        assert manager.evaluate_snapshot(snapshot, "NIFTY") == []
+        assert manager.get_watches("NIFTY")["CE"]["armed"] is True
+
+        snapshot["_side_freshness"]["CE"] = True
+        fired = manager.evaluate_snapshot(snapshot, "NIFTY")
+        assert len(fired) == 1
+        assert fired[0].new_wall_strike == 25100
+        assert manager.get_watches("NIFTY")["CE"]["armed"] is False
+    finally:
+        conn.close()

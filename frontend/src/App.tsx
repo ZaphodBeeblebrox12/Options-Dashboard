@@ -255,7 +255,10 @@ function App() {
       if (!showAlertHistory) {
         setUnseenAlertCount((c) => c + 1);
       }
-      if (alertScope === 'all' || alertData.index_name === selectedIndex) {
+      // A manually armed wall watch is an explicit request for a notification
+      // even after the user switches the dashboard to another instrument.
+      if (alertData.rule_type === 'wall_vacated' ||
+          alertScope === 'all' || alertData.index_name === selectedIndex) {
         const channels = alertData.channels_fired ?? [];
         if (channels.includes('toast')) {
           addToast(alertData);

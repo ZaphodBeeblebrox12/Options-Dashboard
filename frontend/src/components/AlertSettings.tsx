@@ -23,7 +23,7 @@ const RULE_DESCRIPTIONS: Record<string, string> = {
   'atm_negative_gex_oi_wall': 'ATM is the max negative GEX wall AND ATM is either max CE or max PE OI wall',
   'atm_max_ce_pe_wall': 'ATM is either the maximum CE OI wall or maximum PE OI wall',
   'wall_reversal': 'Detects Evening Star-style CE Wall bearish reversals and Morning Star-style PE Wall bullish reversals on 15m, 30m and 1H.',
-  'wall_vacated': 'For a wall you manually arm, alert once when the watched Call Wall or Put Wall moves off its original strike, then automatically disarm that watch.',
+  'wall_vacated': 'Arm or disarm from the bell beside the Call/Put Wall in the option chain. This card controls delivery channels only; the watch fires once when OI moves the wall off its original strike, then auto-disarms.',
 };
 
 const BUILT_IN_SOUNDS = [
@@ -283,7 +283,9 @@ export const AlertSettingsPanel: React.FC<AlertSettingsPanelProps> = ({ onTestTo
             <div
               key={rule.rule_type}
               className={`border rounded-lg overflow-hidden transition-colors ${
-                rule.enabled ? 'border-terminal-border' : 'border-terminal-border/50 opacity-70'
+                rule.enabled || rule.rule_type === 'wall_vacated'
+                  ? 'border-terminal-border'
+                  : 'border-terminal-border/50 opacity-70'
               }`}
             >
               {/* Rule Header */}
@@ -291,24 +293,34 @@ export const AlertSettingsPanel: React.FC<AlertSettingsPanelProps> = ({ onTestTo
                 className="grid grid-cols-[36px_minmax(0,1fr)_auto] items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-white/5"
                 onClick={() => setExpandedRule(isExpanded ? null : rule.rule_type)}
               >
-                <SettingsSwitch
-                  checked={rule.enabled}
-                  onChange={(checked) => updateRule(rule.rule_type, { enabled: checked })}
-                  label={`Enable ${ruleName}`}
-                  stopPropagation
-                />
+                {rule.rule_type === 'wall_vacated' ? (
+                  <div
+                    className="flex h-8 w-9 items-center justify-center text-amber-300"
+                    title="Arm and disarm this watch with the bell beside the wall in the option chain"
+                    aria-label="Wall watch is controlled by the option-chain bell"
+                  >
+                    <Bell className="h-4 w-4" />
+                  </div>
+                ) : (
+                  <SettingsSwitch
+                    checked={rule.enabled}
+                    onChange={(checked) => updateRule(rule.rule_type, { enabled: checked })}
+                    label={`Enable ${ruleName}`}
+                    stopPropagation
+                  />
+                )}
                 <div className="min-w-0">
                   <div className="text-xs font-semibold leading-snug">{ruleName}</div>
                   <div className="break-words text-[10px] font-mono leading-relaxed text-terminal-muted">{ruleDesc}</div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
-                  {rule.enabled && rule.channels.includes('toast') && (
+                  {(rule.enabled || rule.rule_type === 'wall_vacated') && rule.channels.includes('toast') && (
                     <MessageSquare className="w-3.5 h-3.5 text-terminal-atm" aria-label="Toast" />
                   )}
-                  {rule.enabled && rule.sound_enabled && (
+                  {(rule.enabled || rule.rule_type === 'wall_vacated') && rule.sound_enabled && (
                     <Volume2 className="w-3.5 h-3.5 text-terminal-pe" aria-label="Sound" />
                   )}
-                  {rule.enabled && rule.telegram_enabled && (
+                  {(rule.enabled || rule.rule_type === 'wall_vacated') && rule.telegram_enabled && (
                     <Send className="w-3.5 h-3.5 text-cyan-400" aria-label="Telegram" />
                   )}
                   {isExpanded ? (
@@ -322,25 +334,27 @@ export const AlertSettingsPanel: React.FC<AlertSettingsPanelProps> = ({ onTestTo
               {/* Expanded Config */}
               {isExpanded && (
                 <div className="px-3 pb-3 space-y-3 border-t border-terminal-border/50">
-                  {/* Cooldown */}
-                  <div className="pt-2 flex items-center gap-3">
-                    <Clock className="w-3.5 h-3.5 text-terminal-muted" />
-                    <span className="text-[10px] font-mono text-terminal-muted">Cooldown</span>
-                    <select
-                      value={rule.cooldown_seconds}
-                      onChange={(e) =>
-                        updateRule(rule.rule_type, { cooldown_seconds: Number(e.target.value) })
-                      }
-                      className="bg-terminal-bg border border-terminal-border rounded px-2 py-1 text-[10px] font-mono"
-                    >
-                      <option value={60}>1 min</option>
-                      <option value={120}>2 min</option>
-                      <option value={180}>3 min</option>
-                      <option value={300}>5 min</option>
-                      <option value={600}>10 min</option>
-                      <option value={900}>15 min</option>
-                    </select>
-                  </div>
+                  {/* Cooldown applies to recurring automatic rules, not the one-shot manual wall watch. */}
+                  {rule.rule_type !== 'wall_vacated' && (
+                    <div className="pt-2 flex items-center gap-3">
+                      <Clock className="w-3.5 h-3.5 text-terminal-muted" />
+                      <span className="text-[10px] font-mono text-terminal-muted">Cooldown</span>
+                      <select
+                        value={rule.cooldown_seconds}
+                        onChange={(e) =>
+                          updateRule(rule.rule_type, { cooldown_seconds: Number(e.target.value) })
+                        }
+                        className="bg-terminal-bg border border-terminal-border rounded px-2 py-1 text-[10px] font-mono"
+                      >
+                        <option value={60}>1 min</option>
+                        <option value={120}>2 min</option>
+                        <option value={180}>3 min</option>
+                        <option value={300}>5 min</option>
+                        <option value={600}>10 min</option>
+                        <option value={900}>15 min</option>
+                      </select>
+                    </div>
+                  )}
 
                   {/* Channels */}
                   <div className="space-y-2">
