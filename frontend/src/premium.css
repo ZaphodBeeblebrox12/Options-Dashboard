@@ -164,6 +164,7 @@
 .premium-market-heading-right { color:#8a9690; font-size:9px; font-variant-numeric:tabular-nums; }
 .premium-market-status { padding:4px 8px; }
 .premium-market-status.is-snapshot { color:#77837d; background:#f2f5f2; }
+.premium-market-status.is-unverified { color:#936b36; background:#fbf3e7; border-color:#eee1ca; }
 .premium-atm-chip {
   display:inline-flex; align-items:center; gap:6px; border:1px solid #e7e0d3;
   border-radius:6px; background:#f8f4ec; color:#98713f; padding:4px 7px;
@@ -224,7 +225,7 @@
 }
 .premium-chain-section [data-strike]:hover { background:#f3f7f4 !important; }
 .premium-chain-section [data-strike].bg-white\/10 { background:#edf4ef !important; }
-.premium-chain-section [data-strike] > div:nth-child(2) { background-color:#fafbf9; }
+.premium-chain-section [data-strike] > div:nth-child(2):not([class*="bg-yellow-900"]):not([class*="bg-cyan-900"]):not([class*="bg-fuchsia-900"]) { background-color:#fafbf9; }
 .premium-chain-section [data-strike] .bg-white\/\[0\.045\] { background:rgba(227,235,229,.56) !important; }
 .premium-chain-section [class*="bg-red-800"] { background:#b95d55 !important; color:#fff !important; box-shadow:none !important; }
 .premium-chain-section [class*="bg-red-900"] { background:#f8e9e7 !important; color:#a65049 !important; }
