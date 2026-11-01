@@ -159,3 +159,42 @@ Potential later opportunity view:
 7. Later phase: design announcement monitoring, document extraction, announced-vs-effective status and reconciliation against constituent snapshots.
 
 **Decision captured:** Phase 1 starts with NIFTY 50 and BANK NIFTY; after-market NSE derivatives bhavcopy screening creates the shortlist; live Angel One subscriptions are reserved for shortlisted contracts and used to validate actual execution liquidity.
+
+
+## Future development: Index lead–lag / early-warning scanner
+
+**Status:** Future research item only. Not part of the initial index-universe and options-liquidity work. No implementation is authorized by this note.
+
+### Idea
+
+Investigate whether particular heavyweight constituents tend to move ahead of their benchmark index, potentially providing an early indication of an impending index move or breakout. The initial benchmarks are NIFTY 50 and BANK NIFTY.
+
+This is a lead–lag hypothesis to test, not an assumption that an individual stock reliably predicts the index. A stock may move first because of stock-specific news, may react to the same information as the index, or may lead only in certain market regimes.
+
+### Research questions / candidate measurements
+
+- **Lead horizon:** Test whether a constituent's returns or breakout activity precede index movement at horizons such as 1, 2, 5 and 10 minutes.
+- **Conditional follow-through:** After a defined stock move or breakout, measure how often the benchmark subsequently moves in the same direction within each horizon.
+- **Magnitude:** Measure the distribution of subsequent index returns, not just the percentage of times direction matched.
+- **Stability:** Test across different dates, volatility regimes, trend/range conditions and market sessions; avoid selecting leaders from one isolated period.
+- **Volume confirmation:** Check whether the constituent's move is accompanied by abnormal traded volume/turnover.
+- **Breadth / agreement:** Test whether multiple historically leading, influential constituents are confirming in the same direction rather than relying on a single stock.
+- **Out-of-sample validation:** Define signals without look-ahead bias, account for overlapping observations and transaction costs, and validate on dates not used to discover the relationship.
+
+### Data requirement
+
+Daily derivatives Bhavcopy is not sufficient to establish minute-level lead–lag behaviour. This research needs aligned historical intraday prices for the relevant constituents and the benchmark index, ideally one-minute bars (with five-minute bars as a possible lower-resolution alternative). Historical intraday volume should be included where available.
+
+Before implementation, verify the availability, coverage, timestamp alignment, adjustment methodology, cost and licensing of a suitable historical intraday data source. Do not assume the existing Angel One live feed provides six months of historical intraday data.
+
+### Possible eventual output
+
+A separate **Index Early Warning** view could show:
+- benchmark (NIFTY 50 or BANK NIFTY) and current directional context;
+- constituents with historically tested lead relationships;
+- which leaders are currently moving and whether volume confirms;
+- whether several influential constituents agree;
+- the observed lead horizon and historical follow-through statistics;
+- index breakout level/status and whether index confirmation is still pending.
+
+This should be an informational early-warning signal, not an automatic order trigger or a claim that a breakout is imminent. Keep it separate from the stock-selection/liquidity scanner: beta estimates sensitivity, relative strength/momentum describe current or recent performance, options liquidity assesses tradability, while lead–lag research tests whether a stock's move tends to precede the index.
