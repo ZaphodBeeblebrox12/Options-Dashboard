@@ -444,3 +444,12 @@ The current deliverable is `stock-opportunity-lab.zip`, delivered in the convers
 NSE's current official reports page continues to list the CM-UDiFF Common Bhavcopy Final ZIP and marks the older CM CSV/common-bhavcopy formats discontinued from 8 July 2024. The official derivatives reports page likewise lists F&O-UDiFF Common Bhavcopy Final ZIP and marks older formats discontinued. Use the official reports pages as the source of truth for current report availability:
 - https://www.nseindia.com/all-reports
 - https://www.nseindia.com/all-reports-derivatives
+
+
+## Separate history windows in the prototype
+
+The local prototype now has two independent history selectors:
+- **F&O derivatives Bhavcopy:** six months by default, used for the options-liquidity gate. This preserves the original starting plan.
+- **Cash prices + benchmark index history:** twelve months by default, used for current Beta/Alpha/RS and the adaptive model's older training plus later holdout. Six or nine months can be selected, but the adaptive model may correctly fall back to neutral if there are not enough independent signal dates.
+
+This avoids downloading twelve months of derivatives Bhavcopy merely to give the adaptive cash-market model more training history.
