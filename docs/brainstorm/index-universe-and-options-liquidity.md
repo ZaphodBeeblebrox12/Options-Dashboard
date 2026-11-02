@@ -292,3 +292,36 @@ The standalone HTML file previously created was only a manual-input scoring UI. 
 ### Programmatic retrieval caveat
 
 The source datasets and downloadable report paths are published on NSE's website. Before relying on unattended simple `requests` downloads, test the exact historical archive endpoints, response headers, date selection, cookies/session requirements and rate limits. Use ordinary HTTP downloads when they work reliably; do not assume every interactive page's download action is a static public URL.
+
+
+## Cash-price acquisition strategy: per-symbol first, daily bulk fallback
+
+**Clarification:** We do not automatically need to download six months of daily *cash-market* Bhavcopy files. NSE offers two cash-price retrieval paths, and the smaller targeted path should be tested first for the initial NIFTY 50 + BANK NIFTY F&O universe.
+
+### Option A — NSE Security-wise Price Volume Archive (preferred first test)
+
+Official page: https://www.nseindia.com/report-detail/eq_security
+
+The page supports 1D, 1W, 1M, 3M, 6M, 1Y, 5Y and custom ranges, with CSV download. A symbol is required for multi-day queries.
+
+Proposed collection:
+- Build the de-duplicated intersection of current NIFTY 50 / NIFTY BANK constituents and the current F&O-eligible stock universe.
+- Fetch a six-month CSV for each required stock symbol.
+- Fetch benchmark index histories separately for NIFTY 50 and NIFTY BANK via NSE Indices historical data.
+- Normalize and align dates in Python.
+
+This is approximately one historical cash-price request per eligible underlying, rather than one cash Bhavcopy file for every trading date. It is the preferred initial route only if we can automate the site's download reliably and within reasonable rate limits. Test the precise requests/session flow; do not assume the UI's CSV action has a stable unauthenticated endpoint.
+
+### Option B — Daily CM-UDiFF Common Bhavcopy Final (cash-market fallback)
+
+Official page: https://www.nseindia.com/all-reports
+
+Download one CM-UDiFF Common Bhavcopy Final ZIP per trading session, then retain all required underlying symbols from each day's file. Approximately 125–130 daily files for a six-calendar-month period. This is broader than necessary for our initial limited universe but provides a consistent bulk daily snapshot and is a reliable fallback if the per-symbol route cannot be automated.
+
+### Do not confuse cash history and derivatives history
+
+The cash-price collection decision above applies to beta, alpha and relative strength inputs only.
+
+The separate **F&O UDiFF derivatives Bhavcopy** is still the preferred daily bulk source for options contract activity, volume, premium turnover and OI. The six-month derivatives liquidity history is not replaced by downloading one cash-price CSV per stock.
+
+**Implementation decision:** Test NSE Security-wise Archive automation first for cash prices; use daily cash CM-UDiFF bulk files only if necessary. Continue to plan daily F&O derivatives Bhavcopy collection for options-liquidity history.
