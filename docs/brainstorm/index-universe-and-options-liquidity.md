@@ -396,9 +396,14 @@ Options liquidity is not simply another return-predicting factor. Keep a minimum
 - Re-estimate on a controlled schedule (e.g. weekly after the completed session), not every screen refresh or every intraday tick.
 - Display the current weights, training period, number of signal dates, factor ICs, fallback status and last update time so the user can audit why weights changed.
 
-### Proposed UI modes
+### UI and operating approach
 
-1. **Fixed / Manual:** user can experiment with explicit weights.
-2. **Adaptive / Walk-forward:** Python estimates weights from historical predictive evidence, with shrinkage and out-of-sample checks; falls back to fixed weights when sample quality is inadequate.
+There is no user-configured manual-weight mode. The user should not have to guess how much importance to assign to Beta, Alpha or Relative Strength.
 
-**Decision:** Do not silently replace the existing fixed formula. Add adaptive weights as an explicit opt-in mode after the historical training panel and walk-forward validation are implemented and tested.
+- Python estimates the weights from historical predictive evidence using the walk-forward process above.
+- The engine applies shrinkage, caps individual weights, limits week-to-week changes and checks out-of-sample performance.
+- If the evidence is insufficient or unstable, the engine must report that adaptive weights are unavailable and use a documented conservative fallback model internally. It must not ask the user to invent weights or silently present guessed weights as learned.
+- Show the calculated weights, factor ICs, training period, sample size, validation status, fallback status and last recalculation time for transparency. These are diagnostics, not manual controls.
+- Liquidity remains a separate eligibility gate and live execution check, not a learned return-prediction weight.
+
+**Decision captured:** The intended user experience is one automated scoring mode. Remove manual weight controls from the planned calculator. Adaptive weighting is the default objective, but it must be earned through sufficient data and walk-forward validation; until then the system clearly labels its provisional fallback.
