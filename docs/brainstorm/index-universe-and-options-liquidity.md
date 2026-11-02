@@ -362,3 +362,6 @@ The prototype caches downloaded files locally, uses sequential/paced HTTP reques
 - The app flags that an F&O Bhavcopy row is not a definitive current eligibility register; verify against the current NSE contract master before production use.
 - Corporate-action adjusted-price handling is still an open production requirement. Raw close histories can create false returns around splits/bonuses; extreme moves need review and properly sourced adjustment factors.
 - The Python calculation/parser unit tests passed using synthetic fixtures in the build environment. **Live NSE downloads were not verified in that environment** because outbound DNS/network access was unavailable. The first run from the user's computer must validate session behavior, response types, exact UDiFF columns and coverage before trusting outputs.
+
+
+Prototype build validation note (2 Nov 2026): Python files passed `py_compile`; four synthetic unit tests passed for beta/alpha recovery, bullish-vs-bearish direction handling, UDiFF field parsing and ATM-window liquidity aggregation. The Flask browser route was not exercised in the build container because Flask was not installed there (it is included in `requirements.txt` for local setup). Live NSE HTTP requests were not exercised because outbound DNS/network access was unavailable in the build environment.
