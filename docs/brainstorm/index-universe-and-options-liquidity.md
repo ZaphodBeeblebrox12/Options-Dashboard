@@ -406,3 +406,41 @@ There is no user-configured manual-weight mode. The user should not have to gues
 - Liquidity remains a separate eligibility gate and live execution check, not a learned return-prediction weight.
 
 **Decision captured:** The intended user experience is one automated scoring mode. Remove manual weight controls from the planned calculator. Adaptive weighting is the default objective, but it must be earned through sufficient data and walk-forward validation; until then the system clearly labels its provisional fallback.
+
+
+## Adaptive prototype implementation update — 2 Nov 2026
+
+The standalone calculator has been upgraded from manual-weight UI to a Python-backed adaptive model.
+
+### Implemented in the local prototype package
+
+- Removed all manual factor-weight input controls.
+- Builds historical point-in-time Beta, annualized regression Alpha and Relative Strength factor observations from cash prices.
+- Uses five-session forward stock returns aligned to the realized direction of the benchmark; omits benchmark moves smaller than 0.15%.
+- Calculates daily cross-sectional Spearman ICs.
+- Fits candidate weights using the oldest 75% of usable signal dates, discounts effective sample count by the five-session forward-label overlap, rewards stable positive IC only, shrinks 35% toward equal weights and caps a factor at 65%.
+- Tests candidate weights on the newest 25% of usable dates, which were not used for fitting. Adaptive weights are accepted only when the holdout IC is positive and exceeds the equal-weight neutral baseline by at least 0.005.
+- When training/validation samples are insufficient or the holdout test fails, returns a transparent **Neutral fallback — not learned** state. The fallback is not represented as model-learned evidence.
+- Options liquidity is a separate hard pass/fail gate; it is not included as a predictive weight.
+- Shows learned weights, IC diagnostics, training/holdout sample counts and validation result in the HTML UI.
+
+### Important history-length implication
+
+Six months can calculate the current 60-session Beta and 20-session RS, but may not be enough for robust adaptive training plus a later-date holdout. The engine intentionally falls back rather than overfit. If this occurs, test a 9–12 month cash-price history for the adaptive model while keeping the initial F&O liquidity archive at six months.
+
+### Validation completed in the build environment
+
+- Python compilation: passed.
+- Synthetic calculation/parser tests: **8 passed**.
+- Browser JavaScript syntax check: passed with Node.
+- Verified that the HTML contains no manual weight fields and the backend no longer accepts weight overrides.
+- Flask could not be installed in the build environment because outbound network access was unavailable; therefore the live Flask server route was not run here. Flask is included in the package requirements for local installation.
+- Live NSE downloads were not verified in the build environment. The first local run must confirm session/cookie behavior, responses, exact field names and completeness. No NSE data is fabricated in the package.
+
+The current deliverable is `stock-opportunity-lab.zip`, delivered in the conversation. It contains the Python engine, Flask application, HTML interface, tests, Windows launcher and README. This prototype is separate from the dashboard's production code; no GEX or production dashboard files were changed.
+
+### Current NSE reports cross-check
+
+NSE's current official reports page continues to list the CM-UDiFF Common Bhavcopy Final ZIP and marks the older CM CSV/common-bhavcopy formats discontinued from 8 July 2024. The official derivatives reports page likewise lists F&O-UDiFF Common Bhavcopy Final ZIP and marks older formats discontinued. Use the official reports pages as the source of truth for current report availability:
+- https://www.nseindia.com/all-reports
+- https://www.nseindia.com/all-reports-derivatives
