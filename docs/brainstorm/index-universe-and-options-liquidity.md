@@ -365,3 +365,40 @@ The prototype caches downloaded files locally, uses sequential/paced HTTP reques
 
 
 Prototype build validation note (2 Nov 2026): Python files passed `py_compile`; four synthetic unit tests passed for beta/alpha recovery, bullish-vs-bearish direction handling, UDiFF field parsing and ATM-window liquidity aggregation. The Flask browser route was not exercised in the build container because Flask was not installed there (it is included in `requirements.txt` for local setup). Live NSE HTTP requests were not exercised because outbound DNS/network access was unavailable in the build environment.
+
+
+## Dynamic / adaptive scoring weights — design proposal
+
+The standalone prototype currently uses **fixed, user-editable weights** (30% beta, 20% alpha, 30% relative strength, 20% liquidity). It does not yet learn weights automatically. The user asked whether weights should be calculated dynamically; this section records the recommended approach for a future prototype iteration.
+
+### Recommended approach: walk-forward predictive weights
+
+Do not change weights arbitrarily based only on the current stock readings. Estimate them from historical evidence about which factors actually ranked subsequent stock performance during comparable index-direction episodes.
+
+For each historical signal date, using only information available on that date:
+1. Calculate each stock's trailing beta (e.g. 60 sessions), annualized regression alpha (same regression window), and relative strength (e.g. 20 sessions) against the selected benchmark.
+2. Look forward a chosen horizon (initial test: five trading sessions).
+3. For a bullish calibration sample, retain historical episodes where the benchmark's subsequent five-session return was positive; for bearish, retain episodes where it was negative.
+4. Measure each factor's cross-sectional rank correlation / information coefficient (IC) with the subsequent direction-adjusted stock return across the eligible constituents.
+5. Aggregate IC evidence over a rolling training window. Penalize redundant information where alpha and relative strength are highly correlated.
+6. Convert stable positive predictive contributions into candidate weights, blend/shrink them toward a conservative baseline, cap individual weights and limit how quickly weights can change.
+7. Evaluate the resulting weights on later, untouched dates using walk-forward validation against the fixed baseline. Never use future data to construct the features or train weights for an earlier test date.
+
+### Liquidity should remain a separate tradeability gate
+
+Options liquidity is not simply another return-predicting factor. Keep a minimum options-liquidity qualification threshold and live spread/depth validation separate from the learned beta/alpha/relative-strength weights. A liquid contract is tradable; liquidity by itself does not mean the underlying will outperform. Do not let an illiquid option become eligible because its other scores are high.
+
+### Fallback, sample size and controls
+
+- Use fixed baseline weights when there is insufficient evidence, unstable ICs, missing fields or a poor validation result.
+- Six months may be enough to estimate a 60-session beta and 20-session RS, but may be marginal for learning stable weights after the required feature lookbacks and forward-return labels. Show sample size and confidence; do not fabricate adaptive weights when evidence is weak.
+- Consider collecting 12 months for adaptive calibration if six months produces too few independent signal episodes. This does not change the initial six-month data-download preference for the first static metric experiment.
+- Re-estimate on a controlled schedule (e.g. weekly after the completed session), not every screen refresh or every intraday tick.
+- Display the current weights, training period, number of signal dates, factor ICs, fallback status and last update time so the user can audit why weights changed.
+
+### Proposed UI modes
+
+1. **Fixed / Manual:** user can experiment with explicit weights.
+2. **Adaptive / Walk-forward:** Python estimates weights from historical predictive evidence, with shrinkage and out-of-sample checks; falls back to fixed weights when sample quality is inadequate.
+
+**Decision:** Do not silently replace the existing fixed formula. Add adaptive weights as an explicit opt-in mode after the historical training panel and walk-forward validation are implemented and tested.
