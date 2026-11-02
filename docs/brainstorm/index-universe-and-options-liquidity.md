@@ -252,3 +252,43 @@ A browser-only HTML prototype was prepared as `stock-opportunity-score.html`. It
 4. What Bhavcopy-derived measures and thresholds should define the options-liquidity score for near-ATM contracts?
 5. Does a hard minimum liquidity gate of 35/100 remove illiquid names without excluding usable contracts?
 6. Validate the score out-of-sample and compare the selected stock-options exposure with simply trading the index option. Do not assume a high score implies better realized returns.
+
+
+## Cash-market historical prices for beta, alpha and relative strength
+
+**Correction / source clarification:** Do not expect derivatives Bhavcopy to provide the stock cash-market close history required for beta, Jensen's alpha or relative strength. These metrics require aligned historical cash-equity prices for each constituent and the matching index.
+
+### Official NSE sources verified
+
+- NSE All Reports: https://www.nseindia.com/all-reports
+  - Daily **CM-UDiFF Common Bhavcopy Final (ZIP)** is the preferred bulk daily cash-market source. The older CM Bhavcopy CSV/common Bhavcopy formats were discontinued from 8 July 2024; use the UDiFF CM common Bhavcopy final format.
+  - Download one daily file per trading session, parse the daily equity records, and retain the required symbols' close prices (and OHLC if useful).
+- NSE Historical Reports: https://www.nseindia.com/static/resources/historical-reports-capital-market-daily-monthly-archives
+  - Lists both Security-wise Price Volume Archives (Equities) and Historical Index Data.
+- NSE Security-wise Archives (Equities): https://www.nseindia.com/report-detail/eq_security
+  - Supports 1D, 1W, 1M, 3M, 6M, 1Y, 5Y and custom ranges with CSV download. NSE notes that a symbol is mandatory for more than one day of data, so this is useful for individual-symbol checks but is not the preferred one-download-for-the-whole-universe route.
+- NSE Indices Historical Data: https://www.niftyindices.com/reports/historical-data
+  - Use the index-specific history for NIFTY 50 and NIFTY BANK benchmark closes. Do not substitute an ETF or futures series for the index without explicitly deciding to do so.
+
+### Preferred initial six-month collection
+
+1. Enumerate the last approximately six months of NSE trading sessions.
+2. Retrieve each session's official CM-UDiFF Common Bhavcopy Final ZIP from the NSE historical/current reports archive.
+3. Validate date, expected schema, security series and successful ZIP/CSV parsing. Save source URL, file date, checksum and retrieval time.
+4. Filter/retain the cash-equity close series for the current NIFTY 50 and NIFTY BANK constituents (de-duplicate overlap).
+5. Retrieve the matching NIFTY 50 and NIFTY BANK historical index close series from NSE Indices.
+6. Align stock and benchmark observations by trading date and calculate daily returns in Python.
+7. Compute rolling beta, regression alpha and relative strength from those aligned daily returns. The initial beta/alpha window discussed is 60 trading sessions; relative strength may use a 20-session excess return.
+8. Handle corporate actions / price adjustments consistently before interpreting return statistics. A raw bhavcopy close may be unadjusted around splits, bonuses or other corporate actions; verify and apply appropriate adjustments or flag affected series.
+
+### Important implementation distinction
+
+- **Cash-market CM Bhavcopy:** underlying stock prices used for beta, alpha and relative strength.
+- **Index historical data:** benchmark index closes used for stock-vs-index comparisons.
+- **Derivatives F&O UDiFF Bhavcopy:** option/futures volume, turnover, OI and contract activity used for liquidity screening.
+
+The standalone HTML file previously created was only a manual-input scoring UI. A proper data-driven prototype should be Python-backed: download/parse these official datasets, calculate the metrics, then render the results in HTML. Do not describe the manual-input prototype as having calculated alpha, beta or liquidity from NSE data.
+
+### Programmatic retrieval caveat
+
+The source datasets and downloadable report paths are published on NSE's website. Before relying on unattended simple `requests` downloads, test the exact historical archive endpoints, response headers, date selection, cookies/session requirements and rate limits. Use ordinary HTTP downloads when they work reliably; do not assume every interactive page's download action is a static public URL.
