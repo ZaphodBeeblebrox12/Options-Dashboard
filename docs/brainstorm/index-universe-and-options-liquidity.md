@@ -200,59 +200,58 @@ A separate **Index Early Warning** view could show:
 This should be an informational early-warning signal, not an automatic order trigger or a claim that a breakout is imminent. Keep it separate from the stock-selection/liquidity scanner: beta estimates sensitivity, relative strength/momentum describe current or recent performance, options liquidity assesses tradability, while lead–lag research tests whether a stock's move tends to precede the index.
 
 
-## Shortlist scoring model — standalone prototype
+## Shortlist scoring model — adaptive Python prototype
 
-**Status:** Experimental scoring model for hands-on testing. Weights, bands and thresholds are not production-approved.
+**Status:** Experimental data-driven model. Not a production trading signal and not approved for live execution.
 
-### Intended purpose
+### Objective
 
-When the user has a directional view on NIFTY 50 or NIFTY BANK, rank constituent F&O stocks that may offer greater directional exposure through their own options. The score is a screening/ranking aid, not a trade signal or a guarantee of future movement.
+When the user has a directional thesis on NIFTY 50 or NIFTY BANK, rank constituent F&O stocks that may provide useful directional exposure through their stock options. The user selects the index and bullish/bearish view; Python calculates metrics and learns predictive factor weights. There are no manual weight controls.
 
-### Initial default weights
+### Separate prediction from tradability
 
-- Beta: **30%**
-- Jensen's alpha: **20%**
-- Relative strength: **30%**
-- Options liquidity: **20%**
+- **Predictive ranking factors:** Beta, Jensen-style Alpha and Relative Strength.
+- **Options liquidity:** separate hard eligibility gate, not part of the predictive weighted score. A high-liquidity stock is not automatically expected to outperform; liquidity only indicates whether its option market may be more tradable.
+- **Live execution check:** shortlisted individual option contracts still require live bid/ask spread, available quantities/depth, activity and freshness validation through Angel One.
 
-If the entered weights do not total 100%, normalize them proportionally. All component scores are converted to a 0–100 scale before weighting.
+### Current factor definitions
 
-### Data definitions and separate sources
+- **Beta:** trailing OLS sensitivity of daily cash-equity stock returns to the selected benchmark's daily returns. Default estimation window: 60 sessions.
+- **Jensen-style Alpha:** annualized intercept from the same single-factor excess-return regression. Prototype uses a constant annual risk-free assumption (0% default); a production Jensen's alpha should use a properly aligned risk-free series.
+- **Relative Strength:** stock's cumulative return minus the benchmark's cumulative return over the selected lookback (20 sessions by default), expressed in percentage points.
+- For a bearish current view, Beta remains a sensitivity measure; Alpha and RS preferences are direction-reversed so underperformance is favored.
 
-- **Beta:** rolling regression of daily cash-equity stock returns against the selected benchmark's daily returns. Initial experiment: 60 trading sessions. Use NIFTY 50 as benchmark for NIFTY constituents and NIFTY BANK for Bank Nifty constituents.
-- **Jensen's alpha:** regression intercept / risk-adjusted excess return using aligned daily cash-market returns. Prototype input is annualized alpha in percent; initial experiment can use the same 60-session estimation window as beta.
-- **Relative strength (RS):** stock's total return minus benchmark's total return over the preceding 20 trading sessions, expressed in percentage points. This is not the same as beta or Jensen's alpha.
-- **Options liquidity:** separate 0–100 score eventually derived from derivatives Bhavcopy history. It must be based on options activity around relevant ATM/nearby strikes and expiries; do not infer options liquidity from futures liquidity or OI alone. In the first HTML prototype, this is entered manually because the final Bhavcopy-based liquidity formula has not yet been calibrated.
-- **Live execution check:** bid-ask spread and available depth are checked only on shortlisted contracts using live Angel One data.
+### Adaptive weight estimation
 
-Important source distinction: derivatives Bhavcopy supplies futures/options contract activity and OI for the liquidity screen. It does **not** supply the cash-equity closing-price history needed for beta, Jensen's alpha or relative strength. Those calculations require cash-market closing prices for each stock and its corresponding index.
+The Python engine builds historical point-in-time factor samples. On each signal date, Beta/Alpha/RS use only observations available through that date. The outcome label is the following five-session stock return, aligned to the realized direction of the benchmark's own five-session return. Nearly flat benchmark moves (absolute return below 0.15%) are omitted.
 
-### Prototype score transformations
+For each signal date, the engine calculates cross-sectional Spearman Information Coefficients (ICs) between factor ranks and subsequent direction-aligned stock-return ranks. It then:
 
-The standalone HTML prototype uses transparent, adjustable linear bands:
+1. Uses the oldest 75% of usable dates to estimate weights.
+2. Discounts the effective sample count by the five-session forward horizon to account approximately for overlapping labels.
+3. Rewards only stable positive IC evidence.
+4. Shrinks learned estimates 35% toward a neutral equal-weight prior.
+5. Caps any single factor at 65%.
+6. Tests the candidate weights on the newest 25% of dates not used for fitting.
+7. Accepts learned weights only when the holdout mean IC is positive and beats the neutral baseline by at least 0.005.
 
-- **Beta score:** `clamp(max(beta, 0) / beta_cap × 100, 0, 100)`. Default beta_cap = 2.0. Higher positive beta is preferred for both bullish and bearish index views because the aim is to find stocks that historically move with, and potentially amplify, the benchmark move. Negative beta receives zero rather than being treated as an amplifier.
-- **Alpha score:** clamp the directional annualized alpha mapped across a default ±15% band to 0–100. Bullish view rewards more positive alpha; bearish view rewards more negative alpha.
-- **RS score:** clamp the directional 20-session excess return mapped across a default ±10 percentage-point band to 0–100. Bullish view rewards outperformance; bearish view rewards underperformance.
-- **Liquidity score:** use the entered 0–100 options-liquidity score directly.
-- **Final score:** weighted sum of the four 0–100 component scores, divided by the sum of entered weights. Default weights are 30/20/30/20.
-- **Hard liquidity gate:** default minimum liquidity score = 35/100. A candidate below the gate is labelled Filtered and is placed below qualifying candidates regardless of its composite score.
+If there are fewer than 30 usable training dates, fewer than 10 effective training dates, fewer than 15 holdout dates, fewer than 3 effective holdout dates, insufficient cross-sectional breadth, no stable positive factor evidence, or no holdout improvement, the system uses a neutral equal-weight prior and explicitly labels it **Neutral fallback — not learned**. This is an internal fail-safe, not a manual setting.
 
-The prototype exposes beta cap, alpha band, RS band, minimum liquidity gate and all four weights for experimentation. These calibration values are placeholders, not validated market thresholds. The score is relative to the stated input definitions and bands; it should not be described as a probability of success.
+The diagnostics show weights, training and validation counts, effective sample sizes, factor ICs and holdout performance. The model is not yet a production-grade walk-forward validation; multiple market regimes, transaction costs, block-bootstrap confidence intervals and repeated weekly retraining still need study.
 
-### Standalone test artifact
+### Final score
 
-A browser-only HTML prototype was prepared as `stock-opportunity-score.html`. It includes editable candidate rows, bullish/bearish selection, benchmark selection, adjustable weights and score bands, a hard liquidity filter, ranked output, local session save/load and CSV export. Sample values are synthetic and explicitly labelled as illustrative. The prototype makes no market-data or broker API calls and does not change production dashboard code.
+Current Beta, Alpha and RS values are converted into cross-sectional percentile scores within the selected candidate universe. The adaptive weights combine these three factor scores into a 0–100 opportunity ranking. Options liquidity is a hard pass/fail gate; candidates below the minimum liquidity score are excluded irrespective of their predictive score.
 
-### Testing questions before adopting the model
+A score is a relative ranking statistic, not a probability, expected return, forecast or recommendation. A high Beta does not mean a positive return; it means historical sensitivity to the benchmark.
 
-1. Does a 60-session beta estimate give a sufficiently stable ranking, or should it be compared with 20- and 120-session windows?
-2. Is Jensen's alpha adding information beyond relative strength, or are the two too correlated for both to deserve the proposed weights?
-3. Which alpha annualization method and risk-free-rate convention should be used consistently?
-4. What Bhavcopy-derived measures and thresholds should define the options-liquidity score for near-ATM contracts?
-5. Does a hard minimum liquidity gate of 35/100 remove illiquid names without excluding usable contracts?
-6. Validate the score out-of-sample and compare the selected stock-options exposure with simply trading the index option. Do not assume a high score implies better realized returns.
+### History-length implication
 
+Six months may be sufficient to calculate current 60-session Beta and 20-session RS, but may not yield enough independent historical training and later holdout observations to learn and validate weights after the feature lookback and five-session forward label. The app must show the neutral fallback instead of pretending the weights were learned. Nine to twelve months of cash-price history may be needed for adaptive calibration; the initial options-liquidity Bhavcopy archive can remain six months.
+
+### Prototype package
+
+A local Python + HTML package is delivered separately as `stock-opportunity-lab.zip`. It includes the NSE downloader, Python calculations, browser UI, tests, README and Windows launcher. The earlier static/manual-weight HTML calculator is superseded by this Python-backed prototype.
 
 ## Cash-market historical prices for beta, alpha and relative strength
 
