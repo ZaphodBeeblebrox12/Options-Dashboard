@@ -198,3 +198,57 @@ A separate **Index Early Warning** view could show:
 - index breakout level/status and whether index confirmation is still pending.
 
 This should be an informational early-warning signal, not an automatic order trigger or a claim that a breakout is imminent. Keep it separate from the stock-selection/liquidity scanner: beta estimates sensitivity, relative strength/momentum describe current or recent performance, options liquidity assesses tradability, while lead–lag research tests whether a stock's move tends to precede the index.
+
+
+## Shortlist scoring model — standalone prototype
+
+**Status:** Experimental scoring model for hands-on testing. Weights, bands and thresholds are not production-approved.
+
+### Intended purpose
+
+When the user has a directional view on NIFTY 50 or NIFTY BANK, rank constituent F&O stocks that may offer greater directional exposure through their own options. The score is a screening/ranking aid, not a trade signal or a guarantee of future movement.
+
+### Initial default weights
+
+- Beta: **30%**
+- Jensen's alpha: **20%**
+- Relative strength: **30%**
+- Options liquidity: **20%**
+
+If the entered weights do not total 100%, normalize them proportionally. All component scores are converted to a 0–100 scale before weighting.
+
+### Data definitions and separate sources
+
+- **Beta:** rolling regression of daily cash-equity stock returns against the selected benchmark's daily returns. Initial experiment: 60 trading sessions. Use NIFTY 50 as benchmark for NIFTY constituents and NIFTY BANK for Bank Nifty constituents.
+- **Jensen's alpha:** regression intercept / risk-adjusted excess return using aligned daily cash-market returns. Prototype input is annualized alpha in percent; initial experiment can use the same 60-session estimation window as beta.
+- **Relative strength (RS):** stock's total return minus benchmark's total return over the preceding 20 trading sessions, expressed in percentage points. This is not the same as beta or Jensen's alpha.
+- **Options liquidity:** separate 0–100 score eventually derived from derivatives Bhavcopy history. It must be based on options activity around relevant ATM/nearby strikes and expiries; do not infer options liquidity from futures liquidity or OI alone. In the first HTML prototype, this is entered manually because the final Bhavcopy-based liquidity formula has not yet been calibrated.
+- **Live execution check:** bid-ask spread and available depth are checked only on shortlisted contracts using live Angel One data.
+
+Important source distinction: derivatives Bhavcopy supplies futures/options contract activity and OI for the liquidity screen. It does **not** supply the cash-equity closing-price history needed for beta, Jensen's alpha or relative strength. Those calculations require cash-market closing prices for each stock and its corresponding index.
+
+### Prototype score transformations
+
+The standalone HTML prototype uses transparent, adjustable linear bands:
+
+- **Beta score:** `clamp(max(beta, 0) / beta_cap × 100, 0, 100)`. Default beta_cap = 2.0. Higher positive beta is preferred for both bullish and bearish index views because the aim is to find stocks that historically move with, and potentially amplify, the benchmark move. Negative beta receives zero rather than being treated as an amplifier.
+- **Alpha score:** clamp the directional annualized alpha mapped across a default ±15% band to 0–100. Bullish view rewards more positive alpha; bearish view rewards more negative alpha.
+- **RS score:** clamp the directional 20-session excess return mapped across a default ±10 percentage-point band to 0–100. Bullish view rewards outperformance; bearish view rewards underperformance.
+- **Liquidity score:** use the entered 0–100 options-liquidity score directly.
+- **Final score:** weighted sum of the four 0–100 component scores, divided by the sum of entered weights. Default weights are 30/20/30/20.
+- **Hard liquidity gate:** default minimum liquidity score = 35/100. A candidate below the gate is labelled Filtered and is placed below qualifying candidates regardless of its composite score.
+
+The prototype exposes beta cap, alpha band, RS band, minimum liquidity gate and all four weights for experimentation. These calibration values are placeholders, not validated market thresholds. The score is relative to the stated input definitions and bands; it should not be described as a probability of success.
+
+### Standalone test artifact
+
+A browser-only HTML prototype was prepared as `stock-opportunity-score.html`. It includes editable candidate rows, bullish/bearish selection, benchmark selection, adjustable weights and score bands, a hard liquidity filter, ranked output, local session save/load and CSV export. Sample values are synthetic and explicitly labelled as illustrative. The prototype makes no market-data or broker API calls and does not change production dashboard code.
+
+### Testing questions before adopting the model
+
+1. Does a 60-session beta estimate give a sufficiently stable ranking, or should it be compared with 20- and 120-session windows?
+2. Is Jensen's alpha adding information beyond relative strength, or are the two too correlated for both to deserve the proposed weights?
+3. Which alpha annualization method and risk-free-rate convention should be used consistently?
+4. What Bhavcopy-derived measures and thresholds should define the options-liquidity score for near-ATM contracts?
+5. Does a hard minimum liquidity gate of 35/100 remove illiquid names without excluding usable contracts?
+6. Validate the score out-of-sample and compare the selected stock-options exposure with simply trading the index option. Do not assume a high score implies better realized returns.
