@@ -325,3 +325,40 @@ The cash-price collection decision above applies to beta, alpha and relative str
 The separate **F&O UDiFF derivatives Bhavcopy** is still the preferred daily bulk source for options contract activity, volume, premium turnover and OI. The six-month derivatives liquidity history is not replaced by downloading one cash-price CSV per stock.
 
 **Implementation decision:** Test NSE Security-wise Archive automation first for cash prices; use daily cash CM-UDiFF bulk files only if necessary. Continue to plan daily F&O derivatives Bhavcopy collection for options-liquidity history.
+
+
+## Python-backed standalone prototype — implementation update
+
+**Decision:** The scoring test should be a local Python backend with an HTML browser interface, not a static HTML-only calculator with manually typed metric values.
+
+### Verified source endpoints to test from the user's machine
+
+- **NSE cash-equity symbol history:** bootstrap a normal session by visiting `https://www.nseindia.com/report-detail/eq_security`, then request `https://www.nseindia.com/api/historicalOR/generateSecurityWiseHistoricalData` with `from=DD-MM-YYYY`, `to=DD-MM-YYYY`, `symbol=...`, `type=priceVolumeDeliverable`, `series=EQ`, `csv=true`. This returns symbol-specific cash historical CSV data when the session and endpoint allow it.
+- **NIFTY index history:** `POST https://www.niftyindices.com/Backpage.aspx/getHistoricaldatatabletoString`; the request body contains a JSON string in `cinfo` with the canonical index name, start date, end date and display index name. Parse the response's `d` value as JSON. Use the Price Return Index series so the benchmark is on a price-return basis consistent with raw cash closing-price returns.
+- **NSE F&O daily UDiFF Bhavcopy:** `https://nsearchives.nseindia.com/content/fo/BhavCopy_NSE_FO_0_0_0_YYYYMMDD_F_0000.csv.zip`. Download one ZIP per weekday over the six-month period; weekends/holidays may have no file. Relevant UDiFF columns include `TckrSymb`, `XpryDt`, `StrkPric`, `OptnTp`, `UndrlygPric`, `OpnIntrst`, `TtlTradgVol` and `TtlNbOfTxsExctd`. Exact schema must be validated against actual downloaded files.
+- **Current index constituents:** NIFTY 50 `https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv`; NIFTY BANK `https://www.niftyindices.com/IndexConstituent/ind_niftybanklist.csv`.
+
+These endpoints are published by the respective exchange/index websites, but the HTTP/API routes are not guaranteed as stable public APIs. NSE may require ordinary session cookies, may rate-limit or change formats. Use polite sequential requests and stop/report 403/429/challenge responses. The local prototype does not bypass access controls.
+
+### Local prototype behavior
+
+The standalone Python + HTML artifact is organized as:
+- `app.py`: local Flask server / browser API.
+- `data_engine.py`: NSE HTTP client, CSV/ZIP parsing, aligned return calculations, option-liquidity calculation and composite score.
+- `templates/index.html`: interactive HTML settings, download steps, score controls and ranked results.
+- `tests/test_calculations.py`: synthetic calculation/parser tests.
+- `README.md` and `run_windows.bat`: setup and local launch.
+
+Workflow: load index constituents → download six-month F&O Bhavcopy and identify constituent symbols with stock-option rows → download six-month cash-price CSVs for that filtered stock list plus benchmark index history → calculate and rank.
+
+The prototype caches downloaded files locally, uses sequential/paced HTTP requests and does not require Angel One credentials or WebSocket subscriptions. It binds only to localhost.
+
+### Calculation and data-integrity controls
+
+- Cash returns are aligned to identical benchmark trading dates. Missing daily stock observations are not converted into multi-day returns paired with one-day index returns.
+- Default beta/alpha window: 60 daily return observations; default RS: 20 trading sessions.
+- Alpha is an annualized regression intercept with a user-entered constant risk-free-rate assumption; a production Jensen's alpha should use an aligned daily risk-free series.
+- Liquidity uses the nearest two unexpired expiries and an ATM-centred strike band; the initial proxy combines 20-session median volume, OI, trade count and active-day share. It does not pretend Bhavcopy supplies bid/ask spread or executable depth.
+- The app flags that an F&O Bhavcopy row is not a definitive current eligibility register; verify against the current NSE contract master before production use.
+- Corporate-action adjusted-price handling is still an open production requirement. Raw close histories can create false returns around splits/bonuses; extreme moves need review and properly sourced adjustment factors.
+- The Python calculation/parser unit tests passed using synthetic fixtures in the build environment. **Live NSE downloads were not verified in that environment** because outbound DNS/network access was unavailable. The first run from the user's computer must validate session behavior, response types, exact UDiFF columns and coverage before trusting outputs.
