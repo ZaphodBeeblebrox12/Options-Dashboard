@@ -381,7 +381,6 @@ function App() {
     !!hasLiveData && !hasStaleMarketSources && !wsError;
 
   const spot = displayData?.spot ?? null;
-  const futures = displayData?.futures ?? null;
   const futuresSpread = displayData?.futures_spread ?? null;
   const spreadLabel = displayData?.spread_label ?? null;
   const netGex = displayData?.net_gex ?? null;
