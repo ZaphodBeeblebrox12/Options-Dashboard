@@ -1,0 +1,57 @@
+name: Package Market Timer Local Patch
+
+on:
+  push:
+    branches:
+      - feature/market-timer-live-replay
+    paths:
+      - ".github/workflows/package-market-timer.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out timer branch
+        uses: actions/checkout@v4
+
+      - name: Build local overwrite ZIP
+        shell: bash
+        run: |
+          cat > LOCAL-INSTALL-MARKET-TIMER.txt <<'EOF'
+          TradeThesis Options Dashboard — Market Timer patch
+
+          This ZIP contains only files added or changed for the Market Timer.
+          Extract it into the root of your existing Options-Dashboard checkout,
+          keeping the folder structure and allowing files to be overwritten.
+
+          Then from the frontend directory run:
+              npm run build
+
+          The patch was built from branch:
+              feature/market-timer-live-replay
+
+          It does not include node_modules, build output, environment files,
+          database files, or unrelated project files.
+          EOF
+
+          zip -q -r market-timer-local-overwrite.zip \
+            frontend/src/App.tsx \
+            frontend/src/components/MarketTimer.tsx \
+            frontend/src/components/ReplayControls.tsx \
+            frontend/src/components/mobile/MobileApp.tsx \
+            frontend/src/components/mobile/mobile.css \
+            frontend/src/marketTimer.d.ts \
+            frontend/src/marketTimer.js \
+            frontend/tests/marketTimer.test.mjs \
+            LOCAL-INSTALL-MARKET-TIMER.txt
+
+      - name: Upload local overwrite ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: market-timer-local-overwrite
+          path: market-timer-local-overwrite.zip
+          if-no-files-found: error
+          retention-days: 7
