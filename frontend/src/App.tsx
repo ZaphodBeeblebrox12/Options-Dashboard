@@ -381,11 +381,9 @@ function App() {
     !!hasLiveData && !hasStaleMarketSources && !wsError;
 
   const spot = displayData?.spot ?? null;
-  const futures = displayData?.futures ?? null;
   const futuresSpread = displayData?.futures_spread ?? null;
   const spreadLabel = displayData?.spread_label ?? null;
   const netGex = displayData?.net_gex ?? null;
-  const maxGexStrike = displayData?.max_gex_strike ?? null;
   const maxPain = displayData?.max_pain ?? null;
   const gammaFlip = displayData?.gamma_flip ?? null;
   const timestamp = displayData?.timestamp ?? '';
@@ -730,13 +728,13 @@ function App() {
           instrumentKind={indexKinds[selectedIndex]}
           marketOpen={marketOpen}
         />
-        <AnalyticsHeader indexName={selectedIndex} isFetching={snapshotLoading} spot={spot} futures={futures} futuresSpread={futuresSpread} spreadLabel={spreadLabel} netGex={netGex} maxGexStrike={maxGexStrike} maxPain={maxPain} gammaFlip={gammaFlip} timestamp={timestamp} isLive={isTrulyLive} isStale={isLiveDataStale} />
+        <AnalyticsHeader indexName={selectedIndex} isFetching={snapshotLoading} spot={spot} futuresSpread={futuresSpread} spreadLabel={spreadLabel} netGex={netGex} maxPain={maxPain} gammaFlip={gammaFlip} timestamp={timestamp} isLive={isTrulyLive} isStale={isLiveDataStale} />
         {(!liveMode || isTrulyLive) && (
           <BuildupCard indexName={selectedIndex} date={selectedDate} live={liveMode} timestamp={currentTimestamp || undefined} />
         )}
         <ReplayControls timestamps={timestamps} currentIndex={currentIndex} isFetching={snapshotLoading} isPlaying={isPlaying} onPlay={handlePlay} onPause={handlePause} onSeek={handleSeek} onRefresh={handleRefresh} selectedDate={selectedDate} onDateChange={handleDateChange} selectedIndex={selectedIndex} onIndexChange={handleIndexChange} availableDates={availableDates} sessionHours={sessionHours} onPreviewTimestamp={setReplayPreviewTimestamp} />
         <OptionChain
-          options={normalizedOptions} spot={spot} futures={futures} maxPain={maxPain} gammaFlip={gammaFlip}
+          options={normalizedOptions} spot={spot} maxPain={maxPain} gammaFlip={gammaFlip}
           fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike}
           indexName={selectedIndex} timestamp={timestamp} canArm={canArmWallWatch}
           emptyTitle={!liveMode

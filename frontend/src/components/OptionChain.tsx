@@ -20,7 +20,6 @@ interface OptionData {
 interface OptionChainProps {
   options: OptionData[];
   spot: number | null;
-  futures: number | null;
   maxPain: number | null;
   gammaFlip: number | null;
   fullMode: boolean;
@@ -50,7 +49,6 @@ const OI_RANK_WINDOW_PCT = 5;
 const OptionChainComponent: React.FC<OptionChainProps> = ({
   options,
   spot,
-  futures,
   gammaFlip,
   fullMode,
   selectedStrike,
@@ -144,13 +142,6 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     ).strike;
   }, [spot, chainData]);
 
-  const atmFutures = useMemo(() => {
-    if (!futures || chainData.length === 0) return null;
-    return chainData.reduce((closest, row) =>
-      Math.abs(row.strike - futures) < Math.abs(closest.strike - futures) ? row : closest
-    ).strike;
-  }, [futures, chainData]);
-
   // ── FIX: rank only strikes within ±OI_RANK_WINDOW_PCT of spot ──
   const rankableRows = useMemo(() => {
     if (!spot) return chainData;
@@ -195,7 +186,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
 
   // ── Center view around ATM ──
   const displayRows = useMemo(() => {
-    const center = atmFutures ?? atmSpot;
+    const center = atmSpot;
     let visibleRows = chainData;
     if (center && chainData.length > 21) {
       const centerIdx = chainData.findIndex((r) => r.strike === center);
@@ -208,7 +199,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
       }
     }
     return strikeOrder === 'asc' ? visibleRows : [...visibleRows].reverse();
-  }, [chainData, atmSpot, atmFutures, strikeOrder]);
+  }, [chainData, atmSpot, strikeOrder]);
 
   // ── Jump to ATM ──
   const scrollToAtm = useCallback(() => {
@@ -224,12 +215,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   };
 
   const getStrikeClass = (strike: number) => {
-    const isAtmSpot = strike === atmSpot;
-    const isAtmFut = strike === atmFutures;
-
-    if (isAtmSpot && isAtmFut) return 'bg-fuchsia-900/40 text-fuchsia-300 border border-fuchsia-500/50';
-    if (isAtmSpot) return 'bg-yellow-900/30 text-yellow-300 border border-yellow-500/40';
-    if (isAtmFut) return 'bg-cyan-900/30 text-cyan-300 border border-cyan-500/40';
+    if (strike === atmSpot) return 'bg-yellow-900/30 text-yellow-300 border border-yellow-500/40';
     return 'text-terminal-text border border-terminal-border/30';
   };
 
