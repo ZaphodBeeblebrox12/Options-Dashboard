@@ -40,12 +40,14 @@ type Tab = "watch" | "scan" | "map" | "walls" | "alerts" | "more";
 interface ReplayState { date: string; ts: string[]; idx: number; playing: boolean }
 const SUBTITLES: Record<Exclude<Tab, "watch">, string> = { scan: "Scanner", map: "Map", walls: "Walls", alerts: "Alerts", more: "Settings" };
 
-export default function MobileApp({ connected, lastMessage, toasts, removeToast, onInstrumentChange }: {
+export default function MobileApp({ connected, lastMessage, toasts, removeToast, onInstrumentChange, lastKnownSnapshot, marketOpen }: {
   connected: boolean;
   lastMessage: unknown;
   toasts: AlertFiring[];
   removeToast: (timestamp: string) => void;
   onInstrumentChange?: (name: string) => void;
+  lastKnownSnapshot?: any;
+  marketOpen?: boolean;
 }) {
   const [liveMap, setLiveMap] = useState<Record<string, any>>({});
   const [alertFeed, setAlertFeed] = useState<AlertFiring[]>([]);
@@ -184,7 +186,10 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
   const kind: string = data?.instrument_kind ?? meta?.kind ?? "index";
   const tier: number = data?.tier ?? meta?.tier ?? 1;
   const isScanner = !!data?.scanner || tier === 3;
-  const baseData = replay ? replaySnap : data; // replay overrides live on Watch
+  const hasUsableLiveData = !!data && Array.isArray(data.options) && data.options.length > 0 && data.spot != null;
+  const baseData = replay
+    ? replaySnap
+    : (hasUsableLiveData ? data : (!marketOpen ? lastKnownSnapshot ?? null : data ?? null)); // replay overrides live; CLOSED may use the persisted last-known snapshot
   // wall chips for the Walls tab: max-OI strikes from the visible chain
   const wallChips = useMemo(() => {
     let cew: number | null = null, pew: number | null = null, ceo = -1, peo = -1;
@@ -347,7 +352,7 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
         referenceTimestamp={replay ? (replay.ts[replay.idx] ?? replaySnap?.timestamp ?? null) : null}
         sessionHours={hoursForType(kind)}
         instrumentKind={kind}
-        marketOpen={typeof data?.market_open === "boolean" ? data.market_open : undefined}
+        marketOpen={typeof data?.market_open === "boolean" ? data.market_open : marketOpen}
       />
 
       <main className="mc-main"><ErrorBoundary>
