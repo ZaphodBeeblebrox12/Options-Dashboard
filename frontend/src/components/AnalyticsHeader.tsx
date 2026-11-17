@@ -1,15 +1,13 @@
 import React, { useRef } from 'react';
-import { Activity, TrendingUp, BarChart3, Crosshair, Zap, Layers, WifiOff } from 'lucide-react';
+import { Activity, TrendingUp, Crosshair, Zap, Layers, WifiOff } from 'lucide-react';
 import { ScreenshotButton } from './ScreenshotButton';
 
 interface AnalyticsHeaderProps {
   indexName: string;
   spot: number | null;
-  futures: number | null;
   futuresSpread: number | null;
   spreadLabel: string | null;
   netGex: number | null;
-  maxGexStrike: number | null;
   maxPain: number | null;
   gammaFlip: number | null;
   timestamp: string;
@@ -38,11 +36,9 @@ const MetricCard: React.FC<{
 export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
   indexName,
   spot,
-  futures,
   futuresSpread,
   spreadLabel,
   netGex,
-  maxGexStrike,
   maxPain,
   gammaFlip,
   timestamp,
@@ -115,7 +111,6 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:flex lg:flex-wrap lg:items-center">
         <MetricCard label="SPOT" value={formatPrice(spot)} icon={<TrendingUp className="w-4 h-4" />} color="text-terminal-atm" />
-        <MetricCard label="FUTURES" value={formatPrice(futures)} icon={<BarChart3 className="w-4 h-4" />} color="text-terminal-futures" />
         <MetricCard
           label="SPREAD"
           value={futuresSpread !== null ? `${futuresSpread >= 0 ? '+' : ''}${futuresSpread.toFixed(2)}` : '—'}
@@ -124,7 +119,6 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
           color={spreadColor}
         />
         <MetricCard label="NET GEX" value={formatInt(netGex)} icon={<Zap className="w-4 h-4" />} color={gexColor} />
-        <MetricCard label="MAX GEX" value={formatInt(maxGexStrike)} icon={<Crosshair className="w-4 h-4" />} color="text-terminal-maxpain" />
         <MetricCard label="MAX PAIN" value={formatInt(maxPain)} icon={<Crosshair className="w-4 h-4" />} color="text-terminal-maxpain" />
         <MetricCard label="GAMMA FLIP" value={formatInt(gammaFlip)} icon={<Zap className="w-4 h-4" />} color="text-terminal-gammaflip" />
       </div>
