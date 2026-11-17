@@ -27,7 +27,7 @@ export function parseMarketTimestamp(value) {
   if (typeof value !== "string" || !value.trim()) return null;
 
   const trimmed = value.trim();
-  const hasExplicitZone = /(?:Z|[+-]\\d{2}:?\\d{2})$/i.test(trimmed);
+  const hasExplicitZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(trimmed);
   const normalized = trimmed.includes(" ") ? trimmed.replace(" ", "T") : trimmed;
   const date = new Date(hasExplicitZone ? normalized : normalized + "+05:30");
   return Number.isFinite(date.getTime()) ? date : null;
