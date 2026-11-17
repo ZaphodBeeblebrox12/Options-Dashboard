@@ -16,6 +16,11 @@ const IST_OFFSET_MINUTES = 330;
 const SECOND_MS = 1000;
 const MINUTE_MS = 60 * SECOND_MS;
 
+/**
+ * Parse a market snapshot timestamp. Naive database values are treated as IST.
+ * @param {string | number | Date | null | undefined} value
+ * @returns {Date | null}
+ */
 export function parseMarketTimestamp(value) {
   if (value instanceof Date) {
     return Number.isFinite(value.getTime()) ? new Date(value.getTime()) : null;
@@ -86,6 +91,30 @@ function emptyFrames() {
  * Compute countdowns from one reference instant.
  * marketOpen is only used inside nominal session hours (for backend-reported
  * holiday/closure states); historical replay ignores today's live status.
+ */
+/**
+ * @typedef {"normal" | "warning" | "danger" | "muted"} MarketTimerTone
+ * @typedef {Object} MarketTimerFrame
+ * @property {string} label
+ * @property {number} minutes
+ * @property {string} value
+ * @property {number | null} remainingMs
+ * @property {MarketTimerTone} tone
+ * @typedef {Object} MarketTimerState
+ * @property {string} clock
+ * @property {"WAITING" | "WEEKEND" | "UNCONFIGURED" | "PRE-OPEN" | "CLOSED" | "OPEN"} status
+ * @property {string} footer
+ * @property {string} sessionLabel
+ * @property {number} closingSoon
+ * @property {MarketTimerFrame[]} frames
+ *
+ * Compute countdowns from one reference instant.
+ * marketOpen is only used inside nominal session hours (for backend-reported
+ * holiday/closure states); historical replay ignores today's live status.
+ * @param {Date | null | undefined} referenceDate
+ * @param {[string, string] | undefined} sessionHours
+ * @param {boolean | undefined} marketOpen
+ * @returns {MarketTimerState}
  */
 export function getMarketTimerState(referenceDate, sessionHours, marketOpen) {
   if (!(referenceDate instanceof Date) || !Number.isFinite(referenceDate.getTime())) {
