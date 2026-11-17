@@ -381,6 +381,7 @@ function App() {
     !!hasLiveData && !hasStaleMarketSources && !wsError;
 
   const spot = displayData?.spot ?? null;
+  const maxGexStrike = displayData?.max_gex_strike ?? null;
   const futuresSpread = displayData?.futures_spread ?? null;
   const spreadLabel = displayData?.spread_label ?? null;
   const netGex = displayData?.net_gex ?? null;
@@ -728,7 +729,7 @@ function App() {
           instrumentKind={indexKinds[selectedIndex]}
           marketOpen={marketOpen}
         />
-        <AnalyticsHeader indexName={selectedIndex} isFetching={snapshotLoading} spot={spot} futuresSpread={futuresSpread} spreadLabel={spreadLabel} netGex={netGex} maxPain={maxPain} gammaFlip={gammaFlip} timestamp={timestamp} isLive={isTrulyLive} isStale={isLiveDataStale}>
+        <AnalyticsHeader indexName={selectedIndex} isFetching={snapshotLoading} spot={spot} futuresSpread={futuresSpread} spreadLabel={spreadLabel} maxGexStrike={maxGexStrike} maxPain={maxPain} gammaFlip={gammaFlip} timestamp={timestamp} isLive={isTrulyLive} isStale={isLiveDataStale}>
           {(!liveMode || isTrulyLive) && (
             <BuildupCard indexName={selectedIndex} date={selectedDate} live={liveMode} timestamp={currentTimestamp || undefined} embedded />
           )}
