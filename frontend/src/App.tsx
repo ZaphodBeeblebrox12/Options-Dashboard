@@ -105,7 +105,7 @@ function App() {
   const strikeHistory = useStrikeHistory(selectedStrike, selectedDate, selectedIndex, liveMode);
   const gexByStrike = useGexByStrike(liveMode ? null : currentTimestamp, selectedIndex, liveMode);
   const availableDates = useAvailableDates(selectedIndex, liveMode);
-  const lastKnownSnapshot = useLastKnownSnapshot(selectedIndex, liveMode && !marketOpen);
+  const lastKnownSnapshot = useLastKnownSnapshot(selectedIndex, !marketOpen);
 
   // If Replay is restored before today's session has produced snapshots,
   // automatically open the newest date with data. Explicit user date choices
@@ -552,6 +552,8 @@ function App() {
       <MobileApp
         connected={connected}
         lastMessage={lastMessage}
+        lastKnownSnapshot={lastKnownSnapshot}
+        marketOpen={marketOpen}
         toasts={toasts}
         removeToast={removeToast}
         onInstrumentChange={(name) => setSelectedIndex(name)}
