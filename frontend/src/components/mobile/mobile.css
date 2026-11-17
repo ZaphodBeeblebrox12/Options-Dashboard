@@ -21,6 +21,23 @@ padding-top:env(safe-area-inset-top)}
 .mc-spot{font-size:31px;font-weight:700;line-height:1.1;letter-spacing:.2px}
 .mc-basis{font-size:11.5px;color:var(--mdim);margin-top:3px;min-height:14px}
 
+/* ── Market candle timer ── */
+.mc-market-timer{flex:none;margin:0 9px 7px;padding:7px 8px 6px;background:var(--mpanel);border:1px solid var(--mborder);border-radius:10px}
+.mc-mt-head{display:flex;align-items:center;gap:8px;min-width:0;margin-bottom:6px}
+.mc-mt-title{font-size:9px;font-weight:700;letter-spacing:.55px;text-transform:uppercase;color:var(--mfaint);white-space:nowrap}
+.mc-mt-head strong{font:700 12px/1 ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;color:var(--mtx);white-space:nowrap}
+.mc-mt-status{margin-left:auto;font-size:9px;font-weight:800;letter-spacing:.5px;color:var(--mfaint);background:var(--mpanel2);border-radius:5px;padding:3px 6px;white-space:nowrap}
+.mc-mt-status.live{color:var(--mup);background:rgba(52,211,153,.10)}
+.mc-mt-status.replay{color:var(--mblue);background:rgba(90,162,240,.12)}
+.mc-mt-frames{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:3px}
+.mc-mt-frame{min-width:0;padding:4px 2px 3px;background:var(--mpanel2);border:1px solid rgba(31,39,54,.7);border-radius:6px;text-align:center}
+.mc-mt-frame span{display:block;font-size:8px;font-weight:700;letter-spacing:.45px;color:var(--mfaint)}
+.mc-mt-frame strong{display:block;margin-top:2px;font:700 9px/1.15 ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;color:var(--mtx);white-space:nowrap}
+.mc-mt-frame strong.warning{color:var(--mamber)}
+.mc-mt-frame strong.danger{color:var(--mdn)}
+.mc-mt-foot{margin-top:5px;text-align:right;font-size:8px;font-weight:700;letter-spacing:.5px;color:var(--mfaint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media(max-width:350px){.mc-mt-title{font-size:8px}.mc-mt-frame strong{font-size:8px}.mc-mt-frame{padding-left:0;padding-right:0}}
+
 /* stat strip */
 .mc-stats{display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid var(--mborder);border-bottom:1px solid var(--mborder)}
 .mc-stat{padding:7px 2px 8px;text-align:center;min-width:0}
