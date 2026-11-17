@@ -85,9 +85,9 @@ export const MarketTimer: React.FC<MarketTimerProps> = ({
   }
 
   return (
-    <section className="terminal-panel sticky top-0 z-30 flex min-w-0 flex-wrap items-center gap-3 px-3 py-2 shadow-lg shadow-black/20"
+    <section className="terminal-panel sticky top-0 z-30 flex min-w-0 flex-wrap items-center gap-4 px-4 py-2.5 shadow-lg shadow-black/20"
       aria-label="Market candle countdown">
-      <div className="flex min-w-[150px] shrink-0 items-center gap-2 border-r border-terminal-border pr-3">
+      <div className="flex min-w-[165px] shrink-0 items-center gap-2.5 border-r border-terminal-border pr-3">
         <Clock3 className="h-4 w-4 shrink-0 text-terminal-atm" />
         <div className="min-w-0">
           <div className="flex items-center gap-1.5 text-[9px] font-mono uppercase tracking-wider text-terminal-muted">
@@ -96,22 +96,22 @@ export const MarketTimer: React.FC<MarketTimerProps> = ({
             <span>{exchangeLabel}</span>
           </div>
           <div className="flex items-center gap-2">
-            <strong className="font-mono text-sm font-bold tabular-nums text-terminal-text">{state.clock}</strong>
+            <strong className="font-mono text-base font-bold tabular-nums text-terminal-text">{state.clock}</strong>
             <span className="text-[9px] font-mono text-terminal-muted">IST</span>
-            <span className={"rounded px-1.5 py-0.5 text-[9px] font-mono font-bold " + statusClass}>{statusLabel}</span>
+            <span className={"rounded px-1.5 py-0.5 text-[10px] font-mono font-bold " + statusClass}>{statusLabel}</span>
           </div>
         </div>
       </div>
-      <div className="grid min-w-[330px] flex-1 grid-cols-6 gap-1 sm:gap-2">
+      <div className="grid min-w-[360px] flex-1 grid-cols-6 gap-1.5 sm:gap-3">
         {state.frames.map((frame) => (
           <div className="min-w-0 border-r border-terminal-border/60 px-1 last:border-r-0" key={frame.label}>
-            <div className="text-[9px] font-mono font-semibold tracking-wide text-terminal-muted">{frame.label}</div>
-            <div className={"whitespace-nowrap font-mono text-xs font-bold tabular-nums sm:text-sm " + (TONE_CLASS[frame.tone] ?? TONE_CLASS.muted)}>{frame.value}</div>
+            <div className="text-[11px] font-mono font-bold tracking-wider text-slate-200">{frame.label}</div>
+            <div className={"whitespace-nowrap font-mono text-[15px] font-bold tabular-nums sm:text-[17px] " + (TONE_CLASS[frame.tone] ?? TONE_CLASS.muted)}>{frame.value}</div>
           </div>
         ))}
       </div>
       <div className="ml-auto flex shrink-0 items-center gap-2 text-right">
-        <span className={"text-[9px] font-mono font-semibold uppercase tracking-wide " + (state.closingSoon >= 3 ? "text-amber-400" : "text-terminal-muted")}>{state.footer}</span>
+        <span className={"text-[10px] font-mono font-bold uppercase tracking-wide " + (state.closingSoon >= 3 ? "text-amber-400" : "text-terminal-muted")}>{state.footer}</span>
       </div>
     </section>
   );
