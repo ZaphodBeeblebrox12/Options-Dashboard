@@ -22,8 +22,8 @@ const LABEL_STYLE: Record<string, { color: string; bg: string }> = {
   'LONG UNWINDING': { color: '#f97316', bg: 'rgba(249,115,22,0.12)' },
 };
 
-export const BuildupCard: React.FC<{ indexName: string; date: string; live: boolean; timestamp?: string }> = ({
-  indexName, date, live, timestamp,
+export const BuildupCard: React.FC<{ indexName: string; date: string; live: boolean; timestamp?: string; embedded?: boolean }> = ({
+  indexName, date, live, timestamp, embedded = false,
 }) => {
   // Key ties fetched data to its context (index/date/timestamp-or-LIVE).
   const key = `${indexName}|${date}|${live ? 'LIVE' : (timestamp || '')}`;
@@ -96,7 +96,7 @@ export const BuildupCard: React.FC<{ indexName: string; date: string; live: bool
 
   return (
     <div
-      className={`terminal-panel w-fit max-w-full px-3 sm:px-4 py-2 transition-opacity duration-300 ${
+      className={`${embedded ? 'w-full min-w-0 px-3 sm:px-4 py-2' : 'terminal-panel w-fit max-w-full px-3 sm:px-4 py-2'} transition-opacity duration-300 ${
         stale ? 'opacity-50' : !isCurrent && transitioning ? 'opacity-60' : 'opacity-100'
       }`}
       ref={panelRef}
@@ -148,9 +148,11 @@ export const BuildupCard: React.FC<{ indexName: string; date: string; live: bool
             since {data.baseline_ts ? data.baseline_ts.slice(11, 16) : '—'} ({data.date})
           </span>
         )}
-        <div className="ml-auto">
-          <ScreenshotButton targetRef={panelRef} filename={screenshotFilename} />
-        </div>
+        {!embedded && (
+          <div className="ml-auto">
+            <ScreenshotButton targetRef={panelRef} filename={screenshotFilename} />
+          </div>
+        )}
       </div>
       <div className="mt-1.5 h-1 rounded bg-white/5 overflow-hidden">
         <div
