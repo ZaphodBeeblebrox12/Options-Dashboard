@@ -23,3 +23,9 @@ export function resolveLiveStatus(input: {
   hasUnknownMarketSources?: boolean;
   hasError: boolean;
 }): LiveStatus;
+
+export function resolveInitialReplayDate(
+  selectedDate: string,
+  availableDates: readonly string[],
+  userSelectedDate?: boolean
+): string | null;

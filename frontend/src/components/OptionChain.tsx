@@ -29,6 +29,9 @@ interface OptionChainProps {
   indexName?: string;
   timestamp?: string;
   canArm?: boolean;
+  emptyTitle?: string;
+  emptyDescription?: string;
+  emptyFootnote?: string;
 }
 
 // FIX (ITM tint): subtle background used on the in-the-money side of a row.
@@ -55,6 +58,9 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   indexName = 'INDEX',
   timestamp,
   canArm = false,
+  emptyTitle = 'No option data available',
+  emptyDescription = 'Waiting for live market data from Angel One...',
+  emptyFootnote = 'Ensure backend/.env has valid API_KEY, CLIENT_CODE, PASSWORD, TOTP_SECRET',
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -283,12 +289,12 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
         </div>
         <div className="flex flex-col items-center justify-center py-16 px-4">
           <AlertTriangle className="w-8 h-8 text-terminal-muted mb-3" />
-          <p className="text-sm font-mono text-terminal-muted mb-1">No option data available</p>
-          <p className="text-xs font-mono text-terminal-muted/60">
-            Waiting for live market data from Angel One...
+          <p className="text-sm font-mono text-terminal-muted mb-1">{emptyTitle}</p>
+          <p className="text-xs font-mono text-terminal-muted/60 text-center max-w-xl">
+            {emptyDescription}
           </p>
-          <p className="text-xs font-mono text-terminal-muted/60 mt-1">
-            Ensure backend/.env has valid API_KEY, CLIENT_CODE, PASSWORD, TOTP_SECRET
+          <p className="text-xs font-mono text-terminal-muted/60 mt-1 text-center max-w-xl">
+            {emptyFootnote}
           </p>
         </div>
       </div>

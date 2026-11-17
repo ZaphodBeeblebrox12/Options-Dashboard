@@ -18,6 +18,19 @@ export function isSourceFresh(ageSeconds, messageAgeMs, staleAfterMs) {
  * Status of the selected data source, independent of WebSocket connectivity
  * alone. WebSocket connectivity is necessary but not sufficient for LIVE.
  */
+/**
+ * Resolve the initial Replay date when the selected (usually current) date
+ * has no snapshots yet. availableDates is returned newest-first by the API.
+ * An explicit user date selection must never be silently changed.
+ */
+export function resolveInitialReplayDate(selectedDate, availableDates, userSelectedDate = false) {
+  if (userSelectedDate || !Array.isArray(availableDates) || availableDates.length === 0) {
+    return null;
+  }
+  if (availableDates.includes(selectedDate)) return null;
+  return availableDates[0] || null;
+}
+
 export function resolveLiveStatus({
   liveMode,
   marketOpen,
