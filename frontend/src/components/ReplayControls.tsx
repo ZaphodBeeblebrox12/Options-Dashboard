@@ -66,7 +66,7 @@ export const ReplayControls: React.FC<ReplayControlsProps> = ({
     setSliderIndex(newIndex);
     isDraggingRef.current = true;
     onPreviewTimestamp?.(timestamps[newIndex] || null);
-  }, []);
+  }, [onPreviewTimestamp, timestamps]);
 
   const handleSliderRelease = useCallback(() => {
     isDraggingRef.current = false;
@@ -75,7 +75,7 @@ export const ReplayControls: React.FC<ReplayControlsProps> = ({
       ? timestamps.length - 1
       : sliderIndex;
     onSeek(target);
-  }, [sliderIndex, onSeek, timestamps.length]);
+  }, [sliderIndex, onSeek, timestamps, onPreviewTimestamp]);
 
   const stepBack = () => {
     if (currentIndex > 0) onSeek(currentIndex - 1);
