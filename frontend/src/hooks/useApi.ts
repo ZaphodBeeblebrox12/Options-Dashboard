@@ -50,7 +50,7 @@ export function useApi() {
 
 // ── useSnapshots ───────────────────────────────────────────────
 export function useSnapshots(date: string, index: string, liveMode: boolean) {
-  const [timestamps, setTimestamps] = useState<string[]>([]);
+  const [timestampState, setTimestampState] = useState<{ key: string; data: string[] }>({ key: '', data: [] });
   const { fetchJson } = useApi();
   const lastGoodRef = useRef<{ key: string; data: string[] } | null>(null);
 
@@ -61,10 +61,10 @@ export function useSnapshots(date: string, index: string, liveMode: boolean) {
     const load = () => {
       fetchJson(`/api/snapshots?date=${date}&index=${index}`).then((data) => {
         if (data?.timestamps) {
-          setTimestamps(data.timestamps);
+          setTimestampState({ key, data: data.timestamps });
           lastGoodRef.current = { key, data: data.timestamps };
         } else if (lastGoodRef.current?.key === key) {
-          setTimestamps(lastGoodRef.current.data);
+          setTimestampState({ key, data: lastGoodRef.current.data });
         }
       });
     };
@@ -75,14 +75,14 @@ export function useSnapshots(date: string, index: string, liveMode: boolean) {
     return () => clearInterval(interval);
   }, [date, index, fetchJson, liveMode]);
 
-  return timestamps;
+  return timestampState.key === `${date}|${index}` ? timestampState.data : [];
 }
 
 // ── useSnapshot ────────────────────────────────────────────────
 // CRITICAL FIX: keyed fallback so a failed seek to a new timestamp
 // does not show the previous timestamp's data.
 export function useSnapshot(timestamp: string | null, index: string, _liveMode: boolean) {
-  const [snapshot, setSnapshot] = useState<any>(null);
+  const [snapshotEntry, setSnapshotEntry] = useState<{ key: string; data: any } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const lastGoodRef = useRef<{ key: string; data: any } | null>(null);
@@ -99,7 +99,10 @@ export function useSnapshot(timestamp: string | null, index: string, _liveMode: 
   }, []);
 
   useEffect(() => {
-    if (!timestamp || !index) return;
+    if (!timestamp || !index) {
+      setIsLoading(false);
+      return;
+    }
 
     if (abortRef.current) {
       abortRef.current.abort();
@@ -110,7 +113,7 @@ export function useSnapshot(timestamp: string | null, index: string, _liveMode: 
 
     const cached = _getCached(endpoint);
     if (cached) {
-      setSnapshot(cached);
+      setSnapshotEntry({ key: endpoint, data: cached });
       lastGoodRef.current = { key: endpoint, data: cached };
       setIsLoading(false);
       return;
@@ -122,13 +125,13 @@ export function useSnapshot(timestamp: string | null, index: string, _liveMode: 
       if (data) {
         _setCached(endpoint, data);
         lastGoodRef.current = { key: endpoint, data };
-        setSnapshot(data);
+        setSnapshotEntry({ key: endpoint, data });
       } else if (lastGoodRef.current?.key === endpoint) {
         // Same endpoint failed (e.g. network hiccup while already viewing this ts)
-        setSnapshot(lastGoodRef.current.data);
+        setSnapshotEntry({ key: endpoint, data: lastGoodRef.current.data });
       }
-      // If key mismatch (new seek failed), leave snapshot as-is
-      // or it stays as the previously successful snapshot
+      // A failed request for a different timestamp never exposes data from
+      // the previously selected snapshot.
     });
 
     return () => {
@@ -136,6 +139,12 @@ export function useSnapshot(timestamp: string | null, index: string, _liveMode: 
     };
   }, [timestamp, index, fetchJson]);
 
+  const currentEndpoint = timestamp && index
+    ? `/api/snapshot/${encodeURIComponent(timestamp)}?index=${index}`
+    : null;
+  const snapshot = currentEndpoint && snapshotEntry?.key === currentEndpoint
+    ? snapshotEntry.data
+    : null;
   return { snapshot, isLoading };
 }
 
@@ -264,9 +273,50 @@ export function useGexByStrike(timestamp: string | null, index: string, liveMode
   return data;
 }
 
+
+// ── useLastKnownSnapshot ───────────────────────────────────────
+// Reads /api/current only when LIVE mode is outside the instrument session.
+// The endpoint prefers an in-memory snapshot and falls back to the newest
+// persisted DB snapshot. The UI must continue to label this data as CLOSED.
+export function useLastKnownSnapshot(index: string, enabled: boolean) {
+  const [snapshot, setSnapshot] = useState<any>(null);
+
+  useEffect(() => {
+    if (!index || !enabled) {
+      setSnapshot(null);
+      return;
+    }
+
+    let active = true;
+    const load = async () => {
+      try {
+        const res = await fetch(`/api/current?index=${encodeURIComponent(index)}`);
+        if (res.status === 404) {
+          if (active) setSnapshot(null);
+          return;
+        }
+        if (!res.ok) return;
+        const data = await res.json();
+        if (active) setSnapshot(data && Array.isArray(data.options) ? data : null);
+      } catch {
+        // Preserve the last successful snapshot through a transient API error.
+      }
+    };
+
+    load();
+    const interval = window.setInterval(load, 60_000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [index, enabled]);
+
+  return snapshot;
+}
+
 // ── useAvailableDates ──────────────────────────────────────────
 export function useAvailableDates(index: string, liveMode: boolean) {
-  const [dates, setDates] = useState<string[]>([]);
+  const [dateState, setDateState] = useState<{ key: string; data: string[] }>({ key: '', data: [] });
   const { fetchJson } = useApi();
   const lastGoodRef = useRef<{ key: string; data: string[] } | null>(null);
 
@@ -277,10 +327,10 @@ export function useAvailableDates(index: string, liveMode: boolean) {
     const load = () => {
       fetchJson(`/api/available-dates?index=${index}`).then((res) => {
         if (res?.dates) {
-          setDates(res.dates);
+          setDateState({ key, data: res.dates });
           lastGoodRef.current = { key, data: res.dates };
         } else if (lastGoodRef.current?.key === key) {
-          setDates(lastGoodRef.current.data);
+          setDateState({ key, data: lastGoodRef.current.data });
         }
       });
     };
@@ -291,5 +341,5 @@ export function useAvailableDates(index: string, liveMode: boolean) {
     return () => clearInterval(interval);
   }, [index, fetchJson, liveMode]);
 
-  return dates;
+  return dateState.key === index ? dateState.data : [];
 }
