@@ -20,6 +20,8 @@ interface ReplayControlsProps {
   availableDates: string[];
   /** Selected instrument's session — fallback labels when no snapshots exist. */
   sessionHours?: SessionHours;
+  /** Timestamp preview while the replay slider is being scrubbed. */
+  onPreviewTimestamp?: (timestamp: string | null) => void;
 }
 
 export const ReplayControls: React.FC<ReplayControlsProps> = ({
@@ -37,6 +39,7 @@ export const ReplayControls: React.FC<ReplayControlsProps> = ({
   availableDates,
   isFetching,
   sessionHours = ['09:15', '15:30'],
+  onPreviewTimestamp,
 }) => {
   const [sliderIndex, setSliderIndex] = useState(currentIndex);
   const isDraggingRef = useRef(false);
@@ -44,8 +47,9 @@ export const ReplayControls: React.FC<ReplayControlsProps> = ({
   useEffect(() => {
     if (!isDraggingRef.current) {
       setSliderIndex(currentIndex);
+      onPreviewTimestamp?.(null);
     }
-  }, [currentIndex]);
+  }, [currentIndex, onPreviewTimestamp]);
 
   const previewTimestamp = timestamps[sliderIndex] || '';
   const timeOnly = previewTimestamp
@@ -61,10 +65,12 @@ export const ReplayControls: React.FC<ReplayControlsProps> = ({
     const newIndex = Number(e.target.value);
     setSliderIndex(newIndex);
     isDraggingRef.current = true;
+    onPreviewTimestamp?.(timestamps[newIndex] || null);
   }, []);
 
   const handleSliderRelease = useCallback(() => {
     isDraggingRef.current = false;
+    onPreviewTimestamp?.(null);
     const target = (sliderIndex >= timestamps.length - 2 && timestamps.length > 0)
       ? timestamps.length - 1
       : sliderIndex;
