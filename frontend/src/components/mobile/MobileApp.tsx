@@ -13,6 +13,8 @@ import MobileSettings from "./MobileSettings";
 import MobileLevelsRail from "./MobileLevelsRail";
 import MobileWalls from "./MobileWalls";
 import MobileStrikeSheet from "./MobileStrikeSheet";
+import { MarketTimer } from "../MarketTimer";
+import { hoursForType } from "../../session";
 import { fmtExpiry, fmtPx, fmtGex } from "./mobileFormat";
 import { nearestStrike } from "../../strikeUtils";
 import "./mobile.css";
@@ -338,6 +340,15 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
           {tab !== "scan" && <span className={connected ? "mc-live" : "mc-live off"} style={{ marginLeft: "auto" }}><i />{connected ? "Live" : "…"}</span>}
         </div>
       )}
+
+      <MarketTimer
+        variant="mobile"
+        mode={replay ? "replay" : "live"}
+        referenceTimestamp={replay ? (replay.ts[replay.idx] ?? replaySnap?.timestamp ?? null) : null}
+        sessionHours={hoursForType(kind)}
+        instrumentKind={kind}
+        marketOpen={typeof data?.market_open === "boolean" ? data.market_open : undefined}
+      />
 
       <main className="mc-main"><ErrorBoundary>
         {tab === "watch" && (
