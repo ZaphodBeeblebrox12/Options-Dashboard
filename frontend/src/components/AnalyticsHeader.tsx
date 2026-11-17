@@ -7,7 +7,7 @@ interface AnalyticsHeaderProps {
   spot: number | null;
   futuresSpread: number | null;
   spreadLabel: string | null;
-  netGex: number | null;
+  maxGexStrike: number | null;
   maxPain: number | null;
   gammaFlip: number | null;
   timestamp: string;
@@ -39,7 +39,7 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
   spot,
   futuresSpread,
   spreadLabel,
-  netGex,
+  maxGexStrike,
   maxPain,
   gammaFlip,
   timestamp,
@@ -58,7 +58,6 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
     : spreadLabel === 'DISCOUNT'
     ? 'text-terminal-ce'
     : 'text-terminal-muted';
-  const gexColor = (netGex ?? 0) >= 0 ? 'text-terminal-pe' : 'text-terminal-ce';
 
   const tsLabel = timestamp ? timestamp.replace(/[:\s]/g, '-') : new Date().toISOString().slice(0,16).replace(/T/g,'-');
   const screenshotFilename = `${indexName}-analytics-${tsLabel}`;
@@ -120,7 +119,7 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
           icon={<Layers className="w-4 h-4" />}
           color={spreadColor}
         />
-        <MetricCard label="NET GEX" value={formatInt(netGex)} icon={<Zap className="w-4 h-4" />} color={gexColor} />
+        <MetricCard label="MAX GEX" value={formatInt(maxGexStrike)} icon={<Crosshair className="w-4 h-4" />} color="text-terminal-maxpain" />
         <MetricCard label="MAX PAIN" value={formatInt(maxPain)} icon={<Crosshair className="w-4 h-4" />} color="text-terminal-maxpain" />
         <MetricCard label="GAMMA FLIP" value={formatInt(gammaFlip)} icon={<Zap className="w-4 h-4" />} color="text-terminal-gammaflip" />
       </div>
