@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { AnalyticsHeader } from './components/AnalyticsHeader';
+import { MarketTimer } from './components/MarketTimer';
 import { BuildupCard } from './components/BuildupCard';
 import { OptionChain } from './components/OptionChain';
 import { ReplayControls } from './components/ReplayControls';
@@ -74,6 +75,7 @@ function App() {
   const [fullMode, setFullMode] = useState(persisted.fullMode ?? false);
   const [selectedStrike, setSelectedStrike] = useState<number | null>(persisted.selectedStrike ?? null);
   const [liveMode, setLiveMode] = useState(initialLiveMode);
+  const [replayPreviewTimestamp, setReplayPreviewTimestamp] = useState<string | null>(null);
   const [marketOpenMap, setMarketOpenMap] = useState<Record<string, boolean>>({});
   const [indexKinds, setIndexKinds] = useState<Record<string, InstrumentKind>>({});
   const [wsErrorMap, setWsErrorMap] = useState<Record<string, string | null>>({});
@@ -409,20 +411,23 @@ function App() {
   const displayedGexByStrike = liveMode ? liveGexByStrike : gexByStrike;
 
   const handlePlay = useCallback(() => {
+    setReplayPreviewTimestamp(null);
     if (currentIndex >= timestamps.length - 1) setCurrentIndex(0);
     setLiveMode(false); setIsPlaying(true);
   }, [currentIndex, timestamps.length]);
 
   const handlePause = useCallback(() => setIsPlaying(false), []);
   const handleSeek = useCallback((index: number) => {
+    setReplayPreviewTimestamp(null);
     const isAtEnd = index >= 0 && timestamps.length > 0 && index === timestamps.length - 1;
     setLiveMode(canReturnToLive(isAtEnd, selectedDate, getMarketDateIST(), marketOpen));
     setIsPlaying(false);
     setCurrentIndex(index);
   }, [timestamps.length, marketOpen, selectedDate]);
   const handleRefresh = useCallback(() => window.location.reload(), []);
-  const handleDateChange = useCallback((date: string) => { setSelectedDate(date); setCurrentIndex(-1); setIsPlaying(false); setLiveMode(false); hasRestoredRef.current = false; scrollRestoredRef.current = false; }, []);
+  const handleDateChange = useCallback((date: string) => { setReplayPreviewTimestamp(null); setSelectedDate(date); setCurrentIndex(-1); setIsPlaying(false); setLiveMode(false); hasRestoredRef.current = false; scrollRestoredRef.current = false; }, []);
   const handleIndexChange = useCallback((index: string) => {
+    setReplayPreviewTimestamp(null);
     setSelectedIndex(index);
     setCurrentIndex(-1);
     setIsPlaying(false);
@@ -439,6 +444,7 @@ function App() {
   const handleSelectStrike = useCallback((strike: number) => setSelectedStrike(strike), []);
   const handleFullModeChange = useCallback((v: boolean) => setFullMode(v), []);
   const toggleLiveMode = useCallback(() => {
+    setReplayPreviewTimestamp(null);
     setLiveMode((prev) => {
       const next = !prev;
       if (next) { setIsPlaying(false); setSelectedDate(getMarketDateIST()); setCurrentIndex(-1); enteringLiveRef.current = true; hasRestoredRef.current = false; scrollRestoredRef.current = false; }
@@ -692,11 +698,18 @@ function App() {
       </div>
 
       <div className="p-2 sm:p-3 space-y-2 sm:space-y-3">
+        <MarketTimer
+          mode={liveMode ? 'live' : 'replay'}
+          referenceTimestamp={replayPreviewTimestamp ?? currentTimestamp ?? (displayData as any)?.timestamp ?? null}
+          sessionHours={sessionHours}
+          instrumentKind={indexKinds[selectedIndex]}
+          marketOpen={marketOpen}
+        />
         <AnalyticsHeader indexName={selectedIndex} isFetching={snapshotLoading} spot={spot} futures={futures} futuresSpread={futuresSpread} spreadLabel={spreadLabel} netGex={netGex} maxGexStrike={maxGexStrike} maxPain={maxPain} gammaFlip={gammaFlip} timestamp={timestamp} isLive={isTrulyLive} isStale={isLiveDataStale} />
         {(!liveMode || isTrulyLive) && (
           <BuildupCard indexName={selectedIndex} date={selectedDate} live={liveMode} timestamp={currentTimestamp || undefined} />
         )}
-        <ReplayControls timestamps={timestamps} currentIndex={currentIndex} isFetching={snapshotLoading} isPlaying={isPlaying} onPlay={handlePlay} onPause={handlePause} onSeek={handleSeek} onRefresh={handleRefresh} selectedDate={selectedDate} onDateChange={handleDateChange} selectedIndex={selectedIndex} onIndexChange={handleIndexChange} availableDates={availableDates} sessionHours={sessionHours} />
+        <ReplayControls timestamps={timestamps} currentIndex={currentIndex} isFetching={snapshotLoading} isPlaying={isPlaying} onPlay={handlePlay} onPause={handlePause} onSeek={handleSeek} onRefresh={handleRefresh} selectedDate={selectedDate} onDateChange={handleDateChange} selectedIndex={selectedIndex} onIndexChange={handleIndexChange} availableDates={availableDates} sessionHours={sessionHours} onPreviewTimestamp={setReplayPreviewTimestamp} />
         <OptionChain options={normalizedOptions} spot={spot} futures={futures} maxPain={maxPain} gammaFlip={gammaFlip} fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike} indexName={selectedIndex} timestamp={timestamp} canArm={canArmWallWatch} />
         {instrumentTier === 1 && (
           <GexChart data={displayedGexByStrike} atmStrike={atmStrike} maxPain={maxPain} gammaFlip={gammaFlip}
