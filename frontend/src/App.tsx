@@ -11,11 +11,11 @@ import { SettingsModal } from './components/SettingsModal';
 import { AlertHistoryPanel } from './components/AlertHistory';
 import { AlertToastContainer } from './components/AlertToast';
 import { useWebSocket } from './hooks/useWebSocket';
-import { useSnapshots, useSnapshot, useGexHistory, useStrikeHistory, useGexByStrike, useAvailableDates } from './hooks/useApi';
+import { useSnapshots, useSnapshot, useGexHistory, useStrikeHistory, useGexByStrike, useAvailableDates, useLastKnownSnapshot } from './hooks/useApi';
 import { useAlertSettings, useAlertNotifications, AlertFiring } from './hooks/useAlerts';
 import { Monitor, AlertTriangle, Info, WifiOff, Bell, Settings, X, ChevronDown } from 'lucide-react';
 import { hoursForType, isSessionOpen, fmtSessionRange, getMarketDateIST, InstrumentKind, SessionHours } from './session';
-import { canReturnToLive, resolveLiveStatus } from './replayPolicy.js';
+import { canReturnToLive, resolveLiveStatus, resolveInitialReplayDate } from './replayPolicy.js';
 import { computeOiWalls } from './oiWalls.js';
 import { useIsMobile } from "./components/mobile/useIsMobile";
 import MobileApp from "./components/mobile/MobileApp";
@@ -91,6 +91,7 @@ function App() {
   const hasRestoredRef = useRef(false);
   const enteringLiveRef = useRef(false);
   const scrollRestoredRef = useRef(false);
+  const hasUserSelectedDateRef = useRef(false);
 
   const wsUrl = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
   const { connected, lastMessage } = useWebSocket(wsUrl);
@@ -104,6 +105,22 @@ function App() {
   const strikeHistory = useStrikeHistory(selectedStrike, selectedDate, selectedIndex, liveMode);
   const gexByStrike = useGexByStrike(liveMode ? null : currentTimestamp, selectedIndex, liveMode);
   const availableDates = useAvailableDates(selectedIndex, liveMode);
+  const lastKnownSnapshot = useLastKnownSnapshot(selectedIndex, liveMode && !marketOpen);
+
+  // If Replay is restored before today's session has produced snapshots,
+  // automatically open the newest date with data. Explicit user date choices
+  // are respected and are never silently replaced.
+  useEffect(() => {
+    if (liveMode || hasUserSelectedDateRef.current) return;
+    const fallbackDate = resolveInitialReplayDate(selectedDate, availableDates);
+    if (!fallbackDate) return;
+    setReplayPreviewTimestamp(null);
+    setSelectedDate(fallbackDate);
+    setCurrentIndex(-1);
+    setIsPlaying(false);
+    hasRestoredRef.current = false;
+    scrollRestoredRef.current = false;
+  }, [liveMode, selectedDate, availableDates]);
 
   const [liveDataMap, setLiveDataMap] = useState<Record<string, any>>({});
   const [alertScope, setAlertScope] = useState<'viewed' | 'all'>('viewed');
@@ -306,7 +323,11 @@ function App() {
   const hasLiveData = liveData && Array.isArray(liveData.options) && liveData.options.length > 0 && liveData.spot != null;
   // Do not fall back to a historical DB snapshot while the UI is in LIVE mode.
   // Blank values are safer than presenting yesterday's data as today's market.
-  const displayData = liveMode ? (hasLiveData ? liveData : null) : snapshot;
+  // Outside market hours, use /api/current's persisted fallback when the
+  // WebSocket has no usable chain. Feed status remains CLOSED, never LIVE.
+  const displayData = liveMode
+    ? (hasLiveData ? liveData : (!marketOpen ? lastKnownSnapshot : null))
+    : snapshot;
   const wsError = wsErrorMap[selectedIndex] || null;
 
   // Freshness is based on source-tick ages from the backend, not the timestamp
@@ -425,8 +446,9 @@ function App() {
     setCurrentIndex(index);
   }, [timestamps.length, marketOpen, selectedDate]);
   const handleRefresh = useCallback(() => window.location.reload(), []);
-  const handleDateChange = useCallback((date: string) => { setReplayPreviewTimestamp(null); setSelectedDate(date); setCurrentIndex(-1); setIsPlaying(false); setLiveMode(false); hasRestoredRef.current = false; scrollRestoredRef.current = false; }, []);
+  const handleDateChange = useCallback((date: string) => { hasUserSelectedDateRef.current = true; setReplayPreviewTimestamp(null); setSelectedDate(date); setCurrentIndex(-1); setIsPlaying(false); setLiveMode(false); hasRestoredRef.current = false; scrollRestoredRef.current = false; }, []);
   const handleIndexChange = useCallback((index: string) => {
+    hasUserSelectedDateRef.current = false;
     setReplayPreviewTimestamp(null);
     setSelectedIndex(index);
     setCurrentIndex(-1);
@@ -444,6 +466,7 @@ function App() {
   const handleSelectStrike = useCallback((strike: number) => setSelectedStrike(strike), []);
   const handleFullModeChange = useCallback((v: boolean) => setFullMode(v), []);
   const toggleLiveMode = useCallback(() => {
+    hasUserSelectedDateRef.current = false;
     setReplayPreviewTimestamp(null);
     setLiveMode((prev) => {
       const next = !prev;
@@ -710,7 +733,26 @@ function App() {
           <BuildupCard indexName={selectedIndex} date={selectedDate} live={liveMode} timestamp={currentTimestamp || undefined} />
         )}
         <ReplayControls timestamps={timestamps} currentIndex={currentIndex} isFetching={snapshotLoading} isPlaying={isPlaying} onPlay={handlePlay} onPause={handlePause} onSeek={handleSeek} onRefresh={handleRefresh} selectedDate={selectedDate} onDateChange={handleDateChange} selectedIndex={selectedIndex} onIndexChange={handleIndexChange} availableDates={availableDates} sessionHours={sessionHours} onPreviewTimestamp={setReplayPreviewTimestamp} />
-        <OptionChain options={normalizedOptions} spot={spot} futures={futures} maxPain={maxPain} gammaFlip={gammaFlip} fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike} indexName={selectedIndex} timestamp={timestamp} canArm={canArmWallWatch} />
+        <OptionChain
+          options={normalizedOptions} spot={spot} futures={futures} maxPain={maxPain} gammaFlip={gammaFlip}
+          fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike}
+          indexName={selectedIndex} timestamp={timestamp} canArm={canArmWallWatch}
+          emptyTitle={!liveMode
+            ? (timestamps.length === 0 ? 'No snapshots for selected date' : 'Historical snapshot unavailable')
+            : (!marketOpen ? 'No last-known option data available' : 'Waiting for live option data')}
+          emptyDescription={!liveMode
+            ? (timestamps.length === 0
+              ? `No saved snapshots were recorded for ${selectedDate}. Choose a highlighted date or return to LIVE.`
+              : 'The selected historical snapshot could not be loaded. Try another timestamp or refresh.')
+            : (!marketOpen
+              ? 'The market is closed and no persisted option-chain snapshot could be retrieved for this instrument.'
+              : 'The dashboard is connected, but Angel One has not supplied a usable option chain yet.')}
+          emptyFootnote={!liveMode
+            ? 'Replay displays only snapshots persisted by the backend; missing market data is never fabricated.'
+            : (!marketOpen
+              ? 'Check snapshot history or select a date with available data.'
+              : 'Check backend logs and the Angel One connection before changing credentials.')}
+        />
         {instrumentTier === 1 && (
           <GexChart data={displayedGexByStrike} atmStrike={atmStrike} maxPain={maxPain} gammaFlip={gammaFlip}
                     ceWall={ceWall} peWall={peWall} indexName={selectedIndex} timestamp={timestamp} />
