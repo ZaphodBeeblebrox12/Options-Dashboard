@@ -95,3 +95,32 @@ test('a measured old source remains stale even when another source age is unknow
     hasError: false,
   }), 'STALE');
 });
+
+test('initial replay falls back from today to the latest available trading date', async () => {
+  const { resolveInitialReplayDate } = await import('../src/replayPolicy.js');
+  assert.equal(
+    resolveInitialReplayDate('2026-11-18', ['2026-11-17', '2026-11-16']),
+    '2026-11-17'
+  );
+});
+
+test('initial replay keeps the selected date when snapshots exist', async () => {
+  const { resolveInitialReplayDate } = await import('../src/replayPolicy.js');
+  assert.equal(
+    resolveInitialReplayDate('2026-11-17', ['2026-11-17', '2026-11-16']),
+    null
+  );
+});
+
+test('initial replay does not silently replace an explicitly selected date', async () => {
+  const { resolveInitialReplayDate } = await import('../src/replayPolicy.js');
+  assert.equal(
+    resolveInitialReplayDate('2026-11-18', ['2026-11-17', '2026-11-16'], true),
+    null
+  );
+});
+
+test('initial replay remains empty when an instrument has no stored dates', async () => {
+  const { resolveInitialReplayDate } = await import('../src/replayPolicy.js');
+  assert.equal(resolveInitialReplayDate('2026-11-18', []), null);
+});
