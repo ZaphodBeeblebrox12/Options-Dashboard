@@ -14,6 +14,7 @@ interface AnalyticsHeaderProps {
   isLive: boolean;
   isStale?: boolean;   // P1: feed frozen — data on screen has stopped updating
   isFetching?: boolean;
+  children?: React.ReactNode;
 }
 
 const MetricCard: React.FC<{
@@ -45,6 +46,7 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
   isLive,
   isStale = false,
   isFetching,
+  children,
 }) => {
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -122,6 +124,8 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
         <MetricCard label="MAX PAIN" value={formatInt(maxPain)} icon={<Crosshair className="w-4 h-4" />} color="text-terminal-maxpain" />
         <MetricCard label="GAMMA FLIP" value={formatInt(gammaFlip)} icon={<Zap className="w-4 h-4" />} color="text-terminal-gammaflip" />
       </div>
+
+      {children && <div className="border-t border-terminal-border">{children}</div>}
 
       <style>{`
         @keyframes sweep {
