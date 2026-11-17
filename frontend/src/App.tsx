@@ -728,10 +728,11 @@ function App() {
           instrumentKind={indexKinds[selectedIndex]}
           marketOpen={marketOpen}
         />
-        <AnalyticsHeader indexName={selectedIndex} isFetching={snapshotLoading} spot={spot} futuresSpread={futuresSpread} spreadLabel={spreadLabel} netGex={netGex} maxPain={maxPain} gammaFlip={gammaFlip} timestamp={timestamp} isLive={isTrulyLive} isStale={isLiveDataStale} />
-        {(!liveMode || isTrulyLive) && (
-          <BuildupCard indexName={selectedIndex} date={selectedDate} live={liveMode} timestamp={currentTimestamp || undefined} />
-        )}
+        <AnalyticsHeader indexName={selectedIndex} isFetching={snapshotLoading} spot={spot} futuresSpread={futuresSpread} spreadLabel={spreadLabel} netGex={netGex} maxPain={maxPain} gammaFlip={gammaFlip} timestamp={timestamp} isLive={isTrulyLive} isStale={isLiveDataStale}>
+          {(!liveMode || isTrulyLive) && (
+            <BuildupCard indexName={selectedIndex} date={selectedDate} live={liveMode} timestamp={currentTimestamp || undefined} embedded />
+          )}
+        </AnalyticsHeader>
         <ReplayControls timestamps={timestamps} currentIndex={currentIndex} isFetching={snapshotLoading} isPlaying={isPlaying} onPlay={handlePlay} onPause={handlePause} onSeek={handleSeek} onRefresh={handleRefresh} selectedDate={selectedDate} onDateChange={handleDateChange} selectedIndex={selectedIndex} onIndexChange={handleIndexChange} availableDates={availableDates} sessionHours={sessionHours} onPreviewTimestamp={setReplayPreviewTimestamp} />
         <OptionChain
           options={normalizedOptions} spot={spot} maxPain={maxPain} gammaFlip={gammaFlip}
