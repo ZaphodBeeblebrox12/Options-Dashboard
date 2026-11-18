@@ -57,7 +57,7 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
     ? 'text-terminal-ce'
     : 'text-terminal-muted';
 
-  const tsLabel = timestamp ? timestamp.replace(/[:\\s]/g, '-') : new Date().toISOString().slice(0,16).replace(/T/g,'-');
+  const tsLabel = timestamp ? timestamp.replace(/[:\s]/g, '-') : new Date().toISOString().slice(0,16).replace(/T/g,'-');
   const screenshotFilename = `${indexName}-analytics-${tsLabel}`;
 
   return (
