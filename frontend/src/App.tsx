@@ -735,6 +735,7 @@ function App() {
           options={normalizedOptions} spot={spot} maxPain={maxPain} gammaFlip={gammaFlip}
           fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike}
           indexName={selectedIndex} timestamp={timestamp} canArm={canArmWallWatch}
+          isLoading={!liveMode && snapshotLoading}
           emptyTitle={!liveMode
             ? (timestamps.length === 0 ? 'No snapshots for selected date' : 'Historical snapshot unavailable')
             : (!marketOpen ? 'No last-known option data available' : 'Waiting for live option data')}
