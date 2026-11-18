@@ -83,8 +83,10 @@ export function useSnapshots(date: string, index: string, liveMode: boolean) {
 // does not show the previous timestamp's data.
 export function useSnapshot(timestamp: string | null, index: string, _liveMode: boolean) {
   const [snapshotEntry, setSnapshotEntry] = useState<{ key: string; data: any } | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
+  const [loadState, setLoadState] = useState<{ key: string | null; loading: boolean }>({
+    key: null,
+    loading: false,
+  });
   const lastGoodRef = useRef<{ key: string; data: any } | null>(null);
 
   const fetchJson = useCallback(async (endpoint: string, signal?: AbortSignal) => {
@@ -98,53 +100,61 @@ export function useSnapshot(timestamp: string | null, index: string, _liveMode: 
     }
   }, []);
 
-  useEffect(() => {
-    if (!timestamp || !index) {
-      setIsLoading(false);
-      return;
-    }
-
-    if (abortRef.current) {
-      abortRef.current.abort();
-    }
-    abortRef.current = new AbortController();
-
-    const endpoint = `/api/snapshot/${encodeURIComponent(timestamp)}?index=${index}`;
-
-    const cached = _getCached(endpoint);
-    if (cached) {
-      setSnapshotEntry({ key: endpoint, data: cached });
-      lastGoodRef.current = { key: endpoint, data: cached };
-      setIsLoading(false);
-      return;
-    }
-
-    setIsLoading(true);
-    fetchJson(endpoint, abortRef.current.signal).then((data) => {
-      setIsLoading(false);
-      if (data) {
-        _setCached(endpoint, data);
-        lastGoodRef.current = { key: endpoint, data };
-        setSnapshotEntry({ key: endpoint, data });
-      } else if (lastGoodRef.current?.key === endpoint) {
-        // Same endpoint failed (e.g. network hiccup while already viewing this ts)
-        setSnapshotEntry({ key: endpoint, data: lastGoodRef.current.data });
-      }
-      // A failed request for a different timestamp never exposes data from
-      // the previously selected snapshot.
-    });
-
-    return () => {
-      abortRef.current?.abort();
-    };
-  }, [timestamp, index, fetchJson]);
-
   const currentEndpoint = timestamp && index
     ? `/api/snapshot/${encodeURIComponent(timestamp)}?index=${index}`
     : null;
+
+  // Resolve a cached snapshot during render so a cache hit never flashes a
+  // loading or unavailable state between timestamp changes.
+  const cachedSnapshot = currentEndpoint ? _getCached(currentEndpoint) : null;
+
+  useEffect(() => {
+    if (!currentEndpoint) {
+      setLoadState({ key: null, loading: false });
+      return;
+    }
+
+    const controller = new AbortController();
+    const cached = _getCached(currentEndpoint);
+    if (cached) {
+      setSnapshotEntry({ key: currentEndpoint, data: cached });
+      lastGoodRef.current = { key: currentEndpoint, data: cached };
+      setLoadState({ key: currentEndpoint, loading: false });
+      return () => controller.abort();
+    }
+
+    // Store the request key with its loading state. The returned loading flag
+    // can therefore reflect a newly selected timestamp on its first render.
+    setLoadState({ key: currentEndpoint, loading: true });
+    fetchJson(currentEndpoint, controller.signal).then((data) => {
+      // An older, aborted seek must not clear the loading state for a newer one.
+      if (controller.signal.aborted) return;
+
+      if (data) {
+        _setCached(currentEndpoint, data);
+        lastGoodRef.current = { key: currentEndpoint, data };
+        setSnapshotEntry({ key: currentEndpoint, data });
+      } else if (lastGoodRef.current?.key === currentEndpoint) {
+        // Same endpoint failed (e.g. network hiccup while already viewing this ts)
+        setSnapshotEntry({ key: currentEndpoint, data: lastGoodRef.current.data });
+      }
+
+      setLoadState({ key: currentEndpoint, loading: false });
+    });
+
+    return () => controller.abort();
+  }, [currentEndpoint, fetchJson]);
+
   const snapshot = currentEndpoint && snapshotEntry?.key === currentEndpoint
     ? snapshotEntry.data
-    : null;
+    : cachedSnapshot;
+  const hasSnapshot = snapshot !== null && snapshot !== undefined;
+  const isLoading = Boolean(
+    currentEndpoint &&
+    !hasSnapshot &&
+    (loadState.key !== currentEndpoint || loadState.loading)
+  );
+
   return { snapshot, isLoading };
 }
 
