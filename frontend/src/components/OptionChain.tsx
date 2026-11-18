@@ -204,10 +204,25 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   }, [chainData, atmSpot, strikeOrder]);
 
   // ── Jump to ATM ──
+  // Scroll only the option-chain rows. Element.scrollIntoView() can also
+  // scroll ancestor containers (including the page), which moves the sticky
+  // Market Timer over the replay seeker and hides the controls.
   const scrollToAtm = useCallback(() => {
-    if (!scrollContainerRef.current || !atmSpot) return;
-    const atmRow = scrollContainerRef.current.querySelector(`[data-strike="${atmSpot}"]`);
-    atmRow?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const container = scrollContainerRef.current;
+    if (!container || !atmSpot) return;
+
+    const atmRow = container.querySelector<HTMLElement>(`[data-strike="${atmSpot}"]`);
+    if (!atmRow) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const rowRect = atmRow.getBoundingClientRect();
+    const rowTopWithinContainer = container.scrollTop + rowRect.top - containerRect.top;
+    const targetTop = rowTopWithinContainer - (container.clientHeight - rowRect.height) / 2;
+
+    container.scrollTo({
+      top: Math.max(0, targetTop),
+      behavior: 'smooth',
+    });
   }, [atmSpot]);
 
   const fmt = (n: number | undefined | null, digits = 0) => {
