@@ -717,7 +717,7 @@ function App() {
 
       <div className="p-2 sm:p-3 space-y-2 sm:space-y-3">
         <ReplayPreviewProvider resetKey={`${selectedDate}|${selectedIndex}|${liveMode ? 'live' : 'replay'}`}>
-          <div className="sticky top-0 z-30 grid grid-cols-1 items-stretch gap-2 xl:grid-cols-[minmax(0,0.93fr)_minmax(0,1.07fr)]">
+          <div className="sticky top-0 z-30 grid grid-cols-1 items-center gap-2 xl:grid-cols-[minmax(0,0.93fr)_minmax(0,1.07fr)]">
             <MarketTimer
               compact
               mode={liveMode ? 'live' : 'replay'}
