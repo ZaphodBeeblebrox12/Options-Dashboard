@@ -98,7 +98,7 @@ export const MarketTimer: React.FC<MarketTimerProps> = ({
   return (
     <section
       className={compact
-        ? "terminal-panel flex h-full min-w-0 flex-nowrap items-center gap-2 px-2 py-2 shadow-lg shadow-black/20"
+        ? "terminal-panel flex min-w-0 flex-nowrap items-center gap-2 px-2 py-2 shadow-lg shadow-black/20"
         : "terminal-panel sticky top-0 z-30 flex min-w-0 flex-wrap items-center gap-4 px-4 py-2.5 shadow-lg shadow-black/20"}
       aria-label="Market candle countdown"
     >
