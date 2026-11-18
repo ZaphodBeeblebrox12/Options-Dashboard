@@ -24,7 +24,7 @@ const MetricCard: React.FC<{
   icon: React.ReactNode;
   color?: string;
 }> = ({ label, value, subValue, icon, color = 'text-terminal-text' }) => (
-  <div className="flex min-w-0 items-center gap-2 sm:gap-3 px-2 sm:px-4 lg:px-2 py-1.5 sm:py-2 sm:border-r sm:border-terminal-border last:sm:border-r-0 sm:min-w-[160px] lg:min-w-0 lg:flex-1">
+  <div className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 sm:gap-2 sm:px-3 sm:py-2 xl:min-w-0 xl:border-r xl:border-terminal-border">
     <div className={`hidden sm:block ${color} opacity-60 shrink-0`}>{icon}</div>
     <div className="min-w-0">
       <div className="text-[9px] sm:text-[10px] font-mono uppercase tracking-wider text-terminal-muted">{label}</div>
@@ -110,7 +110,7 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:flex lg:flex-wrap lg:items-center">
+      <div className="grid grid-cols-2 sm:grid-cols-3 xl:flex xl:flex-nowrap xl:items-center">
         <MetricCard label="SPOT" value={formatPrice(spot)} icon={<TrendingUp className="w-4 h-4" />} color="text-terminal-atm" />
         <MetricCard
           label="SPREAD"
@@ -124,7 +124,11 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
         <MetricCard label="GAMMA FLIP" value={formatInt(gammaFlip)} icon={<Zap className="w-4 h-4" />} color="text-terminal-gammaflip" />
       </div>
 
-      {children && <div className="border-t border-terminal-border">{children}</div>}
+      {children && (
+        <div className="border-t border-terminal-border xl:border-l xl:border-t-0 xl:min-w-[500px] xl:flex-[0.95]">
+          {children}
+        </div>
+      )}
 
       <style>{`
         @keyframes sweep {
