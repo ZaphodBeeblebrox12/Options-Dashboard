@@ -63,7 +63,7 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
   const screenshotFilename = `${indexName}-analytics-${tsLabel}`;
 
   return (
-    <div className="terminal-panel relative h-full min-w-0 overflow-hidden" ref={panelRef}>
+    <div className="terminal-panel relative min-w-0 overflow-hidden" ref={panelRef}>
       {isFetching && (
         <div
           className="absolute top-0 left-0 right-0 h-[2px] z-10"
