@@ -24,7 +24,7 @@ const MetricCard: React.FC<{
   icon: React.ReactNode;
   color?: string;
 }> = ({ label, value, subValue, icon, color = 'text-terminal-text' }) => (
-  <div className="flex items-center gap-2 sm:gap-3 px-2 sm:px-4 py-1.5 sm:py-2 sm:border-r sm:border-terminal-border last:sm:border-r-0 sm:min-w-[160px]">
+  <div className="flex min-w-0 items-center gap-2 sm:gap-3 px-2 sm:px-4 lg:px-2 py-1.5 sm:py-2 sm:border-r sm:border-terminal-border last:sm:border-r-0 sm:min-w-[160px] lg:min-w-0 lg:flex-1">
     <div className={`hidden sm:block ${color} opacity-60 shrink-0`}>{icon}</div>
     <div className="min-w-0">
       <div className="text-[9px] sm:text-[10px] font-mono uppercase tracking-wider text-terminal-muted">{label}</div>
@@ -63,7 +63,7 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
   const screenshotFilename = `${indexName}-analytics-${tsLabel}`;
 
   return (
-    <div className="terminal-panel relative overflow-hidden" ref={panelRef}>
+    <div className="terminal-panel relative h-full min-w-0 overflow-hidden" ref={panelRef}>
       {isFetching && (
         <div
           className="absolute top-0 left-0 right-0 h-[2px] z-10"
