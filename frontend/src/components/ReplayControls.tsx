@@ -3,6 +3,7 @@ import { Play, Pause, SkipBack, SkipForward, RefreshCw } from 'lucide-react';
 import { DatePicker } from './DatePicker';
 import { SessionHours } from '../session';
 import { InstrumentSelect } from './InstrumentSelect';
+import { useSetReplayPreviewTimestamp } from './ReplayPreviewContext';
 
 interface ReplayControlsProps {
   isFetching?: boolean;
@@ -20,8 +21,6 @@ interface ReplayControlsProps {
   availableDates: string[];
   /** Selected instrument's session — fallback labels when no snapshots exist. */
   sessionHours?: SessionHours;
-  /** Timestamp preview while the replay slider is being scrubbed. */
-  onPreviewTimestamp?: (timestamp: string | null) => void;
 }
 
 export const ReplayControls: React.FC<ReplayControlsProps> = ({
@@ -39,17 +38,17 @@ export const ReplayControls: React.FC<ReplayControlsProps> = ({
   availableDates,
   isFetching,
   sessionHours = ['09:15', '15:30'],
-  onPreviewTimestamp,
 }) => {
   const [sliderIndex, setSliderIndex] = useState(currentIndex);
+  const setPreviewTimestamp = useSetReplayPreviewTimestamp();
   const isDraggingRef = useRef(false);
 
   useEffect(() => {
     if (!isDraggingRef.current) {
       setSliderIndex(currentIndex);
-      onPreviewTimestamp?.(null);
+      setPreviewTimestamp(null);
     }
-  }, [currentIndex, onPreviewTimestamp]);
+  }, [currentIndex, setPreviewTimestamp]);
 
   const previewTimestamp = timestamps[sliderIndex] || '';
   const timeOnly = previewTimestamp
@@ -65,17 +64,28 @@ export const ReplayControls: React.FC<ReplayControlsProps> = ({
     const newIndex = Number(e.target.value);
     setSliderIndex(newIndex);
     isDraggingRef.current = true;
-    onPreviewTimestamp?.(timestamps[newIndex] || null);
-  }, [onPreviewTimestamp, timestamps]);
+    setPreviewTimestamp(timestamps[newIndex] || null);
+  }, [setPreviewTimestamp, timestamps]);
 
   const handleSliderRelease = useCallback(() => {
+    // Pointer, touch, keyboard and blur can all signal completion. Commit once.
+    if (!isDraggingRef.current) return;
     isDraggingRef.current = false;
-    onPreviewTimestamp?.(null);
+    setPreviewTimestamp(null);
     const target = (sliderIndex >= timestamps.length - 2 && timestamps.length > 0)
       ? timestamps.length - 1
       : sliderIndex;
     onSeek(target);
-  }, [sliderIndex, onSeek, timestamps, onPreviewTimestamp]);
+  }, [sliderIndex, onSeek, timestamps, setPreviewTimestamp]);
+
+  const handleSliderPointerDown = useCallback((event: React.PointerEvent<HTMLInputElement>) => {
+    // Keep pointer-up delivery reliable when the user releases outside the slider.
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture is not available in every browser/input implementation.
+    }
+  }, []);
 
   const stepBack = () => {
     if (currentIndex > 0) onSeek(currentIndex - 1);
@@ -196,8 +206,12 @@ export const ReplayControls: React.FC<ReplayControlsProps> = ({
             max={Math.max(timestamps.length - 1, 0)}
             value={sliderIndex}
             onChange={handleSliderChange}
-            onMouseUp={handleSliderRelease}
-            onTouchEnd={handleSliderRelease}
+            onPointerDown={handleSliderPointerDown}
+            onPointerUp={handleSliderRelease}
+            onPointerCancel={handleSliderRelease}
+            onKeyUp={handleSliderRelease}
+            onBlur={handleSliderRelease}
+            aria-label="Replay timestamp"
             className="flex-1 h-1.5 bg-terminal-border rounded-lg appearance-none cursor-pointer"
             style={{ accentColor: '#eab308' }}
           />
