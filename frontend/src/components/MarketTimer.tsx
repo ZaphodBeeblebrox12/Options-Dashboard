@@ -5,6 +5,7 @@ import {
   parseMarketTimestamp,
 } from "../marketTimer.js";
 import type { InstrumentKind, SessionHours } from "../session";
+import { useReplayPreviewTimestamp } from "./ReplayPreviewContext";
 
 interface MarketTimerProps {
   mode: "live" | "replay";
@@ -31,35 +32,43 @@ export const MarketTimer: React.FC<MarketTimerProps> = ({
   variant = "desktop",
 }) => {
   const [liveNow, setLiveNow] = useState(() => new Date());
+  const previewTimestamp = useReplayPreviewTimestamp();
+  const isPreviewing = previewTimestamp !== null;
+  const timerMode = isPreviewing ? "replay" : mode;
+  const effectiveTimestamp = previewTimestamp ?? referenceTimestamp;
 
   useEffect(() => {
-    if (mode !== "live") return;
+    if (mode !== "live" || isPreviewing) return;
     const tick = () => setLiveNow(new Date());
     tick();
     const timer = window.setInterval(tick, 1000);
     return () => window.clearInterval(timer);
-  }, [mode]);
+  }, [mode, isPreviewing]);
 
+  // During a seek preview, calculate every timeframe against the hovered
+  // historical timestamp even before the selection is committed.
   const replayDate = useMemo(
-    () => (mode === "replay" ? parseMarketTimestamp(referenceTimestamp) : null),
-    [mode, referenceTimestamp],
+    () => (timerMode === "replay" ? parseMarketTimestamp(effectiveTimestamp) : null),
+    [timerMode, effectiveTimestamp],
   );
-  const referenceDate = mode === "live" ? liveNow : replayDate;
+  const referenceDate = timerMode === "live" ? liveNow : replayDate;
   const state = useMemo(
-    () => getMarketTimerState(referenceDate, sessionHours, mode === "live" ? marketOpen : undefined),
-    [referenceDate, sessionHours[0], sessionHours[1], marketOpen, mode],
+    () => getMarketTimerState(referenceDate, sessionHours, timerMode === "live" ? marketOpen : undefined),
+    [referenceDate, sessionHours[0], sessionHours[1], marketOpen, timerMode],
   );
 
   const exchangeLabel = instrumentKind === "commodity" || instrumentKind === "mcx"
     ? "MCX"
     : "NSE / BSE";
-  const statusLabel = state.status === "OPEN"
-    ? mode.toUpperCase()
-    : state.status === "WAITING" && mode === "replay"
-      ? "REPLAY"
-      : state.status;
+  const statusLabel = isPreviewing
+    ? "PREVIEW"
+    : state.status === "OPEN"
+      ? timerMode.toUpperCase()
+      : state.status === "WAITING" && timerMode === "replay"
+        ? "REPLAY"
+        : state.status;
   const statusClass = state.status === "OPEN"
-    ? mode === "live" ? "text-emerald-400 bg-emerald-500/10" : "text-sky-300 bg-sky-500/10"
+    ? timerMode === "live" ? "text-emerald-400 bg-emerald-500/10" : "text-sky-300 bg-sky-500/10"
     : state.status === "PRE-OPEN" ? "text-amber-300 bg-amber-500/10"
       : "text-terminal-muted bg-white/5";
 
