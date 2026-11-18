@@ -1,5 +1,5 @@
 import React, { useRef } from 'react';
-import { Activity, TrendingUp, Crosshair, Zap, Layers, WifiOff } from 'lucide-react';
+import { TrendingUp, Crosshair, Zap, Layers } from 'lucide-react';
 import { ScreenshotButton } from './ScreenshotButton';
 
 interface AnalyticsHeaderProps {
@@ -12,7 +12,7 @@ interface AnalyticsHeaderProps {
   gammaFlip: number | null;
   timestamp: string;
   isLive: boolean;
-  isStale?: boolean;   // P1: feed frozen — data on screen has stopped updating
+  isStale?: boolean;
   isFetching?: boolean;
   children?: React.ReactNode;
 }
@@ -43,8 +43,6 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
   maxPain,
   gammaFlip,
   timestamp,
-  isLive,
-  isStale = false,
   isFetching,
   children,
 }) => {
@@ -74,62 +72,32 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
         />
       )}
 
-      <div className="flex items-center justify-between px-3 sm:px-4 py-2 border-b border-terminal-border">
-        <div className="flex items-center gap-2">
-          <Activity className="w-4 h-4 sm:w-4 sm:h-4 text-terminal-atm" />
-          <span className="text-sm font-semibold tracking-wide">{indexName}</span>
-          {/* P1: amber STALE state when the tick stream has frozen but the
-              socket to our own backend is still up (backend rebroadcasts
-              cached state every 5s, so ticks keep arriving — just ancient). */}
-          {isStale ? (
-            <span
-              className="flex items-center gap-1 text-[10px] font-mono text-amber-400"
-              title="Live feed unavailable or stale — do not treat these values as current market data."
-            >
-              <WifiOff className="w-3 h-3" />
-              STALE
-            </span>
-          ) : isLive ? (
-            <span className="flex items-center gap-1 text-[10px] font-mono text-terminal-pe">
-              <span className="w-1.5 h-1.5 rounded-full bg-terminal-pe animate-pulse" />
-              LIVE
-            </span>
-          ) : null}
-          {isFetching && (
-            <span className="flex items-center gap-1 text-[10px] font-mono text-terminal-atm/70">
-              <span className="w-1 h-1 rounded-full bg-terminal-atm animate-pulse" />
-              syncing
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <div className={`text-[10px] font-mono transition-opacity duration-300 ${isFetching ? 'opacity-40' : 'opacity-100 text-terminal-muted'}`}>
-            {timestamp ? new Date(timestamp).toLocaleString('en-IN') : '—'}
-          </div>
-          <ScreenshotButton targetRef={panelRef} filename={screenshotFilename} />
-        </div>
-      </div>
-
       <div className="flex flex-col xl:flex-row xl:items-center">
         <div className="grid grid-cols-2 sm:grid-cols-3 xl:flex xl:flex-[1.05] xl:flex-nowrap xl:items-center xl:min-w-0">
-        <MetricCard label="SPOT" value={formatPrice(spot)} icon={<TrendingUp className="w-4 h-4" />} color="text-terminal-atm" />
-        <MetricCard
-          label="SPREAD"
-          value={futuresSpread !== null ? `${futuresSpread >= 0 ? '+' : ''}${futuresSpread.toFixed(2)}` : '—'}
-          subValue={spreadLabel || ''}
-          icon={<Layers className="w-4 h-4" />}
-          color={spreadColor}
-        />
-        <MetricCard label="MAX GEX" value={formatInt(maxGexStrike)} icon={<Crosshair className="w-4 h-4" />} color="text-terminal-maxpain" />
-        <MetricCard label="MAX PAIN" value={formatInt(maxPain)} icon={<Crosshair className="w-4 h-4" />} color="text-terminal-maxpain" />
-        <MetricCard label="GAMMA FLIP" value={formatInt(gammaFlip)} icon={<Zap className="w-4 h-4" />} color="text-terminal-gammaflip" />
-      </div>
+          <MetricCard label="SPOT" value={formatPrice(spot)} icon={<TrendingUp className="w-4 h-4" />} color="text-terminal-atm" />
+          <MetricCard
+            label="SPREAD"
+            value={futuresSpread !== null ? `${futuresSpread >= 0 ? '+' : ''}${futuresSpread.toFixed(2)}` : '—'}
+            subValue={spreadLabel || ''}
+            icon={<Layers className="w-4 h-4" />}
+            color={spreadColor}
+          />
+          <MetricCard label="MAX GEX" value={formatInt(maxGexStrike)} icon={<Crosshair className="w-4 h-4" />} color="text-terminal-maxpain" />
+          <MetricCard label="MAX PAIN" value={formatInt(maxPain)} icon={<Crosshair className="w-4 h-4" />} color="text-terminal-maxpain" />
+          <MetricCard label="GAMMA FLIP" value={formatInt(gammaFlip)} icon={<Zap className="w-4 h-4" />} color="text-terminal-gammaflip" />
+        </div>
 
         {children && (
-          <div className="border-t border-terminal-border xl:border-l xl:border-t-0 xl:min-w-[500px] xl:flex-[0.95]">
-            {children}
+          <div className="flex min-w-0 border-t border-terminal-border xl:min-w-[500px] xl:flex-[0.95] xl:border-l xl:border-t-0">
+            <div className="min-w-0 flex-1">
+              {children}
+            </div>
           </div>
         )}
+
+        <div className="flex shrink-0 items-center justify-end px-2 py-1 xl:self-stretch xl:border-l xl:border-terminal-border">
+          <ScreenshotButton targetRef={panelRef} filename={screenshotFilename} />
+        </div>
       </div>
 
       <style>{`
