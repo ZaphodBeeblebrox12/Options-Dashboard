@@ -717,21 +717,18 @@ function App() {
 
       <div className="p-2 sm:p-3 space-y-2 sm:space-y-3">
         <ReplayPreviewProvider resetKey={`${selectedDate}|${selectedIndex}|${liveMode ? 'live' : 'replay'}`}>
-          <div className="sticky top-0 z-30 grid grid-cols-1 items-center gap-2 xl:grid-cols-[minmax(0,0.93fr)_minmax(0,1.07fr)]">
-            <MarketTimer
-              compact
-              mode={liveMode ? 'live' : 'replay'}
-              referenceTimestamp={currentTimestamp ?? (displayData as any)?.timestamp ?? null}
-              sessionHours={sessionHours}
-              instrumentKind={indexKinds[selectedIndex]}
-              marketOpen={marketOpen}
-            />
-            <AnalyticsHeader indexName={selectedIndex} isFetching={snapshotLoading} spot={spot} futuresSpread={futuresSpread} spreadLabel={spreadLabel} maxGexStrike={maxGexStrike} maxPain={maxPain} gammaFlip={gammaFlip} timestamp={timestamp} isLive={isTrulyLive} isStale={isLiveDataStale}>
-              {(!liveMode || isTrulyLive) && (
-                <BuildupCard indexName={selectedIndex} date={selectedDate} live={liveMode} timestamp={currentTimestamp || undefined} embedded />
-              )}
-            </AnalyticsHeader>
-          </div>
+          <MarketTimer
+            mode={liveMode ? 'live' : 'replay'}
+            referenceTimestamp={currentTimestamp ?? (displayData as any)?.timestamp ?? null}
+            sessionHours={sessionHours}
+            instrumentKind={indexKinds[selectedIndex]}
+            marketOpen={marketOpen}
+          />
+          <AnalyticsHeader indexName={selectedIndex} isFetching={snapshotLoading} spot={spot} futuresSpread={futuresSpread} spreadLabel={spreadLabel} maxGexStrike={maxGexStrike} maxPain={maxPain} gammaFlip={gammaFlip} timestamp={timestamp} isLive={isTrulyLive} isStale={isLiveDataStale}>
+            {(!liveMode || isTrulyLive) && (
+              <BuildupCard indexName={selectedIndex} date={selectedDate} live={liveMode} timestamp={currentTimestamp || undefined} embedded />
+            )}
+          </AnalyticsHeader>
           <ReplayControls timestamps={timestamps} currentIndex={currentIndex} isFetching={snapshotLoading} isPlaying={isPlaying} onPlay={handlePlay} onPause={handlePause} onSeek={handleSeek} onRefresh={handleRefresh} selectedDate={selectedDate} onDateChange={handleDateChange} selectedIndex={selectedIndex} onIndexChange={handleIndexChange} availableDates={availableDates} sessionHours={sessionHours} />
         </ReplayPreviewProvider>
         <OptionChain
