@@ -110,7 +110,8 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 xl:flex xl:flex-nowrap xl:items-center">
+      <div className="flex flex-col xl:flex-row xl:items-center">
+        <div className="grid grid-cols-2 sm:grid-cols-3 xl:flex xl:flex-[1.05] xl:flex-nowrap xl:items-center xl:min-w-0">
         <MetricCard label="SPOT" value={formatPrice(spot)} icon={<TrendingUp className="w-4 h-4" />} color="text-terminal-atm" />
         <MetricCard
           label="SPREAD"
@@ -124,11 +125,12 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
         <MetricCard label="GAMMA FLIP" value={formatInt(gammaFlip)} icon={<Zap className="w-4 h-4" />} color="text-terminal-gammaflip" />
       </div>
 
-      {children && (
-        <div className="border-t border-terminal-border xl:border-l xl:border-t-0 xl:min-w-[500px] xl:flex-[0.95]">
-          {children}
-        </div>
-      )}
+        {children && (
+          <div className="border-t border-terminal-border xl:border-l xl:border-t-0 xl:min-w-[500px] xl:flex-[0.95]">
+            {children}
+          </div>
+        )}
+      </div>
 
       <style>{`
         @keyframes sweep {
