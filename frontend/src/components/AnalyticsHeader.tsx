@@ -1,5 +1,5 @@
 import React, { useRef } from 'react';
-import { TrendingUp, Crosshair, Zap, Layers } from 'lucide-react';
+import { TrendingUp, Crosshair, Zap, Layers, WifiOff } from 'lucide-react';
 import { ScreenshotButton } from './ScreenshotButton';
 
 interface AnalyticsHeaderProps {
@@ -43,6 +43,8 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
   maxPain,
   gammaFlip,
   timestamp,
+  isLive,
+  isStale = false,
   isFetching,
   children,
 }) => {
@@ -95,7 +97,27 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
           </div>
         )}
 
-        <div className="flex shrink-0 items-center justify-end px-2 py-1 xl:self-stretch xl:border-l xl:border-terminal-border">
+        <div className="flex shrink-0 items-center justify-end gap-2 px-2 py-1 xl:self-stretch xl:border-l xl:border-terminal-border">
+          {isStale ? (
+            <span
+              className="flex items-center gap-1 text-[10px] font-mono text-amber-400"
+              title="Live feed unavailable or stale — do not treat these values as current market data."
+            >
+              <WifiOff className="w-3 h-3" />
+              STALE
+            </span>
+          ) : isLive ? (
+            <span className="flex items-center gap-1 text-[10px] font-mono text-terminal-pe">
+              <span className="w-1.5 h-1.5 rounded-full bg-terminal-pe animate-pulse" />
+              LIVE
+            </span>
+          ) : null}
+          {isFetching && (
+            <span className="flex items-center gap-1 text-[10px] font-mono text-terminal-atm/70">
+              <span className="w-1 h-1 rounded-full bg-terminal-atm animate-pulse" />
+              syncing
+            </span>
+          )}
           <ScreenshotButton targetRef={panelRef} filename={screenshotFilename} />
         </div>
       </div>
