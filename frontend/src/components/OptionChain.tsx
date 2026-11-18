@@ -28,6 +28,7 @@ interface OptionChainProps {
   indexName?: string;
   timestamp?: string;
   canArm?: boolean;
+  isLoading?: boolean;
   emptyTitle?: string;
   emptyDescription?: string;
   emptyFootnote?: string;
@@ -56,6 +57,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   indexName = 'INDEX',
   timestamp,
   canArm = false,
+  isLoading = false,
   emptyTitle = 'No option data available',
   emptyDescription = 'Waiting for live market data from Angel One...',
   emptyFootnote = 'Ensure backend/.env has valid API_KEY, CLIENT_CODE, PASSWORD, TOTP_SECRET',
@@ -273,15 +275,31 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
           <span>Option Chain</span>
           <ScreenshotButton targetRef={panelRef} filename={screenshotFilename} />
         </div>
-        <div className="flex flex-col items-center justify-center py-16 px-4">
-          <AlertTriangle className="w-8 h-8 text-terminal-muted mb-3" />
-          <p className="text-sm font-mono text-terminal-muted mb-1">{emptyTitle}</p>
-          <p className="text-xs font-mono text-terminal-muted/60 text-center max-w-xl">
-            {emptyDescription}
-          </p>
-          <p className="text-xs font-mono text-terminal-muted/60 mt-1 text-center max-w-xl">
-            {emptyFootnote}
-          </p>
+        <div
+          className="flex flex-col items-center justify-center py-16 px-4"
+          aria-live="polite"
+          aria-busy={isLoading}
+        >
+          {isLoading ? (
+            <>
+              <Loader2 className="w-8 h-8 text-terminal-atm mb-3 animate-spin" />
+              <p className="text-sm font-mono text-terminal-text mb-1">Loading historical snapshot…</p>
+              <p className="text-xs font-mono text-terminal-muted/60 text-center max-w-xl">
+                Fetching the selected timestamp. The option chain will appear when the snapshot arrives.
+              </p>
+            </>
+          ) : (
+            <>
+              <AlertTriangle className="w-8 h-8 text-terminal-muted mb-3" />
+              <p className="text-sm font-mono text-terminal-muted mb-1">{emptyTitle}</p>
+              <p className="text-xs font-mono text-terminal-muted/60 text-center max-w-xl">
+                {emptyDescription}
+              </p>
+              <p className="text-xs font-mono text-terminal-muted/60 mt-1 text-center max-w-xl">
+                {emptyFootnote}
+              </p>
+            </>
+          )}
         </div>
       </div>
     );
