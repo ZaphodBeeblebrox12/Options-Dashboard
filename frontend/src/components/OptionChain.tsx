@@ -719,7 +719,6 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
       {wallHover && createPortal((() => {
         const event = lastWallMove[wallHover.side];
         const sideIsCe = wallHover.side === 'CE';
-        const accent = sideIsCe ? 'red' : 'emerald';
         return (
           <div
             role="tooltip"
