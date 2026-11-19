@@ -5,6 +5,8 @@ import {
   ArrowUpRight,
   Clock3,
   Loader2,
+  Lock,
+  Unlock,
 } from 'lucide-react';
 
 type WallSide = 'CE' | 'PE';
@@ -88,6 +90,8 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
   const [selectedEventKey, setSelectedEventKey] = useState<string | null>(null);
   const [hoveredEventKey, setHoveredEventKey] = useState<string | null>(null);
   const [hoverPosition, setHoverPosition] = useState<{ x: number; y: number } | null>(null);
+  const [pinnedEventKey, setPinnedEventKey] = useState<string | null>(null);
+  const [pinnedPosition, setPinnedPosition] = useState<{ x: number; y: number } | null>(null);
   const chartWrapRef = useRef<HTMLDivElement>(null);
   const eventListRef = useRef<HTMLDivElement>(null);
   const eventRowRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
@@ -101,6 +105,11 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
   }, [asOfTimestamp]);
 
   const requestKey = `${date}|${indexName}`;
+
+  useEffect(() => {
+    setPinnedEventKey(null);
+    setPinnedPosition(null);
+  }, [requestKey]);
 
   useEffect(() => {
     if (!date || !indexName) return;
@@ -304,7 +313,12 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
   const hoveredEvent = hoveredEventKey
     ? events.find((event) => eventKey(event) === hoveredEventKey) ?? null
     : null;
-  const activeEvent = hoveredEvent ?? selectedEvent;
+  const pinnedEvent = pinnedEventKey
+    ? events.find((event) => eventKey(event) === pinnedEventKey) ?? null
+    : null;
+  const inspectorEvent = pinnedEvent ?? hoveredEvent;
+  const inspectorPosition = pinnedEvent ? pinnedPosition : hoverPosition;
+  const activeEvent = pinnedEvent ?? hoveredEvent ?? selectedEvent;
   const activeEventKey = activeEvent ? eventKey(activeEvent) : null;
 
   // Keep the active change visible inside the event panel. Scroll only its
@@ -332,7 +346,8 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
   }, [activeEventKey, events]);
 
   const handleChartPointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
-    if (!chart || events.length === 0) return;
+    // A pinned inspection is deliberately independent from pointer movement.
+    if (pinnedEventKey || !chart || events.length === 0) return;
     const svg = event.currentTarget;
     const screenMatrix = svg.getScreenCTM();
     if (!screenMatrix) return;
@@ -381,6 +396,45 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
   };
 
   const clearChartHover = () => {
+    setHoveredEventKey(null);
+    setHoverPosition(null);
+  };
+
+  const handleMarkerDoubleClick = (
+    event: React.MouseEvent<SVGCircleElement>,
+    markerEvent: WallEvent,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const key = eventKey(markerEvent);
+
+    // Double-clicking the same marker toggles the pin off. Double-clicking
+    // another marker moves the pin to that event for side-by-side study.
+    if (pinnedEventKey === key) {
+      setPinnedEventKey(null);
+      setPinnedPosition(null);
+      setHoveredEventKey(null);
+      setHoverPosition(null);
+      return;
+    }
+
+    const wrapperRect = chartWrapRef.current?.getBoundingClientRect();
+    const markerRect = event.currentTarget.getBoundingClientRect();
+    if (wrapperRect) {
+      setPinnedPosition({
+        x: markerRect.left + markerRect.width / 2 - wrapperRect.left,
+        y: markerRect.top + markerRect.height / 2 - wrapperRect.top,
+      });
+    }
+    setPinnedEventKey(key);
+    setSelectedEventKey(key);
+    setHoveredEventKey(null);
+    setHoverPosition(null);
+  };
+
+  const unlockPinnedEvent = () => {
+    setPinnedEventKey(null);
+    setPinnedPosition(null);
     setHoveredEventKey(null);
     setHoverPosition(null);
   };
@@ -489,7 +543,7 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
                   viewBox={`0 0 ${chart.width} ${chart.height}`}
                   className="block h-[250px] w-full cursor-crosshair overflow-visible"
                   role="img"
-                  aria-label="Step chart showing Call and Put open-interest wall strikes over time. Hover over a vertical event marker to inspect its timestamp and old and new wall strikes."
+                  aria-label="Step chart showing Call and Put open-interest wall strikes over time. Hover over a wall-change dot to inspect it; double-click a dot to pin its details for study."
                   onPointerMove={handleChartPointerMove}
                   onPointerLeave={clearChartHover}
                 >
@@ -528,20 +582,40 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
                 {events.map((event) => {
                   const x = chart.xFor(event.timestamp);
                   const y = chart.yFor(event.to_strike);
-                  const selected = activeEvent && eventKey(activeEvent) === eventKey(event);
+                  const markerKey = eventKey(event);
+                  const selected = activeEvent && eventKey(activeEvent) === markerKey;
+                  const pinned = pinnedEventKey === markerKey;
                   const isFuture = !!cutoff && canonicalTimestamp(event.timestamp) > cutoff;
                   const color = event.side === 'CE' ? '#f87171' : '#34d399';
                   const baseOpacity = isFuture ? 0.12 : 0.32;
                   return (
-                    <g key={eventKey(event)}>
+                    <g key={markerKey}>
                       <line x1={x} x2={x} y1={chart.top} y2={chart.height - chart.bottom}
                         stroke={color} strokeOpacity={selected ? 0.98 : baseOpacity}
-                        strokeWidth={selected ? 2.5 : 1} strokeDasharray="4 5" />
-                      <circle cx={x} cy={y} r={selected ? 7 : 4}
-                        fill={color} fillOpacity={selected ? 1 : baseOpacity}
-                        stroke={selected ? '#F8FAFC' : '#111827'} strokeWidth={selected ? 2 : 2}>
-                        <title>{`${event.side} wall changed at ${timeLabel(event.timestamp, true)}: ${fmtStrike(event.from_strike)} to ${fmtStrike(event.to_strike)}${isFuture ? ' (after replay time)' : ''}`}</title>
+                        strokeWidth={pinned ? 3 : selected ? 2.5 : 1} strokeDasharray="4 5" />
+                      {pinned && (
+                        <circle cx={x} cy={y} r="11" fill="none" stroke="#F8FAFC" strokeWidth="1.5" strokeOpacity="0.9" />
+                      )}
+                      <circle
+                        cx={x}
+                        cy={y}
+                        r={pinned ? 8 : selected ? 7 : 4}
+                        fill={color}
+                        fillOpacity={selected ? 1 : baseOpacity}
+                        stroke={selected ? '#F8FAFC' : '#111827'}
+                        strokeWidth="2"
+                      >
+                        <title>{`${event.side} wall changed at ${timeLabel(event.timestamp, true)}: ${fmtStrike(event.from_strike)} to ${fmtStrike(event.to_strike)}${isFuture ? ' (after replay time)' : ''}. Double-click to pin this inspection.`}</title>
                       </circle>
+                      <circle
+                        cx={x}
+                        cy={y}
+                        r="12"
+                        fill="transparent"
+                        className="cursor-pointer"
+                        onDoubleClick={(nativeEvent) => handleMarkerDoubleClick(nativeEvent, event)}
+                        aria-label={`Double-click to pin ${event.side} wall change at ${timeLabel(event.timestamp, true)}`}
+                      />
                     </g>
                   );
                 })}
@@ -570,32 +644,54 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
                   y1={chart.height - chart.bottom} y2={chart.height - chart.bottom}
                   stroke="currentColor" strokeOpacity="0.35" />
                 </svg>
-                {hoveredEvent && hoverPosition && (
+                {inspectorEvent && inspectorPosition && (
                   <div
-                    className="pointer-events-none absolute z-30 w-56 rounded-md border border-slate-500/70 bg-slate-950/95 px-3 py-2 shadow-xl shadow-black/40 backdrop-blur-sm"
+                    className={`absolute z-30 w-56 rounded-md border border-slate-500/70 bg-slate-950/95 px-3 py-2 shadow-xl shadow-black/50 backdrop-blur-sm ${
+                      pinnedEvent ? 'pointer-events-none ring-1 ring-amber-400/60' : 'pointer-events-none'
+                    }`}
                     style={{
-                      left: `clamp(8px, ${hoverPosition.x + 14}px, calc(100% - 232px))`,
-                      top: `clamp(8px, ${hoverPosition.y - 58}px, calc(100% - 76px))`,
+                      left: `clamp(8px, ${inspectorPosition.x + 14}px, calc(100% - 232px))`,
+                      top: `clamp(8px, ${inspectorPosition.y - 58}px, calc(100% - 76px))`,
                     }}
                     role="status"
+                    aria-live="polite"
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <span className={`text-[10px] font-mono font-bold ${hoveredEvent.side === 'CE' ? 'text-red-300' : 'text-emerald-300'}`}>
-                        {hoveredEvent.side} WALL SHIFT
+                      <span className={`text-[10px] font-mono font-bold ${inspectorEvent.side === 'CE' ? 'text-red-300' : 'text-emerald-300'}`}>
+                        {inspectorEvent.side} WALL SHIFT
                       </span>
                       <span className="text-[10px] font-mono tabular-nums text-white">
-                        {timeLabel(hoveredEvent.timestamp, true)}
+                        {timeLabel(inspectorEvent.timestamp, true)}
                       </span>
                     </div>
                     <div className="mt-1.5 flex items-center gap-2 text-xs font-mono tabular-nums">
-                      <span className="text-slate-300">{fmtStrike(hoveredEvent.from_strike)}</span>
-                      <span className={hoveredEvent.side === 'CE' ? 'text-red-300' : 'text-emerald-300'}>→</span>
-                      <strong className={hoveredEvent.side === 'CE' ? 'text-red-200' : 'text-emerald-200'}>
-                        {fmtStrike(hoveredEvent.to_strike)}
+                      <span className="text-slate-300">{fmtStrike(inspectorEvent.from_strike)}</span>
+                      <span className={inspectorEvent.side === 'CE' ? 'text-red-300' : 'text-emerald-300'}>→</span>
+                      <strong className={inspectorEvent.side === 'CE' ? 'text-red-200' : 'text-emerald-200'}>
+                        {fmtStrike(inspectorEvent.to_strike)}
                       </strong>
                     </div>
                     <div className="mt-1 text-[9px] font-mono text-slate-400">
-                      OI: {fmtOi(hoveredEvent.from_oi)} → {fmtOi(hoveredEvent.to_oi)}
+                      OI: {fmtOi(inspectorEvent.from_oi)} → {fmtOi(inspectorEvent.to_oi)}
+                    </div>
+                    <div className="mt-2 flex items-center justify-between border-t border-white/10 pt-1.5">
+                      {pinnedEvent ? (
+                        <>
+                          <span className="flex items-center gap-1 text-[9px] font-mono font-bold tracking-wide text-amber-300">
+                            <Lock className="h-3 w-3" /> PINNED FOR STUDY
+                          </span>
+                          <button
+                            type="button"
+                            onClick={unlockPinnedEvent}
+                            className="pointer-events-auto inline-flex items-center gap-1 rounded px-1.5 py-1 text-[9px] font-mono font-bold text-slate-200 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-300"
+                            title="Unlock this wall inspection"
+                          >
+                            <Unlock className="h-3 w-3" /> UNLOCK
+                          </button>
+                        </>
+                      ) : (
+                        <span className="text-[9px] font-mono text-slate-500">DOUBLE-CLICK DOT TO PIN</span>
+                      )}
                     </div>
                   </div>
                 )}
