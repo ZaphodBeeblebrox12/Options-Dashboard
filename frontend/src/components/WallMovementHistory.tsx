@@ -63,11 +63,6 @@ function fmtStrike(value: number | null | undefined): string {
   return value == null ? '—' : value.toLocaleString('en-IN', { maximumFractionDigits: 2 });
 }
 
-function fmtOi(value: number | null | undefined): string {
-  if (value == null) return '—';
-  return new Intl.NumberFormat('en-IN', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
-}
-
 function eventKey(event: WallEvent): string {
   return `${event.side}|${canonicalTimestamp(event.timestamp)}|${event.from_strike}|${event.to_strike}`;
 }
