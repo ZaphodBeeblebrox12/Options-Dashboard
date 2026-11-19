@@ -82,7 +82,7 @@ function formatCompact(value: number | null | undefined): string {
   return formatSigned(value);
 }
 
-const SideCell: React.FC<{ data: BuildupSide | null; side: 'CE' | 'PE' }> = ({ data, side }) => {
+const SideCell: React.FC<{ data: BuildupSide | null }> = ({ data }) => {
   if (!data) {
     return <div className="min-w-0 px-2 sm:px-3 py-2 text-[10px] font-mono text-terminal-muted">No matching baseline</div>;
   }
@@ -123,6 +123,7 @@ export const OptionsBuildup: React.FC<OptionsBuildupProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
     if (!indexName || !date) {
@@ -183,13 +184,15 @@ export const OptionsBuildup: React.FC<OptionsBuildupProps> = ({
     <div className="border-b border-terminal-border">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-terminal-border/70 bg-terminal-bg/60 px-2 sm:px-3 py-2">
         <div className="flex items-center gap-2">
-          <span className="text-[10px] font-mono font-bold tracking-wider text-terminal-text">OPTIONS BUILDUP</span>
-          <span className="text-[9px] font-mono text-terminal-muted">CE / PE by strike</span>
+          <button type="button" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded} className="flex items-center gap-2 text-left">
+            <span className="text-[10px] font-mono font-bold tracking-wider text-terminal-text">{expanded ? '▾' : '▸'} OPTIONS BUILDUP</span>
+            <span className="text-[9px] font-mono text-terminal-muted">CE / PE by strike</span>
+          </button>
           {loading && payload && (
             <RefreshCw className="h-3 w-3 animate-spin text-terminal-muted" aria-label="Updating buildup" />
           )}
         </div>
-        <div className="flex flex-wrap items-center gap-1">
+        {expanded && <div className="flex flex-wrap items-center gap-1">
           {INTERVALS.map((item) => (
             <button
               key={item.value}
@@ -213,9 +216,11 @@ export const OptionsBuildup: React.FC<OptionsBuildupProps> = ({
           >
             {showAll ? 'ATM view' : 'All strikes'}
           </button>
-        </div>
+        </div>}
       </div>
 
+      {expanded && (
+      <>
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-2 sm:px-3 py-1.5 text-[9px] font-mono text-terminal-muted">
         <span>
           {liveMode ? 'LIVE SNAPSHOT' : 'REPLAY SNAPSHOT'}
@@ -262,10 +267,10 @@ export const OptionsBuildup: React.FC<OptionsBuildupProps> = ({
                       {row.strike.toLocaleString('en-IN')}
                     </span>
                     <span className="border-l border-terminal-border/50">
-                      <SideCell data={row.CE} side="CE" />
+                      <SideCell data={row.CE} />
                     </span>
                     <span className="border-l border-terminal-border/50">
-                      <SideCell data={row.PE} side="PE" />
+                      <SideCell data={row.PE} />
                     </span>
                   </button>
                 ))}
@@ -276,6 +281,8 @@ export const OptionsBuildup: React.FC<OptionsBuildupProps> = ({
             Classifications describe observed premium/OI movement, not confirmed buyer or seller identity. CE and PE bias labels are option-side interpretations, not trade signals.
           </div>
         </>
+      )}
+      </>
       )}
     </div>
   );
