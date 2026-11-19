@@ -1477,10 +1477,32 @@ def _option_buildup_bias(option_type: str, classification: str):
     return "BULLISH" if bullish else "BEARISH"
 
 
-def _load_options_buildup_payload(index_name: str, date_str: str,
+def _load_options_buildup_payload(index_name: str, date_str: str | None,
                                   timestamp: str | None, interval: str) -> dict:
     """Load the current and comparison option snapshots without blocking the API loop."""
+    if timestamp and not date_str:
+        date_str = timestamp[:10]
+
     with get_db() as conn:
+        # Live mode omits the date so after-hours/weekend views resolve to the
+        # latest actual trading session rather than today's empty date.
+        if not date_str:
+            latest = conn.execute(
+                "SELECT date(MAX(timestamp)) AS d FROM snapshots WHERE index_name = ?",
+                (index_name,),
+            ).fetchone()
+            date_str = latest["d"] if latest else None
+
+        if not date_str:
+            return {
+                "ready": False,
+                "reason": "No saved option-chain history is available for this instrument.",
+                "index_name": index_name,
+                "date": None,
+                "interval": interval,
+                "rows": [],
+            }
+
         if timestamp:
             current = conn.execute(
                 "SELECT id, timestamp FROM snapshots "
@@ -1684,9 +1706,6 @@ async def get_options_buildup(
         raise HTTPException(status_code=400, detail="interval must be 5m, 15m, 30m, 1h, or session")
 
     index_name = index.strip().upper()
-    if not date_str:
-        date_str = timestamp[:10] if timestamp else date.today().isoformat()
-
     return await asyncio.to_thread(
         _load_options_buildup_payload, index_name, date_str, timestamp, interval
     )
