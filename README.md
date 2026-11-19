@@ -152,6 +152,7 @@ All endpoints accept an `?index=NIFTY|SENSEX` parameter (defaults to NIFTY).
 - **Visual Highlights**: ATM (yellow/cyan/magenta), Max OI #1-3 (red/green), Max Pain, Gamma Flip
 - **GEX Analytics**: Net GEX, GEX by strike chart, GEX time-series
 - **Inline Options Buildup**: Compact CE/PE buildup codes inside the OI-change cells, with interval selection, hover details, and replay-aware comparisons
+- **Custom Option Chain Columns**: Hide or show OI change, volume, LTP, OI, IV, delta, and gamma independently; preferences persist in the browser
 - **Max Pain Engine**: Recalculated per snapshot
 - **Gamma Flip**: Zero-crossing of cumulative gamma
 
