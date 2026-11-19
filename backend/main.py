@@ -1424,6 +1424,269 @@ async def get_buildup(
             }
     return out
 
+
+# ── Strike-level CE / PE options buildup ─────────────────────────────
+# Uses two persisted option-chain snapshots for the SAME contract and expiry.
+# This is separate from /api/buildup, which classifies index-futures positioning.
+_OPTIONS_BUILDUP_INTERVALS = {
+    "5m": 300,
+    "15m": 900,
+    "30m": 1800,
+    "1h": 3600,
+}
+
+
+def _classify_option_buildup(previous_ltp, current_ltp, previous_oi, current_oi):
+    """Classify a contract from premium and OI movement between two snapshots.
+
+    A 1-paise premium tolerance avoids classifying floating-point noise as a
+    directional premium move. If either input is unchanged, the evidence is
+    mixed rather than forcing one of the four conventional labels.
+    """
+    if previous_ltp is None or current_ltp is None or previous_oi is None or current_oi is None:
+        return "UNAVAILABLE"
+
+    premium_delta = float(current_ltp) - float(previous_ltp)
+    oi_delta = int(current_oi) - int(previous_oi)
+    premium_direction = 1 if premium_delta > 0.01 else (-1 if premium_delta < -0.01 else 0)
+    oi_direction = 1 if oi_delta > 0 else (-1 if oi_delta < 0 else 0)
+
+    if premium_direction == 0 and oi_direction == 0:
+        return "NO CHANGE"
+    if premium_direction == 0 or oi_direction == 0:
+        return "MIXED"
+    if premium_direction > 0 and oi_direction > 0:
+        return "LONG BUILDUP"
+    if premium_direction < 0 and oi_direction > 0:
+        return "SHORT BUILDUP"
+    if premium_direction > 0 and oi_direction < 0:
+        return "SHORT COVERING"
+    return "LONG UNWINDING"
+
+
+def _option_buildup_bias(option_type: str, classification: str):
+    """Translate option-side positioning into an underlying-market interpretation."""
+    if classification not in {"LONG BUILDUP", "SHORT BUILDUP", "SHORT COVERING", "LONG UNWINDING"}:
+        return None
+    ce_bullish = classification in {"LONG BUILDUP", "SHORT COVERING"}
+    bullish = ce_bullish if option_type == "CE" else not ce_bullish
+    return "BULLISH" if bullish else "BEARISH"
+
+
+def _load_options_buildup_payload(index_name: str, date_str: str,
+                                  timestamp: str | None, interval: str) -> dict:
+    """Load the current and comparison option snapshots without blocking the API loop."""
+    with get_db() as conn:
+        if timestamp:
+            current = conn.execute(
+                "SELECT id, timestamp FROM snapshots "
+                "WHERE index_name = ? AND timestamp = ?",
+                (index_name, timestamp),
+            ).fetchone()
+        else:
+            current = conn.execute(
+                "SELECT id, timestamp FROM snapshots "
+                "WHERE index_name = ? AND date(timestamp) = ? "
+                "ORDER BY timestamp DESC LIMIT 1",
+                (index_name, date_str),
+            ).fetchone()
+
+        if not current:
+            return {
+                "ready": False,
+                "reason": "No saved option-chain snapshot is available for this timestamp.",
+                "index_name": index_name,
+                "date": date_str,
+                "interval": interval,
+                "rows": [],
+            }
+
+        as_of_timestamp = current["timestamp"]
+        first = conn.execute(
+            "SELECT timestamp FROM snapshots "
+            "WHERE index_name = ? AND date(timestamp) = ? "
+            "ORDER BY timestamp LIMIT 1",
+            (index_name, date_str),
+        ).fetchone()
+
+        if interval == "session":
+            baseline = first
+        else:
+            target = datetime.strptime(as_of_timestamp, "%Y-%m-%d %H:%M:%S") - timedelta(
+                seconds=_OPTIONS_BUILDUP_INTERVALS[interval]
+            )
+            target_timestamp = target.strftime("%Y-%m-%d %H:%M:%S")
+            baseline = conn.execute(
+                "SELECT timestamp FROM snapshots "
+                "WHERE index_name = ? AND date(timestamp) = ? "
+                "AND timestamp <= ? AND timestamp < ? "
+                "ORDER BY timestamp DESC LIMIT 1",
+                (index_name, date_str, target_timestamp, as_of_timestamp),
+            ).fetchone()
+
+        if not baseline or baseline["timestamp"] >= as_of_timestamp:
+            if interval == "session":
+                reason = "A second saved snapshot is needed before session buildup can be calculated."
+            else:
+                first_time = first["timestamp"] if first else None
+                reason = (
+                    f"Not enough saved history for {interval}. "
+                    f"The first snapshot for this session is {first_time[11:16] if first_time else 'not available'}."
+                )
+            return {
+                "ready": False,
+                "reason": reason,
+                "index_name": index_name,
+                "date": date_str,
+                "interval": interval,
+                "as_of_timestamp": as_of_timestamp,
+                "baseline_timestamp": None,
+                "rows": [],
+            }
+
+        baseline_row = conn.execute(
+            "SELECT id FROM snapshots WHERE index_name = ? AND timestamp = ?",
+            (index_name, baseline["timestamp"]),
+        ).fetchone()
+        if not baseline_row:
+            return {
+                "ready": False,
+                "reason": "The comparison snapshot is no longer available.",
+                "index_name": index_name,
+                "date": date_str,
+                "interval": interval,
+                "rows": [],
+            }
+
+        current_options = conn.execute(
+            "SELECT strike, option_type, oi, volume, ltp "
+            "FROM option_snapshots WHERE snapshot_id = ? AND index_name = ? "
+            "ORDER BY strike DESC, option_type",
+            (current["id"], index_name),
+        ).fetchall()
+        previous_options = conn.execute(
+            "SELECT strike, option_type, oi, volume, ltp "
+            "FROM option_snapshots WHERE snapshot_id = ? AND index_name = ?",
+            (baseline_row["id"], index_name),
+        ).fetchall()
+
+    previous_by_contract = {
+        (row["strike"], row["option_type"]): row for row in previous_options
+    }
+    rows_by_strike = {}
+    summary = {
+        "CE": {"contracts": 0, "net_oi_change": 0},
+        "PE": {"contracts": 0, "net_oi_change": 0},
+    }
+
+    for current_option in current_options:
+        strike = int(current_option["strike"])
+        side = str(current_option["option_type"]).upper()
+        if side not in ("CE", "PE"):
+            continue
+        previous_option = previous_by_contract.get((strike, side))
+        if strike not in rows_by_strike:
+            rows_by_strike[strike] = {"strike": strike, "CE": None, "PE": None}
+
+        if previous_option is None:
+            rows_by_strike[strike][side] = {
+                "classification": "UNAVAILABLE",
+                "bias": None,
+                "premium_change": None,
+                "premium_change_pct": None,
+                "oi_change": None,
+                "oi_change_pct": None,
+                "volume_change": None,
+            }
+            continue
+
+        previous_ltp = previous_option["ltp"]
+        current_ltp = current_option["ltp"]
+        previous_oi = previous_option["oi"]
+        current_oi = current_option["oi"]
+        previous_volume = previous_option["volume"]
+        current_volume = current_option["volume"]
+
+        classification = _classify_option_buildup(
+            previous_ltp, current_ltp, previous_oi, current_oi
+        )
+        premium_change = (
+            float(current_ltp) - float(previous_ltp)
+            if current_ltp is not None and previous_ltp is not None else None
+        )
+        premium_change_pct = (
+            round((premium_change / float(previous_ltp)) * 100, 2)
+            if premium_change is not None and float(previous_ltp) > 0 else None
+        )
+        oi_change = (
+            int(current_oi or 0) - int(previous_oi or 0)
+            if current_oi is not None and previous_oi is not None else None
+        )
+        oi_change_pct = (
+            round((oi_change / int(previous_oi)) * 100, 2)
+            if oi_change is not None and previous_oi is not None and int(previous_oi) > 0 else None
+        )
+        volume_change = (
+            int(current_volume or 0) - int(previous_volume or 0)
+            if current_volume is not None and previous_volume is not None else None
+        )
+
+        rows_by_strike[strike][side] = {
+            "classification": classification,
+            "bias": _option_buildup_bias(side, classification),
+            "premium_change": round(premium_change, 2) if premium_change is not None else None,
+            "premium_change_pct": premium_change_pct,
+            "oi_change": oi_change,
+            "oi_change_pct": oi_change_pct,
+            "volume_change": volume_change,
+        }
+        if oi_change is not None:
+            summary[side]["contracts"] += 1
+            summary[side]["net_oi_change"] += oi_change
+
+    elapsed_seconds = (
+        datetime.strptime(as_of_timestamp, "%Y-%m-%d %H:%M:%S")
+        - datetime.strptime(baseline["timestamp"], "%Y-%m-%d %H:%M:%S")
+    ).total_seconds()
+
+    return {
+        "ready": True,
+        "index_name": index_name,
+        "date": date_str,
+        "interval": interval,
+        "as_of_timestamp": as_of_timestamp,
+        "baseline_timestamp": baseline["timestamp"],
+        "elapsed_seconds": int(elapsed_seconds),
+        "source": "snapshot",
+        "summary": summary,
+        "rows": sorted(rows_by_strike.values(), key=lambda row: row["strike"], reverse=True),
+    }
+
+
+@app.get("/api/options-buildup")
+async def get_options_buildup(
+    index: str = Query(default="NIFTY", description="Instrument name"),
+    date_str: str = Query(default=None, alias="date", description="Trading date"),
+    timestamp: str = Query(default=None, description="Exact snapshot timestamp for replay mode"),
+    interval: str = Query(default="15m", description="Comparison interval: 5m, 15m, 30m, 1h, or session"),
+):
+    """Strike-level CE/PE buildup from synchronized option-chain snapshots.
+
+    Each contract is compared with its own earlier snapshot. Replay uses the
+    exact selected timestamp; live mode uses the latest persisted snapshot.
+    Session mode uses the first saved snapshot of the trading date.
+    """
+    if interval not in {*_OPTIONS_BUILDUP_INTERVALS.keys(), "session"}:
+        raise HTTPException(status_code=400, detail="interval must be 5m, 15m, 30m, 1h, or session")
+
+    index_name = index.strip().upper()
+    if not date_str:
+        date_str = timestamp[:10] if timestamp else date.today().isoformat()
+
+    return await asyncio.to_thread(
+        _load_options_buildup_payload, index_name, date_str, timestamp, interval
+    )
+
 @app.get("/api/market-status")
 async def get_market_status():
     # v3.13: reason field — "NSE holiday today" on holidays, not just false
