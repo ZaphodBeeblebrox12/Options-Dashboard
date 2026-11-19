@@ -90,6 +90,14 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
   const [hoverPosition, setHoverPosition] = useState<{ x: number; y: number } | null>(null);
   const chartWrapRef = useRef<HTMLDivElement>(null);
 
+  // As the replay cursor moves, re-focus the latest wall change at or before
+  // that time. A manual event selection remains until the cursor changes again.
+  useEffect(() => {
+    setSelectedEventKey(null);
+    setHoveredEventKey(null);
+    setHoverPosition(null);
+  }, [asOfTimestamp]);
+
   const requestKey = `${date}|${indexName}`;
 
   useEffect(() => {
@@ -141,28 +149,39 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
 
   const visibleData = useMemo(() => {
     const rawPoints = payload?.points ?? [];
-    const pointsAtReplayTime = cutoff
-      ? rawPoints.filter((point) => canonicalTimestamp(point.timestamp) <= cutoff)
-      : rawPoints;
-    if (pointsAtReplayTime.length === 0) return { points: [], events: [] };
+    if (rawPoints.length === 0) return { points: [], events: [], asOfPoint: null };
 
+    // In replay's full-session (1D) view, keep the entire day on screen.
+    // The replay time is a cursor inside that plot rather than the plot's end.
+    // Short 15m/5m views remain anchored to the selected replay timestamp.
+    const sessionLastMs = timestampMs(rawPoints[rawPoints.length - 1].timestamp);
+    const replayAnchorMs = cutoff ? timestampMs(cutoff) : sessionLastMs;
     const rangeMs = RANGE_MS[range];
-    const lastMs = timestampMs(pointsAtReplayTime[pointsAtReplayTime.length - 1].timestamp);
-    const firstAllowed = rangeMs == null ? Number.NEGATIVE_INFINITY : lastMs - rangeMs;
-    const points = pointsAtReplayTime.filter((point) => timestampMs(point.timestamp) >= firstAllowed);
+    const firstAllowed = rangeMs == null ? Number.NEGATIVE_INFINITY : replayAnchorMs - rangeMs;
+    const lastAllowed = rangeMs == null ? Number.POSITIVE_INFINITY : replayAnchorMs;
+    const points = rawPoints.filter((point) => {
+      const ms = timestampMs(point.timestamp);
+      return ms >= firstAllowed && ms <= lastAllowed;
+    });
     const firstTime = points[0] ? canonicalTimestamp(points[0].timestamp) : '';
     const lastTime = points[points.length - 1] ? canonicalTimestamp(points[points.length - 1].timestamp) : '';
     const events = (payload?.events ?? []).filter((event) => {
       const ts = canonicalTimestamp(event.timestamp);
       return ts >= firstTime && ts <= lastTime;
     });
-    return { points, events };
+    const pointsAtReplayTime = cutoff
+      ? rawPoints.filter((point) => canonicalTimestamp(point.timestamp) <= cutoff)
+      : rawPoints;
+    const asOfPoint = pointsAtReplayTime[pointsAtReplayTime.length - 1] ?? null;
+    return { points, events, asOfPoint };
   }, [payload, cutoff, range]);
 
   const points = visibleData.points;
   const events = visibleData.events;
   const newestFirstEvents = useMemo(() => [...events].reverse(), [events]);
-  const latestPoint = points[points.length - 1] ?? null;
+  // Summary values stay truthful to the replay cursor even though the 1D chart
+  // deliberately includes the rest of the session as muted future context.
+  const latestPoint = visibleData.asOfPoint;
 
   const lastCeEvent = useMemo(
     () => [...(payload?.events ?? [])].reverse().find((event) => event.side === 'CE' &&
@@ -177,8 +196,19 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
 
   const selectedEvent = useMemo(() => {
     if (!events.length) return null;
-    return events.find((event) => eventKey(event) === selectedEventKey) ?? events[events.length - 1];
-  }, [events, selectedEventKey]);
+    const manualSelection = events.find((event) => eventKey(event) === selectedEventKey);
+    if (manualSelection && (!cutoff || canonicalTimestamp(manualSelection.timestamp) <= cutoff)) {
+      return manualSelection;
+    }
+    if (cutoff) {
+      // Keep the last wall transition at or before the replay cursor prominent.
+      for (let i = events.length - 1; i >= 0; i -= 1) {
+        if (canonicalTimestamp(events[i].timestamp) <= cutoff) return events[i];
+      }
+      return null;
+    }
+    return events[events.length - 1];
+  }, [events, selectedEventKey, cutoff]);
 
   const chart = useMemo(() => {
     if (points.length === 0) return null;
@@ -213,10 +243,10 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
     const xFor = (value: string) => left + ((timestampMs(value) - startMs) / timeRange) * plotWidth;
     const yFor = (value: number) => top + ((maxStrike - value) / yRange) * plotHeight;
 
-    const makeStepPath = (key: 'ce_wall' | 'pe_wall') => {
+    const makeStepPath = (key: 'ce_wall' | 'pe_wall', sourcePoints = points) => {
       let path = '';
       let previousValue: number | null = null;
-      points.forEach((point, index) => {
+      sourcePoints.forEach((point) => {
         const value = point[key];
         if (value == null) return;
         const x = xFor(point.timestamp);
@@ -225,9 +255,29 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
         else path += ` H ${x} V ${y}`;
         previousValue = value;
       });
-      if (points.length === 1 && previousValue != null) path += ` H ${width - right}`;
+      if (sourcePoints.length === 1 && previousValue != null) {
+        const endX = cutoff && sourcePoints !== points
+          ? Math.max(left, Math.min(xFor(cutoff), width - right))
+          : width - right;
+        path += ` H ${endX}`;
+      }
       return path;
     };
+
+    // Draw the complete session softly, then redraw the portion up to the
+    // replay cursor at full strength. This keeps the current replay context
+    // clear without hiding later wall movement.
+    let replayPastPoints = points;
+    if (cutoff) {
+      replayPastPoints = points.filter((point) => canonicalTimestamp(point.timestamp) <= cutoff);
+      const lastPastPoint = replayPastPoints[replayPastPoints.length - 1];
+      if (lastPastPoint && canonicalTimestamp(lastPastPoint.timestamp) < cutoff) {
+        replayPastPoints = [...replayPastPoints, {
+          ...lastPastPoint,
+          timestamp: cutoff,
+        }];
+      }
+    }
 
     const yTicks = Array.from({ length: 5 }, (_, index) => maxStrike - (yRange * index) / 4);
     const tickCount = Math.min(6, points.length);
@@ -241,8 +291,13 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
       xFor, yFor, yTicks, xTicks,
       cePath: makeStepPath('ce_wall'),
       pePath: makeStepPath('pe_wall'),
+      cePastPath: cutoff ? makeStepPath('ce_wall', replayPastPoints) : null,
+      pePastPath: cutoff ? makeStepPath('pe_wall', replayPastPoints) : null,
+      replayX: cutoff && timestampMs(cutoff) >= startMs && timestampMs(cutoff) <= endMs
+        ? xFor(cutoff)
+        : null,
     };
-  }, [points]);
+  }, [points, cutoff]);
 
   const hoveredEvent = hoveredEventKey
     ? events.find((event) => eventKey(event) === hoveredEventKey) ?? null
@@ -370,9 +425,17 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
         <div className="min-w-0 rounded-md border border-terminal-border/70 bg-terminal-bg/60 p-2">
           <div className="mb-1 flex flex-wrap items-center justify-between gap-2 px-1">
             <span className="text-[9px] font-mono text-terminal-muted">STRIKE ↑</span>
-            <div className="flex items-center gap-3 text-[10px] font-mono">
+            <div className="flex flex-wrap items-center gap-3 text-[10px] font-mono">
               <span className="flex items-center gap-1.5 text-red-300"><span className="h-0.5 w-5 bg-red-400" />CE WALL</span>
               <span className="flex items-center gap-1.5 text-emerald-300"><span className="h-0.5 w-5 bg-emerald-400" />PE WALL</span>
+              {cutoff && (
+                <>
+                  <span className="flex items-center gap-1.5 text-amber-300">
+                    <span className="h-0.5 w-5 border-t-2 border-dashed border-amber-400" />REPLAY TIME
+                  </span>
+                  <span className="text-[9px] text-terminal-muted/70">Faded = later session</span>
+                </>
+              )}
             </div>
           </div>
 
@@ -422,27 +485,60 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
                     </g>
                   );
                 })}
+                {/* Full-session wall paths remain visible; future portions are muted during replay. */}
                 <path d={chart.cePath} fill="none" stroke="#f87171" strokeWidth="3"
-                  strokeLinejoin="round" strokeLinecap="round" />
+                  strokeOpacity={cutoff ? 0.22 : 0.95} strokeLinejoin="round" strokeLinecap="round" />
                 <path d={chart.pePath} fill="none" stroke="#34d399" strokeWidth="3"
-                  strokeLinejoin="round" strokeLinecap="round" />
+                  strokeOpacity={cutoff ? 0.22 : 0.95} strokeLinejoin="round" strokeLinecap="round" />
+                {cutoff && chart.cePastPath && (
+                  <path d={chart.cePastPath} fill="none" stroke="#f87171" strokeWidth="3"
+                    strokeOpacity="1" strokeLinejoin="round" strokeLinecap="round" />
+                )}
+                {cutoff && chart.pePastPath && (
+                  <path d={chart.pePastPath} fill="none" stroke="#34d399" strokeWidth="3"
+                    strokeOpacity="1" strokeLinejoin="round" strokeLinecap="round" />
+                )}
                 {events.map((event) => {
                   const x = chart.xFor(event.timestamp);
                   const y = chart.yFor(event.to_strike);
-                  const selected = selectedEvent && eventKey(selectedEvent) === eventKey(event);
+                  const selected = activeEvent && eventKey(activeEvent) === eventKey(event);
+                  const isFuture = !!cutoff && canonicalTimestamp(event.timestamp) > cutoff;
                   const color = event.side === 'CE' ? '#f87171' : '#34d399';
+                  const baseOpacity = isFuture ? 0.12 : 0.32;
                   return (
                     <g key={eventKey(event)}>
                       <line x1={x} x2={x} y1={chart.top} y2={chart.height - chart.bottom}
-                        stroke={color} strokeOpacity={selected ? 0.85 : 0.35}
-                        strokeWidth={selected ? 2 : 1} strokeDasharray="4 5" />
-                      <circle cx={x} cy={y} r={selected ? 6 : 4}
-                        fill={color} stroke="#111827" strokeWidth="2">
-                        <title>{`${event.side} wall changed at ${timeLabel(event.timestamp, true)}: ${fmtStrike(event.from_strike)} to ${fmtStrike(event.to_strike)}`}</title>
+                        stroke={color} strokeOpacity={selected ? 0.98 : baseOpacity}
+                        strokeWidth={selected ? 2.5 : 1} strokeDasharray="4 5" />
+                      <circle cx={x} cy={y} r={selected ? 7 : 4}
+                        fill={color} fillOpacity={selected ? 1 : baseOpacity}
+                        stroke={selected ? '#F8FAFC' : '#111827'} strokeWidth={selected ? 2 : 2}>
+                        <title>{`${event.side} wall changed at ${timeLabel(event.timestamp, true)}: ${fmtStrike(event.from_strike)} to ${fmtStrike(event.to_strike)}${isFuture ? ' (after replay time)' : ''}`}</title>
                       </circle>
                     </g>
                   );
                 })}
+                {cutoff && chart.replayX != null && (
+                  <g>
+                    <rect
+                      x={chart.replayX - 5}
+                      y={chart.top}
+                      width="10"
+                      height={chart.height - chart.top - chart.bottom}
+                      fill="#FBBF24"
+                      fillOpacity="0.08"
+                    />
+                    <line x1={chart.replayX} x2={chart.replayX}
+                      y1={chart.top} y2={chart.height - chart.bottom}
+                      stroke="#FBBF24" strokeWidth="2.5" strokeDasharray="5 4" />
+                    <rect x={Math.max(chart.left, Math.min(chart.replayX - 54, chart.width - chart.right - 108))}
+                      y={4} width="108" height="16" rx="3" fill="#78350F" />
+                    <text x={Math.max(chart.left + 54, Math.min(chart.replayX, chart.width - chart.right - 54))}
+                      y={15} fill="#FDE68A" fontSize="9" fontWeight="700" textAnchor="middle">
+                      REPLAY {timeLabel(cutoff, true)}
+                    </text>
+                  </g>
+                )}
                 <line x1={chart.left} x2={chart.width - chart.right}
                   y1={chart.height - chart.bottom} y2={chart.height - chart.bottom}
                   stroke="currentColor" strokeOpacity="0.35" />
@@ -503,7 +599,9 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
           <div className="flex items-center justify-between border-b border-terminal-border/70 px-3 py-2">
             <div>
               <h3 className="text-xs font-semibold text-terminal-text">Wall Change Events</h3>
-              <p className="mt-0.5 text-[9px] font-mono text-terminal-muted">{events.length} changes · {date}</p>
+              <p className="mt-0.5 text-[9px] font-mono text-terminal-muted">
+                {events.length} changes · {date}{cutoff ? ' · dimmed events are after replay time' : ''}
+              </p>
             </div>
             <Clock3 className="h-4 w-4 text-terminal-muted" />
           </div>
@@ -514,6 +612,7 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
               </div>
             ) : newestFirstEvents.map((event) => {
               const selected = activeEvent && eventKey(activeEvent) === eventKey(event);
+              const isFuture = !!cutoff && canonicalTimestamp(event.timestamp) > cutoff;
               const rising = event.to_strike > event.from_strike;
               return (
                 <button
@@ -525,6 +624,8 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
                   aria-pressed={!!selected}
                   aria-label={`${event.side} wall changed at ${timeLabel(event.timestamp, true)} from ${fmtStrike(event.from_strike)} to ${fmtStrike(event.to_strike)}`}
                   className={`flex w-full items-center justify-between gap-2 border-b border-terminal-border/50 border-l-2 px-2.5 py-2.5 text-left transition-colors last:border-b-0 ${
+                    isFuture && !selected ? 'opacity-35 hover:opacity-75' : 'opacity-100'
+                  } ${
                     selected
                       ? event.side === 'CE'
                         ? 'border-l-red-400 bg-red-500/[0.18] shadow-[inset_0_0_18px_rgba(248,113,113,0.08)]'
