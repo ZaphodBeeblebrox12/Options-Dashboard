@@ -480,7 +480,7 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
                 {events.map((event) => {
                   const x = chart.xFor(event.timestamp);
                   const y = chart.yFor(event.to_strike);
-                  const selected = selectedEvent && eventKey(selectedEvent) === eventKey(event);
+                  const selected = activeEvent && eventKey(activeEvent) === eventKey(event);
                   const isFuture = !!cutoff && canonicalTimestamp(event.timestamp) > cutoff;
                   const color = event.side === 'CE' ? '#f87171' : '#34d399';
                   const baseOpacity = isFuture ? 0.12 : 0.32;
@@ -589,6 +589,7 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
               </div>
             ) : newestFirstEvents.map((event) => {
               const selected = activeEvent && eventKey(activeEvent) === eventKey(event);
+              const isFuture = !!cutoff && canonicalTimestamp(event.timestamp) > cutoff;
               const rising = event.to_strike > event.from_strike;
               return (
                 <button
@@ -600,6 +601,8 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
                   aria-pressed={!!selected}
                   aria-label={`${event.side} wall changed at ${timeLabel(event.timestamp, true)} from ${fmtStrike(event.from_strike)} to ${fmtStrike(event.to_strike)}`}
                   className={`flex w-full items-center justify-between gap-2 border-b border-terminal-border/50 border-l-2 px-2.5 py-2.5 text-left transition-colors last:border-b-0 ${
+                    isFuture && !selected ? 'opacity-35 hover:opacity-75' : 'opacity-100'
+                  } ${
                     selected
                       ? event.side === 'CE'
                         ? 'border-l-red-400 bg-red-500/[0.18] shadow-[inset_0_0_18px_rgba(248,113,113,0.08)]'
