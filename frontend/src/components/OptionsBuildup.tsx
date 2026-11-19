@@ -136,10 +136,13 @@ export const OptionsBuildup: React.FC<OptionsBuildupProps> = ({
 
     let alive = true;
     let controller: AbortController | null = null;
+    setPayload(null);
+    setError(null);
 
     const load = async () => {
       controller?.abort();
-      controller = new AbortController();
+      const requestController = new AbortController();
+      controller = requestController;
       setLoading(true);
       try {
         const params = new URLSearchParams({
@@ -150,7 +153,7 @@ export const OptionsBuildup: React.FC<OptionsBuildupProps> = ({
         if (!liveMode && timestamp) params.set('timestamp', timestamp);
 
         const response = await fetch(`/api/options-buildup?${params.toString()}`, {
-          signal: controller.signal,
+          signal: requestController.signal,
         });
         const body = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(body.detail || `Buildup request failed (HTTP ${response.status})`);
@@ -161,7 +164,7 @@ export const OptionsBuildup: React.FC<OptionsBuildupProps> = ({
         if (!alive || (err instanceof Error && err.name === 'AbortError')) return;
         setError(err instanceof Error ? err.message : 'Unable to load options buildup');
       } finally {
-        if (alive) setLoading(false);
+        if (alive && !requestController.signal.aborted) setLoading(false);
       }
     };
 
