@@ -366,7 +366,7 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 p-3 xl:grid-cols-[minmax(0,1fr)_350px]">
+      <div className="grid grid-cols-1 gap-3 p-3 xl:grid-cols-[minmax(0,1fr)_300px]">
         <div className="min-w-0 rounded-md border border-terminal-border/70 bg-terminal-bg/60 p-2">
           <div className="mb-1 flex flex-wrap items-center justify-between gap-2 px-1">
             <span className="text-[9px] font-mono text-terminal-muted">STRIKE ↑</span>
@@ -507,17 +507,14 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
             </div>
             <Clock3 className="h-4 w-4 text-terminal-muted" />
           </div>
-          <div className="max-h-[272px] overflow-y-auto px-2 py-1.5">
+          <div className="max-h-[272px] overflow-y-auto px-2 py-1">
             {newestFirstEvents.length === 0 ? (
-              <div className="flex min-h-[115px] items-center justify-center px-3 text-center text-[10px] font-mono text-terminal-muted">
+              <div className="flex min-h-[115px] items-center justify-center px-3 text-center text-[11px] font-mono text-terminal-muted">
                 No wall changes in this window.
               </div>
             ) : newestFirstEvents.map((event) => {
               const selected = activeEvent && eventKey(activeEvent) === eventKey(event);
               const rising = event.to_strike > event.from_strike;
-              const moveSize = Math.abs(event.to_strike - event.from_strike);
-              const sideIsCe = event.side === 'CE';
-              const accentText = sideIsCe ? 'text-red-200' : 'text-emerald-200';
               return (
                 <button
                   key={eventKey(event)}
@@ -526,54 +523,37 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
                   onMouseEnter={() => setHoveredEventKey(eventKey(event))}
                   onMouseLeave={() => setHoveredEventKey(null)}
                   aria-pressed={!!selected}
-                  aria-label={`${event.side} wall changed at ${timeLabel(event.timestamp, true)} from ${fmtStrike(event.from_strike)} to ${fmtStrike(event.to_strike)}, ${rising ? 'up' : 'down'} ${fmtStrike(moveSize)}`}
-                  className={`mb-1.5 block w-full rounded-md border border-l-[3px] px-2.5 py-2 text-left transition-colors last:mb-0 ${
+                  aria-label={`${event.side} wall changed at ${timeLabel(event.timestamp, true)} from ${fmtStrike(event.from_strike)} to ${fmtStrike(event.to_strike)}`}
+                  className={`flex w-full items-center justify-between gap-2 border-b border-terminal-border/50 border-l-2 px-2.5 py-2.5 text-left transition-colors last:border-b-0 ${
                     selected
-                      ? sideIsCe
-                        ? 'border-red-400/70 border-l-red-300 bg-red-500/[0.20] shadow-[inset_0_0_20px_rgba(248,113,113,0.09)]'
-                        : 'border-emerald-400/70 border-l-emerald-300 bg-emerald-500/[0.20] shadow-[inset_0_0_20px_rgba(52,211,153,0.09)]'
-                      : sideIsCe
-                        ? 'border-red-500/20 border-l-red-500/65 bg-red-500/[0.045] hover:border-red-400/55 hover:bg-red-500/[0.10]'
-                        : 'border-emerald-500/20 border-l-emerald-500/65 bg-emerald-500/[0.045] hover:border-emerald-400/55 hover:bg-emerald-500/[0.10]'
+                      ? event.side === 'CE'
+                        ? 'border-l-red-400 bg-red-500/[0.18] shadow-[inset_0_0_18px_rgba(248,113,113,0.08)]'
+                        : 'border-l-emerald-400 bg-emerald-500/[0.18] shadow-[inset_0_0_18px_rgba(52,211,153,0.08)]'
+                      : event.side === 'CE'
+                        ? 'border-l-transparent hover:border-l-red-400/70 hover:bg-red-500/[0.10]'
+                        : 'border-l-transparent hover:border-l-emerald-400/70 hover:bg-emerald-500/[0.10]'
                   }`}
                 >
-                  <span className="flex items-center justify-between gap-2">
-                    <span className="flex min-w-0 items-center gap-2">
-                      <span className={`inline-flex h-5 min-w-9 items-center justify-center rounded px-1.5 text-[10px] font-extrabold tracking-wide ${
-                        sideIsCe
-                          ? 'bg-red-500/35 text-red-50 ring-1 ring-red-300/60'
-                          : 'bg-emerald-500/35 text-emerald-50 ring-1 ring-emerald-300/60'
-                      }`}>{event.side}</span>
-                      <span className="text-[12px] font-bold font-mono tabular-nums tracking-wide text-white">
+                  <span className="flex min-w-0 items-center gap-2.5">
+                    <span className={`inline-flex h-6 min-w-9 items-center justify-center rounded px-1.5 text-[10px] font-extrabold ${
+                      event.side === 'CE'
+                        ? 'bg-red-500/35 text-red-50 ring-1 ring-red-300/60'
+                        : 'bg-emerald-500/35 text-emerald-50 ring-1 ring-emerald-300/60'
+                    }`}>{event.side}</span>
+                    <span className="min-w-0">
+                      <span className="block text-[13px] font-bold font-mono tabular-nums text-white">
                         {timeLabel(event.timestamp, true)}
                       </span>
-                    </span>
-                    <span className={`inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-bold font-mono tabular-nums ${
-                      sideIsCe ? 'bg-red-500/15 text-red-100' : 'bg-emerald-500/15 text-emerald-100'
-                    }`}>
-                      {rising
-                        ? <ArrowUpRight className="h-3.5 w-3.5" />
-                        : <ArrowDownRight className="h-3.5 w-3.5" />}
-                      {rising ? '+' : '−'}{fmtStrike(moveSize)}
-                    </span>
-                  </span>
-                  <span className="mt-2 grid grid-cols-[minmax(0,1fr)_18px_minmax(0,1fr)] items-center gap-1.5">
-                    <span className="min-w-0 rounded border border-white/10 bg-slate-950/55 px-2 py-1.5">
-                      <span className="block text-[8px] font-semibold tracking-widest text-slate-400">FROM</span>
-                      <span className="mt-0.5 block whitespace-nowrap text-[12px] font-bold font-mono tabular-nums text-slate-100">
-                        {fmtStrike(event.from_strike)}
-                      </span>
-                    </span>
-                    <span className="justify-self-center text-sm font-bold text-slate-400">→</span>
-                    <span className={`min-w-0 rounded border px-2 py-1.5 ${
-                      sideIsCe ? 'border-red-300/35 bg-red-950/55' : 'border-emerald-300/35 bg-emerald-950/55'
-                    }`}>
-                      <span className={`block text-[8px] font-semibold tracking-widest ${sideIsCe ? 'text-red-200/80' : 'text-emerald-200/80'}`}>TO</span>
-                      <span className={`mt-0.5 block whitespace-nowrap text-[12px] font-extrabold font-mono tabular-nums ${accentText}`}>
-                        {fmtStrike(event.to_strike)}
+                      <span className={`mt-1 block whitespace-nowrap text-[12px] font-semibold font-mono tabular-nums ${
+                        event.side === 'CE' ? 'text-red-100' : 'text-emerald-100'
+                      }`}>
+                        {fmtStrike(event.from_strike)} <span className="px-1 text-slate-400">→</span> {fmtStrike(event.to_strike)}
                       </span>
                     </span>
                   </span>
+                  {rising
+                    ? <ArrowUpRight className={`h-5 w-5 shrink-0 ${event.side === 'CE' ? 'text-red-200' : 'text-emerald-200'}`} />
+                    : <ArrowDownRight className={`h-5 w-5 shrink-0 ${event.side === 'CE' ? 'text-red-200' : 'text-emerald-200'}`} />}
                 </button>
               );
             })}
