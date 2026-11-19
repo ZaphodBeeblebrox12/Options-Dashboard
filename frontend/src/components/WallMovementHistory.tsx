@@ -564,7 +564,7 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
                         {fmtStrike(event.from_strike)}
                       </span>
                     </span>
-                    <ArrowUpRight className={`h-4 w-4 justify-self-center text-slate-400 ${rising ? '' : 'rotate-90'}`} />
+                    <span className="justify-self-center text-sm font-bold text-slate-400">→</span>
                     <span className={`min-w-0 rounded border px-2 py-1.5 ${
                       sideIsCe ? 'border-red-300/35 bg-red-950/55' : 'border-emerald-300/35 bg-emerald-950/55'
                     }`}>
