@@ -735,7 +735,7 @@ function App() {
         <OptionChain
           options={normalizedOptions} spot={spot} maxPain={maxPain} gammaFlip={gammaFlip}
           fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike}
-          indexName={selectedIndex} timestamp={timestamp} canArm={canArmWallWatch}
+          indexName={selectedIndex} timestamp={timestamp} historyDate={selectedDate} liveMode={liveMode} canArm={canArmWallWatch}
           isLoading={!liveMode && snapshotLoading}
           emptyTitle={!liveMode
             ? (timestamps.length === 0 ? 'No snapshots for selected date' : 'Historical snapshot unavailable')
