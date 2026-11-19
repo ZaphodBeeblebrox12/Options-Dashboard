@@ -412,9 +412,17 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
         <div className="min-w-0 rounded-md border border-terminal-border/70 bg-terminal-bg/60 p-2">
           <div className="mb-1 flex flex-wrap items-center justify-between gap-2 px-1">
             <span className="text-[9px] font-mono text-terminal-muted">STRIKE ↑</span>
-            <div className="flex items-center gap-3 text-[10px] font-mono">
+            <div className="flex flex-wrap items-center gap-3 text-[10px] font-mono">
               <span className="flex items-center gap-1.5 text-red-300"><span className="h-0.5 w-5 bg-red-400" />CE WALL</span>
               <span className="flex items-center gap-1.5 text-emerald-300"><span className="h-0.5 w-5 bg-emerald-400" />PE WALL</span>
+              {cutoff && (
+                <>
+                  <span className="flex items-center gap-1.5 text-amber-300">
+                    <span className="h-0.5 w-5 border-t-2 border-dashed border-amber-400" />REPLAY TIME
+                  </span>
+                  <span className="text-[9px] text-terminal-muted/70">Faded = later session</span>
+                </>
+              )}
             </div>
           </div>
 
@@ -578,7 +586,9 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
           <div className="flex items-center justify-between border-b border-terminal-border/70 px-3 py-2">
             <div>
               <h3 className="text-xs font-semibold text-terminal-text">Wall Change Events</h3>
-              <p className="mt-0.5 text-[9px] font-mono text-terminal-muted">{events.length} changes · {date}</p>
+              <p className="mt-0.5 text-[9px] font-mono text-terminal-muted">
+                {events.length} changes · {date}{cutoff ? ' · dimmed events are after replay time' : ''}
+              </p>
             </div>
             <Clock3 className="h-4 w-4 text-terminal-muted" />
           </div>
