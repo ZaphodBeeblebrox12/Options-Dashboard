@@ -1,4 +1,5 @@
 import React, { useMemo, useRef, useCallback, useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AlertTriangle, ArrowDown, ArrowUp, Bell, BellRing, Loader2 } from 'lucide-react';
 import { ScreenshotButton } from './ScreenshotButton';
 
@@ -17,6 +18,35 @@ interface OptionData {
   gex?: number;
 }
 
+interface WallHistoryEvent {
+  side: 'CE' | 'PE';
+  timestamp: string;
+  from_strike: number;
+  to_strike: number;
+  from_oi: number | null;
+  to_oi: number | null;
+}
+
+interface WallHistoryPayload {
+  date: string;
+  index_name: string;
+  points: Array<{
+    timestamp: string;
+    ce_wall: number | null;
+    ce_oi: number | null;
+    pe_wall: number | null;
+    pe_oi: number | null;
+  }>;
+  events: WallHistoryEvent[];
+}
+
+interface WallHoverState {
+  side: 'CE' | 'PE';
+  strike: number;
+  left: number;
+  top: number;
+}
+
 interface OptionChainProps {
   options: OptionData[];
   spot: number | null;
@@ -27,6 +57,8 @@ interface OptionChainProps {
   onSelectStrike: (strike: number) => void;
   indexName?: string;
   timestamp?: string;
+  historyDate?: string;
+  liveMode?: boolean;
   canArm?: boolean;
   isLoading?: boolean;
   emptyTitle?: string;
@@ -56,6 +88,8 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   onSelectStrike,
   indexName = 'INDEX',
   timestamp,
+  historyDate,
+  liveMode = true,
   canArm = false,
   isLoading = false,
   emptyTitle = 'No option data available',
@@ -70,6 +104,48 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   const [watchBusy, setWatchBusy] = useState<'CE' | 'PE' | null>(null);
   const [strikeOrder, setStrikeOrder] = useState<'asc' | 'desc'>('desc');
   const [watchError, setWatchError] = useState<string | null>(null);
+  const [wallHistory, setWallHistory] = useState<WallHistoryPayload | null>(null);
+  const [wallHistoryError, setWallHistoryError] = useState(false);
+  const [wallHover, setWallHover] = useState<WallHoverState | null>(null);
+
+  const effectiveHistoryDate = historyDate || timestamp?.slice(0, 10) || '';
+
+  useEffect(() => {
+    if (!effectiveHistoryDate || !indexName) {
+      setWallHistory(null);
+      return;
+    }
+    let alive = true;
+    let controller: AbortController | null = null;
+
+    const load = async () => {
+      controller?.abort();
+      controller = new AbortController();
+      try {
+        const response = await fetch(
+          `/api/wall-history?date=${encodeURIComponent(effectiveHistoryDate)}&index=${encodeURIComponent(indexName)}`,
+          { signal: controller.signal },
+        );
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = await response.json() as WallHistoryPayload;
+        if (alive) {
+          setWallHistory(payload);
+          setWallHistoryError(false);
+        }
+      } catch (error) {
+        if (!alive || (error instanceof Error && error.name === 'AbortError')) return;
+        setWallHistoryError(true);
+      }
+    };
+
+    void load();
+    const poll = liveMode ? window.setInterval(() => void load(), 30000) : null;
+    return () => {
+      alive = false;
+      controller?.abort();
+      if (poll != null) window.clearInterval(poll);
+    };
+  }, [effectiveHistoryDate, indexName, liveMode]);
 
   const refreshWallWatches = useCallback(async () => {
     try {
@@ -185,6 +261,50 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     };
     return { CE: find('CE'), PE: find('PE') };
   }, [chainData]);
+
+  const visibleWallEvents = useMemo(() => {
+    const events = wallHistory?.events ?? [];
+    const cutoff = timestamp ? timestamp.replace('T', ' ').slice(0, 19) : null;
+    return cutoff
+      ? events.filter((event) => event.timestamp.replace('T', ' ').slice(0, 19) <= cutoff)
+      : events;
+  }, [wallHistory, timestamp]);
+
+  const lastWallMove = useMemo(() => {
+    const findLatest = (side: 'CE' | 'PE') => {
+      const currentStrike = currentWalls[side];
+      if (currentStrike == null) return null;
+      for (let i = visibleWallEvents.length - 1; i >= 0; i -= 1) {
+        const event = visibleWallEvents[i];
+        if (event.side === side && Number(event.to_strike) === Number(currentStrike)) return event;
+      }
+      return null;
+    };
+    return { CE: findLatest('CE'), PE: findLatest('PE') };
+  }, [visibleWallEvents, currentWalls]);
+
+  const showWallHover = useCallback((side: 'CE' | 'PE', strike: number, element: HTMLElement) => {
+    const rect = element.getBoundingClientRect();
+    const tooltipWidth = 292;
+    const tooltipHeight = 208;
+    const gap = 10;
+    const edge = 12;
+    const preferredLeft = side === 'CE' ? rect.right + gap : rect.left - tooltipWidth - gap;
+    const alternateLeft = side === 'CE' ? rect.left - tooltipWidth - gap : rect.right + gap;
+    const chosenLeft = preferredLeft >= edge && preferredLeft + tooltipWidth <= window.innerWidth - edge
+      ? preferredLeft
+      : alternateLeft;
+    const left = Math.max(edge, Math.min(chosenLeft, window.innerWidth - tooltipWidth - edge));
+    const top = Math.max(
+      edge,
+      Math.min(rect.top + rect.height / 2 - tooltipHeight / 2, window.innerHeight - tooltipHeight - edge),
+    );
+    setWallHover({ side, strike, left, top });
+  }, []);
+
+  const hideWallHover = useCallback(() => setWallHover(null), []);
+
+
 
   // ── Center view around ATM ──
   const displayRows = useMemo(() => {
@@ -503,7 +623,15 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                         <div className="px-1 sm:px-2 py-1 text-right text-terminal-muted">{fmt(ce?.gamma, 4)}</div>
                       </>
                     )}
-                    <div className={`group/ceoi relative px-1 sm:px-2 py-1 text-right flex items-center justify-end ${getCeOiClass(row.strike)}`}>
+                    <div
+                      className={`group/ceoi relative px-1 sm:px-2 py-1 text-right flex items-center justify-end ${getCeOiClass(row.strike)}`}
+                      onMouseEnter={currentWalls.CE === row.strike ? (event) => showWallHover('CE', row.strike, event.currentTarget) : undefined}
+                      onMouseLeave={currentWalls.CE === row.strike ? hideWallHover : undefined}
+                      onFocus={currentWalls.CE === row.strike ? (event) => showWallHover('CE', row.strike, event.currentTarget) : undefined}
+                      onBlur={currentWalls.CE === row.strike ? hideWallHover : undefined}
+                      tabIndex={currentWalls.CE === row.strike ? 0 : undefined}
+                      aria-label={currentWalls.CE === row.strike ? `Call wall at ${fmt(row.strike)}. Hover or focus to view its last movement.` : undefined}
+                    >
                       <OiRankBadge rank={ceRank} />
                       {currentWalls.CE === row.strike && (
                         <button
@@ -535,7 +663,15 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
 
                   {/* PE Side */}
                   <div className={`grid ${fullMode ? 'grid-cols-7' : 'grid-cols-4'} gap-0 ${peItm ? ITM_TINT_CLASS : ''}`}>
-                    <div className={`group/peoi relative px-1 sm:px-2 py-1 text-left flex items-center ${getPeOiClass(row.strike)}`}>
+                    <div
+                      className={`group/peoi relative px-1 sm:px-2 py-1 text-left flex items-center ${getPeOiClass(row.strike)}`}
+                      onMouseEnter={currentWalls.PE === row.strike ? (event) => showWallHover('PE', row.strike, event.currentTarget) : undefined}
+                      onMouseLeave={currentWalls.PE === row.strike ? hideWallHover : undefined}
+                      onFocus={currentWalls.PE === row.strike ? (event) => showWallHover('PE', row.strike, event.currentTarget) : undefined}
+                      onBlur={currentWalls.PE === row.strike ? hideWallHover : undefined}
+                      tabIndex={currentWalls.PE === row.strike ? 0 : undefined}
+                      aria-label={currentWalls.PE === row.strike ? `Put wall at ${fmt(row.strike)}. Hover or focus to view its last movement.` : undefined}
+                    >
                       <PeOiRankBadge rank={peRank} />
                       {currentWalls.PE === row.strike && (
                         <button
@@ -580,6 +716,70 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
 
         </div>
       </div>
+      {wallHover && createPortal((() => {
+        const event = lastWallMove[wallHover.side];
+        const sideIsCe = wallHover.side === 'CE';
+        const accent = sideIsCe ? 'red' : 'emerald';
+        return (
+          <div
+            role="tooltip"
+            className={`pointer-events-none fixed z-[100] w-[292px] overflow-hidden rounded-lg border shadow-2xl shadow-black/50 ${sideIsCe ? 'border-red-400/70 bg-[#190D12]' : 'border-emerald-400/70 bg-[#081A15]'}`}
+            style={{ left: wallHover.left, top: wallHover.top }}
+          >
+            <div className={`flex items-center justify-between gap-2 border-b px-3 py-2 ${sideIsCe ? 'border-red-400/25 bg-red-500/10' : 'border-emerald-400/25 bg-emerald-500/10'}`}>
+              <span className={`text-[10px] font-mono font-bold tracking-wider ${sideIsCe ? 'text-red-200' : 'text-emerald-200'}`}>
+                {wallHover.side} WALL · LAST MOVEMENT
+              </span>
+              <span className="text-[10px] font-mono tabular-nums text-white">
+                {event ? event.timestamp.slice(11, 19) : '—'}
+              </span>
+            </div>
+            <div className="p-3">
+              {event ? (
+                <>
+                  <div className="grid grid-cols-[1fr_22px_1fr] items-center gap-2">
+                    <div className="min-w-0 rounded-md border border-white/10 bg-white/[0.045] p-2">
+                      <div className="text-[9px] font-mono text-slate-400">PREVIOUS WALL</div>
+                      <div className="mt-1 whitespace-nowrap text-lg font-bold font-mono tabular-nums text-slate-100">
+                        {fmt(event.from_strike)}
+                      </div>
+                    </div>
+                    <ArrowDown className="h-4 w-4 rotate-[-90deg] text-slate-400" />
+                    <div className={`min-w-0 rounded-md border p-2 ${sideIsCe ? 'border-red-400/35 bg-red-500/10' : 'border-emerald-400/35 bg-emerald-500/10'}`}>
+                      <div className={`text-[9px] font-mono ${sideIsCe ? 'text-red-200/80' : 'text-emerald-200/80'}`}>CURRENT WALL</div>
+                      <div className={`mt-1 whitespace-nowrap text-lg font-bold font-mono tabular-nums ${sideIsCe ? 'text-red-100' : 'text-emerald-100'}`}>
+                        {fmt(event.to_strike)}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-3 border-t border-white/10 pt-2">
+                    <div>
+                      <div className="text-[9px] font-mono text-slate-400">OI BEFORE</div>
+                      <div className="mt-0.5 text-xs font-semibold font-mono tabular-nums text-slate-200">{fmt(event.from_oi)}</div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] font-mono text-slate-400">OI AFTER</div>
+                      <div className={`mt-0.5 text-xs font-semibold font-mono tabular-nums ${sideIsCe ? 'text-red-100' : 'text-emerald-100'}`}>{fmt(event.to_oi)}</div>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="py-2">
+                  <div className="text-sm font-semibold font-mono text-white">{fmt(wallHover.strike)}</div>
+                  <div className="mt-1 text-[10px] font-mono leading-relaxed text-slate-300">
+                    {wallHistoryError
+                      ? 'Wall history is temporarily unavailable.'
+                      : 'No previous wall movement is recorded for this strike today.'}
+                  </div>
+                </div>
+              )}
+              <div className="mt-2 border-t border-white/10 pt-2 text-[9px] font-mono text-slate-500">
+                Time is based on the first saved snapshot showing the new wall.
+              </div>
+            </div>
+          </div>
+        );
+      })(), document.body)}
     </div>
   );
 };
