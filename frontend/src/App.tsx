@@ -3,6 +3,7 @@ import { AnalyticsHeader } from './components/AnalyticsHeader';
 import { MarketTimer } from './components/MarketTimer';
 import { BuildupCard } from './components/BuildupCard';
 import { OptionChain } from './components/OptionChain';
+import { OptionsBuildup } from './components/OptionsBuildup';
 import { WallMovementHistory } from './components/WallMovementHistory';
 import { ReplayControls } from './components/ReplayControls';
 import { ReplayPreviewProvider } from './components/ReplayPreviewContext';
@@ -762,6 +763,15 @@ function App() {
             : (!marketOpen
               ? 'Check snapshot history or select a date with available data.'
               : 'Check backend logs and the Angel One connection before changing credentials.')}
+        />
+        <OptionsBuildup
+          indexName={selectedIndex}
+          date={selectedDate}
+          timestamp={!liveMode ? (currentTimestamp || undefined) : undefined}
+          liveMode={liveMode}
+          spot={spot}
+          selectedStrike={selectedStrike}
+          onSelectStrike={handleSelectStrike}
         />
         <WallMovementHistory
           date={selectedDate}
