@@ -2,6 +2,7 @@ import React, { useMemo, useRef, useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom';
 import { AlertTriangle, ArrowDown, ArrowUp, Bell, BellRing, Loader2 } from 'lucide-react';
 import { ScreenshotButton } from './ScreenshotButton';
+import { COMPACT_OPTION_CHAIN_COLUMNS, type OptionChainColumnVisibility } from './optionChainColumns';
 
 interface OptionData {
   strike: number;
@@ -47,12 +48,83 @@ interface WallHoverState {
   top: number;
 }
 
+type BuildupInterval = '5m' | '15m' | '30m' | '1h' | 'session';
+
+interface BuildupSide {
+  classification: string;
+  bias: 'BULLISH' | 'BEARISH' | null;
+  premium_change: number | null;
+  premium_change_pct: number | null;
+  oi_change: number | null;
+  oi_change_pct: number | null;
+  volume_change: number | null;
+}
+
+interface BuildupPayload {
+  ready: boolean;
+  reason?: string;
+  index_name: string;
+  date: string | null;
+  interval: BuildupInterval;
+  as_of_timestamp?: string;
+  baseline_timestamp?: string | null;
+  rows: Array<{ strike: number; CE: BuildupSide | null; PE: BuildupSide | null }>;
+}
+
+const BUILDUP_INTERVALS: Array<{ value: BuildupInterval; label: string }> = [
+  { value: '5m', label: '5m' },
+  { value: '15m', label: '15m' },
+  { value: '30m', label: '30m' },
+  { value: '1h', label: '1H' },
+  { value: 'session', label: 'Session' },
+];
+
+const BUILDUP_CODES: Record<string, string> = {
+  'LONG BUILDUP': 'LB',
+  'SHORT BUILDUP': 'SB',
+  'SHORT COVERING': 'SC',
+  'LONG UNWINDING': 'LU',
+  'MIXED': 'MX',
+  'NO CHANGE': '—',
+};
+
+const BUILDUP_STYLES: Record<string, string> = {
+  'LONG BUILDUP': 'text-emerald-300',
+  'SHORT BUILDUP': 'text-red-300',
+  'SHORT COVERING': 'text-cyan-300',
+  'LONG UNWINDING': 'text-amber-300',
+  'MIXED': 'text-terminal-muted',
+  'NO CHANGE': 'text-terminal-muted/50',
+};
+
+function signedMetric(value: number | null | undefined, digits = 0): string {
+  if (value == null || !Number.isFinite(value)) return '—';
+  return `${value > 0 ? '+' : ''}${value.toLocaleString('en-IN', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })}`;
+}
+
+function buildupTooltip(side: BuildupSide | null, baseline?: string | null, current?: string): string {
+  if (!side) return 'No matching contract in comparison snapshot';
+  const timeLabel = (value?: string | null) => value && value.length >= 16 ? value.slice(11, 19) : '—';
+  return [
+    side.classification,
+    `Premium ${signedMetric(side.premium_change, 2)} (${signedMetric(side.premium_change_pct, 2)}%)`,
+    `OI ${signedMetric(side.oi_change)} (${signedMetric(side.oi_change_pct, 2)}%)`,
+    `Volume ${signedMetric(side.volume_change)}`,
+    `${timeLabel(baseline)} → ${timeLabel(current)}`,
+  ].join(' · ');
+}
+
 interface OptionChainProps {
   options: OptionData[];
   spot: number | null;
   maxPain: number | null;
   gammaFlip: number | null;
-  fullMode: boolean;
+  columnVisibility?: OptionChainColumnVisibility;
+  buildupDate?: string;
+  buildupTimestamp?: string;
   selectedStrike: number | null;
   onSelectStrike: (strike: number) => void;
   indexName?: string;
@@ -83,7 +155,9 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   options,
   spot,
   gammaFlip,
-  fullMode,
+  columnVisibility = COMPACT_OPTION_CHAIN_COLUMNS,
+  buildupDate = '',
+  buildupTimestamp,
   selectedStrike,
   onSelectStrike,
   indexName = 'INDEX',
@@ -107,6 +181,10 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   const [wallHistory, setWallHistory] = useState<WallHistoryPayload | null>(null);
   const [wallHistoryError, setWallHistoryError] = useState(false);
   const [wallHover, setWallHover] = useState<WallHoverState | null>(null);
+  const [buildupInterval, setBuildupInterval] = useState<BuildupInterval>('15m');
+  const [buildupPayload, setBuildupPayload] = useState<BuildupPayload | null>(null);
+  const [buildupError, setBuildupError] = useState<string | null>(null);
+  const showBuildup = columnVisibility.buildup && columnVisibility.oiChange;
 
   const effectiveHistoryDate = historyDate || timestamp?.slice(0, 10) || '';
 
@@ -146,6 +224,51 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
       if (poll != null) window.clearInterval(poll);
     };
   }, [effectiveHistoryDate, indexName, liveMode]);
+
+  useEffect(() => {
+    if (!showBuildup || !indexName) {
+      setBuildupPayload(null);
+      setBuildupError(null);
+      return;
+    }
+
+    let alive = true;
+    let controller: AbortController | null = null;
+    setBuildupPayload(null);
+    setBuildupError(null);
+
+    const load = async () => {
+      controller?.abort();
+      const requestController = new AbortController();
+      controller = requestController;
+      try {
+        const params = new URLSearchParams({ index: indexName, interval: buildupInterval });
+        if (!liveMode) {
+          if (buildupDate) params.set('date', buildupDate);
+          if (buildupTimestamp) params.set('timestamp', buildupTimestamp);
+        }
+        const response = await fetch(`/api/options-buildup?${params.toString()}`, {
+          signal: requestController.signal,
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.detail || `Buildup request failed (HTTP ${response.status})`);
+        if (!alive) return;
+        setBuildupPayload(body as BuildupPayload);
+        setBuildupError(null);
+      } catch (error) {
+        if (!alive || (error instanceof Error && error.name === 'AbortError')) return;
+        setBuildupError(error instanceof Error ? error.message : 'Unable to load buildup');
+      }
+    };
+
+    void load();
+    const poll = liveMode ? window.setInterval(() => void load(), 30000) : null;
+    return () => {
+      alive = false;
+      controller?.abort();
+      if (poll !== null) window.clearInterval(poll);
+    };
+  }, [indexName, liveMode, buildupDate, buildupTimestamp, buildupInterval, showBuildup]);
 
   const refreshWallWatches = useCallback(async () => {
     try {
@@ -345,6 +468,23 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     });
   }, [atmSpot]);
 
+  const buildupByStrike = useMemo(() => {
+    const map = new Map<number, { CE: BuildupSide | null; PE: BuildupSide | null }>();
+    for (const row of buildupPayload?.rows ?? []) map.set(row.strike, { CE: row.CE, PE: row.PE });
+    return map;
+  }, [buildupPayload]);
+
+  const visibleColumnCount = [
+    columnVisibility.oiChange,
+    columnVisibility.volume,
+    columnVisibility.ltp,
+    columnVisibility.iv,
+    columnVisibility.delta,
+    columnVisibility.gamma,
+    columnVisibility.oi,
+  ].filter(Boolean).length;
+  const sideGridStyle = { gridTemplateColumns: `repeat(${Math.max(1, visibleColumnCount)}, minmax(0, 1fr))` };
+
   const fmt = (n: number | undefined | null, digits = 0) => {
     if (n === undefined || n === null) return '—';
     if (digits === 0) return n.toLocaleString('en-IN');
@@ -440,7 +580,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     );
   }
 
-  const totalMinWidth = fullMode ? 'min-w-[900px]' : 'min-w-[680px]';
+  const totalMinWidth = visibleColumnCount >= 7 ? 'min-w-[900px]' : visibleColumnCount >= 5 ? 'min-w-[760px]' : 'min-w-[680px]';
 
   return (
     <div className="terminal-panel overflow-hidden" ref={panelRef}>
