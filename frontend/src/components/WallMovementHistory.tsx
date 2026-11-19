@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   ArrowDownRight,
@@ -63,6 +63,11 @@ function fmtStrike(value: number | null | undefined): string {
   return value == null ? '—' : value.toLocaleString('en-IN', { maximumFractionDigits: 2 });
 }
 
+function fmtOi(value: number | null | undefined): string {
+  if (value == null) return '—';
+  return new Intl.NumberFormat('en-IN', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
+}
+
 function eventKey(event: WallEvent): string {
   return `${event.side}|${canonicalTimestamp(event.timestamp)}|${event.from_strike}|${event.to_strike}`;
 }
@@ -81,6 +86,9 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
   }>({ key: '', data: null, loading: true, error: null });
   const [range, setRange] = useState<RangeKey>('1D');
   const [selectedEventKey, setSelectedEventKey] = useState<string | null>(null);
+  const [hoveredEventKey, setHoveredEventKey] = useState<string | null>(null);
+  const [hoverPosition, setHoverPosition] = useState<{ x: number; y: number } | null>(null);
+  const chartWrapRef = useRef<HTMLDivElement>(null);
 
   const requestKey = `${date}|${indexName}`;
 
@@ -236,6 +244,65 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
     };
   }, [points]);
 
+  const hoveredEvent = hoveredEventKey
+    ? events.find((event) => eventKey(event) === hoveredEventKey) ?? null
+    : null;
+  const activeEvent = hoveredEvent ?? selectedEvent;
+
+  const handleChartPointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
+    if (!chart || events.length === 0) return;
+    const svg = event.currentTarget;
+    const screenMatrix = svg.getScreenCTM();
+    if (!screenMatrix) return;
+
+    // Convert screen coordinates through the actual SVG transform. This
+    // remains correct when the responsive SVG preserves its viewBox ratio
+    // and leaves horizontal letterboxing at wider dashboard sizes.
+    const screenPoint = svg.createSVGPoint();
+    screenPoint.x = event.clientX;
+    screenPoint.y = event.clientY;
+    const chartPoint = screenPoint.matrixTransform(screenMatrix.inverse());
+    const pointerX = chartPoint.x;
+    const pointerY = chartPoint.y;
+    if (pointerY < chart.top || pointerY > chart.height - chart.bottom) {
+      setHoveredEventKey(null);
+      setHoverPosition(null);
+      return;
+    }
+
+    // A marker is a full-height timestamp line. Prefer the closest timestamp,
+    // then use vertical distance from its strike-change dot to distinguish CE
+    // and PE events that can share the same snapshot timestamp.
+    const nearest = events
+      .map((candidate) => {
+        const dx = Math.abs(pointerX - chart.xFor(candidate.timestamp));
+        const dy = Math.abs(pointerY - chart.yFor(candidate.to_strike));
+        return { candidate, dx, dy, score: dx + dy * 0.08 };
+      })
+      .filter((item) => item.dx <= 14)
+      .sort((a, b) => a.score - b.score)[0];
+
+    if (!nearest) {
+      setHoveredEventKey(null);
+      setHoverPosition(null);
+      return;
+    }
+
+    setHoveredEventKey(eventKey(nearest.candidate));
+    const wrapperRect = chartWrapRef.current?.getBoundingClientRect();
+    if (wrapperRect) {
+      setHoverPosition({
+        x: event.clientX - wrapperRect.left,
+        y: event.clientY - wrapperRect.top,
+      });
+    }
+  };
+
+  const clearChartHover = () => {
+    setHoveredEventKey(null);
+    setHoverPosition(null);
+  };
+
   const isLoading = payloadState.key !== requestKey || payloadState.loading;
   const error = payloadState.key === requestKey ? payloadState.error : null;
 
@@ -327,12 +394,15 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
             </div>
           ) : (
             <>
-              <svg
-                viewBox={`0 0 ${chart.width} ${chart.height}`}
-                className="block h-[250px] w-full overflow-visible"
-                role="img"
-                aria-label="Step chart showing Call and Put open-interest wall strikes over time"
-              >
+              <div ref={chartWrapRef} className="relative">
+                <svg
+                  viewBox={`0 0 ${chart.width} ${chart.height}`}
+                  className="block h-[250px] w-full cursor-crosshair overflow-visible"
+                  role="img"
+                  aria-label="Step chart showing Call and Put open-interest wall strikes over time. Hover over a vertical event marker to inspect its timestamp and old and new wall strikes."
+                  onPointerMove={handleChartPointerMove}
+                  onPointerLeave={clearChartHover}
+                >
                 {chart.yTicks.map((tick) => (
                   <g key={tick}>
                     <line x1={chart.left} x2={chart.width - chart.right} y1={chart.yFor(tick)} y2={chart.yFor(tick)}
@@ -376,14 +446,48 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
                 <line x1={chart.left} x2={chart.width - chart.right}
                   y1={chart.height - chart.bottom} y2={chart.height - chart.bottom}
                   stroke="currentColor" strokeOpacity="0.35" />
-              </svg>
-              {selectedEvent && (
-                <div className="mt-1 flex flex-wrap items-center justify-between gap-2 rounded border border-terminal-border/70 bg-white/[0.035] px-2 py-1.5 text-[10px] font-mono">
-                  <span className={selectedEvent.side === 'CE' ? 'text-red-300' : 'text-emerald-300'}>
-                    {selectedEvent.side} WALL · {timeLabel(selectedEvent.timestamp, true)}
+                </svg>
+                {hoveredEvent && hoverPosition && (
+                  <div
+                    className="pointer-events-none absolute z-30 w-56 rounded-md border border-slate-500/70 bg-slate-950/95 px-3 py-2 shadow-xl shadow-black/40 backdrop-blur-sm"
+                    style={{
+                      left: `clamp(8px, ${hoverPosition.x + 14}px, calc(100% - 232px))`,
+                      top: `clamp(8px, ${hoverPosition.y - 58}px, calc(100% - 76px))`,
+                    }}
+                    role="status"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className={`text-[10px] font-mono font-bold ${hoveredEvent.side === 'CE' ? 'text-red-300' : 'text-emerald-300'}`}>
+                        {hoveredEvent.side} WALL SHIFT
+                      </span>
+                      <span className="text-[10px] font-mono tabular-nums text-white">
+                        {timeLabel(hoveredEvent.timestamp, true)}
+                      </span>
+                    </div>
+                    <div className="mt-1.5 flex items-center gap-2 text-xs font-mono tabular-nums">
+                      <span className="text-slate-300">{fmtStrike(hoveredEvent.from_strike)}</span>
+                      <span className={hoveredEvent.side === 'CE' ? 'text-red-300' : 'text-emerald-300'}>→</span>
+                      <strong className={hoveredEvent.side === 'CE' ? 'text-red-200' : 'text-emerald-200'}>
+                        {fmtStrike(hoveredEvent.to_strike)}
+                      </strong>
+                    </div>
+                    <div className="mt-1 text-[9px] font-mono text-slate-400">
+                      OI: {fmtOi(hoveredEvent.from_oi)} → {fmtOi(hoveredEvent.to_oi)}
+                    </div>
+                  </div>
+                )}
+              </div>
+              {activeEvent && (
+                <div className={`mt-1 flex flex-wrap items-center justify-between gap-2 rounded border px-2 py-1.5 text-[10px] font-mono ${
+                  activeEvent.side === 'CE'
+                    ? 'border-red-500/35 bg-red-500/[0.10]'
+                    : 'border-emerald-500/35 bg-emerald-500/[0.10]'
+                }`}>
+                  <span className={activeEvent.side === 'CE' ? 'text-red-200' : 'text-emerald-200'}>
+                    {activeEvent.side} WALL · {timeLabel(activeEvent.timestamp, true)}
                   </span>
-                  <span className="text-terminal-text tabular-nums">
-                    {fmtStrike(selectedEvent.from_strike)} → <strong>{fmtStrike(selectedEvent.to_strike)}</strong>
+                  <span className="text-white tabular-nums">
+                    {fmtStrike(activeEvent.from_strike)} → <strong>{fmtStrike(activeEvent.to_strike)}</strong>
                   </span>
                 </div>
               )}
@@ -409,27 +513,37 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
                 No wall changes in this window.
               </div>
             ) : newestFirstEvents.map((event) => {
-              const selected = selectedEvent && eventKey(selectedEvent) === eventKey(event);
+              const selected = activeEvent && eventKey(activeEvent) === eventKey(event);
               const rising = event.to_strike > event.from_strike;
               return (
                 <button
                   key={eventKey(event)}
                   type="button"
                   onClick={() => setSelectedEventKey(eventKey(event))}
+                  onMouseEnter={() => setHoveredEventKey(eventKey(event))}
+                  onMouseLeave={() => setHoveredEventKey(null)}
                   aria-pressed={!!selected}
-                  className={`flex w-full items-center justify-between gap-2 border-b border-terminal-border/50 px-2 py-2 text-left transition-colors last:border-b-0 ${
-                    selected ? 'bg-white/[0.07]' : 'hover:bg-white/[0.035]'
+                  className={`flex w-full items-center justify-between gap-2 border-b border-terminal-border/50 border-l-2 px-2 py-2 text-left transition-colors last:border-b-0 ${
+                    selected
+                      ? event.side === 'CE'
+                        ? 'border-l-red-400 bg-red-500/[0.18] shadow-[inset_0_0_18px_rgba(248,113,113,0.08)]'
+                        : 'border-l-emerald-400 bg-emerald-500/[0.18] shadow-[inset_0_0_18px_rgba(52,211,153,0.08)]'
+                      : event.side === 'CE'
+                        ? 'border-l-transparent hover:border-l-red-400/70 hover:bg-red-500/[0.10]'
+                        : 'border-l-transparent hover:border-l-emerald-400/70 hover:bg-emerald-500/[0.10]'
                   }`}
                 >
                   <span className="flex min-w-0 items-center gap-2">
                     <span className={`inline-flex h-5 min-w-8 items-center justify-center rounded px-1 text-[9px] font-bold ${
-                      event.side === 'CE' ? 'bg-red-500/20 text-red-300' : 'bg-emerald-500/20 text-emerald-300'
+                      event.side === 'CE' ? 'bg-red-500/30 text-red-100 ring-1 ring-red-400/50' : 'bg-emerald-500/30 text-emerald-100 ring-1 ring-emerald-400/50'
                     }`}>{event.side}</span>
                     <span className="min-w-0">
-                      <span className="block text-[11px] font-semibold font-mono tabular-nums text-terminal-text">
+                      <span className="block text-[11px] font-bold font-mono tabular-nums text-white">
                         {timeLabel(event.timestamp, true)}
                       </span>
-                      <span className="mt-0.5 block whitespace-nowrap text-[10px] font-mono tabular-nums text-terminal-muted">
+                      <span className={`mt-0.5 block whitespace-nowrap text-[10px] font-semibold font-mono tabular-nums ${
+                        event.side === 'CE' ? 'text-red-100' : 'text-emerald-100'
+                      }`}>
                         {fmtStrike(event.from_strike)} → {fmtStrike(event.to_strike)}
                       </span>
                     </span>
