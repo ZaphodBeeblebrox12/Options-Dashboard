@@ -784,12 +784,23 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                       <div className={`px-1 sm:px-2 py-1 text-right flex items-center justify-end gap-1 min-w-0 ${(ce?.oi_change ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                         <span className="truncate">{(ce?.oi_change ?? 0) > 0 ? '+' : ''}{fmt(ce?.oi_change)}</span>
                         {showBuildup && ceBuildup && BUILDUP_CODES[ceBuildup.classification] && BUILDUP_CODES[ceBuildup.classification] !== '—' && (
-                          <span
-                            title={buildupTooltip(ceBuildup, buildupPayload?.baseline_timestamp, buildupPayload?.as_of_timestamp)}
-                            className={`inline-flex min-w-[26px] shrink-0 items-center justify-center rounded-md px-1.5 py-0.5 text-[9px] sm:text-[10px] leading-none font-extrabold tracking-wide shadow-sm ${BUILDUP_STYLES[ceBuildup.classification] || 'text-terminal-muted'}`}
-                          >
-                            {BUILDUP_CODES[ceBuildup.classification]}
-                          </span>
+                          <>
+                            <span
+                              title={buildupTooltip(ceBuildup, buildupPayload?.baseline_timestamp, buildupPayload?.as_of_timestamp)}
+                              className={`inline-flex min-w-[26px] shrink-0 items-center justify-center rounded-md px-1.5 py-0.5 text-[9px] sm:text-[10px] leading-none font-extrabold tracking-wide shadow-sm ${BUILDUP_STYLES[ceBuildup.classification] || 'text-terminal-muted'}`}
+                            >
+                              {BUILDUP_CODES[ceBuildup.classification]}
+                            </span>
+                            {ceBuildup.bias && (
+                              <span
+                                title={`${ceBuildup.bias === 'BULLISH' ? 'Bullish' : 'Bearish'} CE-side interpretation`}
+                                className={`shrink-0 text-[8px] sm:text-[9px] font-extrabold tracking-wide ${ceBuildup.bias === 'BULLISH' ? 'text-emerald-300' : 'text-red-300'}`}
+                              >
+                                <span className="hidden sm:inline lg:hidden">{ceBuildup.bias === 'BULLISH' ? 'BULL' : 'BEAR'}</span>
+                                <span className="hidden lg:inline">{ceBuildup.bias}</span>
+                              </span>
+                            )}
+                          </>
                         )}
                       </div>
                     )}
@@ -879,12 +890,23 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                       <div className={`px-1 sm:px-2 py-1 text-left flex items-center gap-1 min-w-0 ${(pe?.oi_change ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                         <span className="truncate">{(pe?.oi_change ?? 0) > 0 ? '+' : ''}{fmt(pe?.oi_change)}</span>
                         {showBuildup && peBuildup && BUILDUP_CODES[peBuildup.classification] && BUILDUP_CODES[peBuildup.classification] !== '—' && (
-                          <span
-                            title={buildupTooltip(peBuildup, buildupPayload?.baseline_timestamp, buildupPayload?.as_of_timestamp)}
-                            className={`inline-flex min-w-[26px] shrink-0 items-center justify-center rounded-md px-1.5 py-0.5 text-[9px] sm:text-[10px] leading-none font-extrabold tracking-wide shadow-sm ${BUILDUP_STYLES[peBuildup.classification] || 'text-terminal-muted'}`}
-                          >
-                            {BUILDUP_CODES[peBuildup.classification]}
-                          </span>
+                          <>
+                            <span
+                              title={buildupTooltip(peBuildup, buildupPayload?.baseline_timestamp, buildupPayload?.as_of_timestamp)}
+                              className={`inline-flex min-w-[26px] shrink-0 items-center justify-center rounded-md px-1.5 py-0.5 text-[9px] sm:text-[10px] leading-none font-extrabold tracking-wide shadow-sm ${BUILDUP_STYLES[peBuildup.classification] || 'text-terminal-muted'}`}
+                            >
+                              {BUILDUP_CODES[peBuildup.classification]}
+                            </span>
+                            {peBuildup.bias && (
+                              <span
+                                title={`${peBuildup.bias === 'BULLISH' ? 'Bullish' : 'Bearish'} PE-side interpretation`}
+                                className={`shrink-0 text-[8px] sm:text-[9px] font-extrabold tracking-wide ${peBuildup.bias === 'BULLISH' ? 'text-emerald-300' : 'text-red-300'}`}
+                              >
+                                <span className="hidden sm:inline lg:hidden">{peBuildup.bias === 'BULLISH' ? 'BULL' : 'BEAR'}</span>
+                                <span className="hidden lg:inline">{peBuildup.bias}</span>
+                              </span>
+                            )}
+                          </>
                         )}
                       </div>
                     )}
