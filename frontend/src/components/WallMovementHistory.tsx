@@ -107,6 +107,11 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
   const requestKey = `${date}|${indexName}`;
 
   useEffect(() => {
+    setPinnedEventKey(null);
+    setPinnedPosition(null);
+  }, [requestKey]);
+
+  useEffect(() => {
     if (!date || !indexName) return;
     let alive = true;
     let controller: AbortController | null = null;
@@ -538,7 +543,7 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
                   viewBox={`0 0 ${chart.width} ${chart.height}`}
                   className="block h-[250px] w-full cursor-crosshair overflow-visible"
                   role="img"
-                  aria-label="Step chart showing Call and Put open-interest wall strikes over time. Hover over a vertical event marker to inspect its timestamp and old and new wall strikes."
+                  aria-label="Step chart showing Call and Put open-interest wall strikes over time. Hover over a wall-change dot to inspect it; double-click a dot to pin its details for study."
                   onPointerMove={handleChartPointerMove}
                   onPointerLeave={clearChartHover}
                 >
@@ -642,7 +647,7 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
                 {inspectorEvent && inspectorPosition && (
                   <div
                     className={`absolute z-30 w-56 rounded-md border border-slate-500/70 bg-slate-950/95 px-3 py-2 shadow-xl shadow-black/50 backdrop-blur-sm ${
-                      pinnedEvent ? 'pointer-events-auto ring-1 ring-amber-400/60' : 'pointer-events-none'
+                      pinnedEvent ? 'pointer-events-none ring-1 ring-amber-400/60' : 'pointer-events-none'
                     }`}
                     style={{
                       left: `clamp(8px, ${inspectorPosition.x + 14}px, calc(100% - 232px))`,
@@ -678,7 +683,7 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
                           <button
                             type="button"
                             onClick={unlockPinnedEvent}
-                            className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-[9px] font-mono font-bold text-slate-200 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-300"
+                            className="pointer-events-auto inline-flex items-center gap-1 rounded px-1.5 py-1 text-[9px] font-mono font-bold text-slate-200 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-300"
                             title="Unlock this wall inspection"
                           >
                             <Unlock className="h-3 w-3" /> UNLOCK
