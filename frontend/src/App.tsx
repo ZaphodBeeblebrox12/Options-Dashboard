@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { AnalyticsHeader } from './components/AnalyticsHeader';
 import { MarketTimer } from './components/MarketTimer';
 import { BuildupCard } from './components/BuildupCard';
+import { OptionsBuildup } from './components/OptionsBuildup';
 import { OptionChain } from './components/OptionChain';
 import { WallMovementHistory } from './components/WallMovementHistory';
 import { ReplayControls } from './components/ReplayControls';
@@ -752,6 +753,15 @@ function App() {
             : (!marketOpen
               ? 'Check snapshot history or select a date with available data.'
               : 'Check backend logs and the Angel One connection before changing credentials.')}
+        />
+        <OptionsBuildup
+          indexName={selectedIndex}
+          date={selectedDate}
+          timestamp={!liveMode ? (currentTimestamp || undefined) : undefined}
+          liveMode={liveMode}
+          spot={spot}
+          selectedStrike={selectedStrike}
+          onSelectStrike={handleSelectStrike}
         />
         <WallMovementHistory
           date={selectedDate}
