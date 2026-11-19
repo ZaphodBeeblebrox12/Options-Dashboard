@@ -125,7 +125,6 @@ All endpoints accept an `?index=NIFTY|SENSEX` parameter (defaults to NIFTY).
 | `GET /api/snapshots?date=YYYY-MM-DD&index=NIFTY` | Available timestamps |
 | `GET /api/snapshot/{timestamp}?index=NIFTY` | Specific snapshot |
 | `GET /api/history/{strike}?date=...&index=NIFTY` | Strike time-series |
-| `GET /api/options-buildup?date=...&index=...&interval=...` | Strike-level CE/PE buildup from paired snapshots (5m, 15m, 30m, 1h, session) |
 | `GET /api/gex-history?date=...&index=NIFTY` | Net GEX history |
 | `GET /api/gex-by-strike?timestamp=...&index=NIFTY` | GEX by strike |
 | `GET /api/available-dates?index=NIFTY` | Dates with data (for calendar highlight) |
@@ -151,7 +150,6 @@ All endpoints accept an `?index=NIFTY|SENSEX` parameter (defaults to NIFTY).
 - **Strike Selection**: Click any strike to see LTP/OI/Gamma history
 - **Visual Highlights**: ATM (yellow/cyan/magenta), Max OI #1-3 (red/green), Max Pain, Gamma Flip
 - **GEX Analytics**: Net GEX, GEX by strike chart, GEX time-series
-- **Options Buildup**: Strike-level CE/PE classification using premium and OI changes, with interval selection and replay support
 - **Max Pain Engine**: Recalculated per snapshot
 - **Gamma Flip**: Zero-crossing of cumulative gamma
 
