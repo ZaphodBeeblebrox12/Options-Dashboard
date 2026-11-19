@@ -3,6 +3,7 @@ import { AnalyticsHeader } from './components/AnalyticsHeader';
 import { MarketTimer } from './components/MarketTimer';
 import { BuildupCard } from './components/BuildupCard';
 import { OptionChain } from './components/OptionChain';
+import { WallMovementHistory } from './components/WallMovementHistory';
 import { ReplayControls } from './components/ReplayControls';
 import { ReplayPreviewProvider } from './components/ReplayPreviewContext';
 import { GexChart } from './components/GexChart';
@@ -751,6 +752,12 @@ function App() {
             : (!marketOpen
               ? 'Check snapshot history or select a date with available data.'
               : 'Check backend logs and the Angel One connection before changing credentials.')}
+        />
+        <WallMovementHistory
+          date={selectedDate}
+          indexName={selectedIndex}
+          liveMode={liveMode}
+          asOfTimestamp={!liveMode ? currentTimestamp : null}
         />
         {instrumentTier === 1 && (
           <GexChart data={displayedGexByStrike} atmStrike={atmStrike} maxPain={maxPain} gammaFlip={gammaFlip}
