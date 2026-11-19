@@ -88,13 +88,14 @@ const BUILDUP_CODES: Record<string, string> = {
   'NO CHANGE': '—',
 };
 
+// Filled, high-contrast tags keep buildup classifications readable in dense chain rows.
 const BUILDUP_STYLES: Record<string, string> = {
-  'LONG BUILDUP': 'text-emerald-300',
-  'SHORT BUILDUP': 'text-red-300',
-  'SHORT COVERING': 'text-cyan-300',
-  'LONG UNWINDING': 'text-amber-300',
-  'MIXED': 'text-terminal-muted',
-  'NO CHANGE': 'text-terminal-muted/50',
+  'LONG BUILDUP': 'bg-emerald-600 text-white ring-1 ring-emerald-400/30',
+  'SHORT BUILDUP': 'bg-red-600 text-white ring-1 ring-red-400/30',
+  'SHORT COVERING': 'bg-sky-600 text-white ring-1 ring-sky-400/30',
+  'LONG UNWINDING': 'bg-amber-500 text-slate-950 ring-1 ring-amber-300/40',
+  'MIXED': 'bg-slate-600 text-white ring-1 ring-slate-400/30',
+  'NO CHANGE': 'bg-slate-700 text-slate-200',
 };
 
 function signedMetric(value: number | null | undefined, digits = 0): string {
@@ -785,7 +786,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                         {showBuildup && ceBuildup && BUILDUP_CODES[ceBuildup.classification] && BUILDUP_CODES[ceBuildup.classification] !== '—' && (
                           <span
                             title={buildupTooltip(ceBuildup, buildupPayload?.baseline_timestamp, buildupPayload?.as_of_timestamp)}
-                            className={`shrink-0 text-[8px] font-bold tracking-tight ${BUILDUP_STYLES[ceBuildup.classification] || 'text-terminal-muted'}`}
+                            className={`inline-flex min-w-[26px] shrink-0 items-center justify-center rounded-md px-1.5 py-0.5 text-[9px] sm:text-[10px] leading-none font-extrabold tracking-wide shadow-sm ${BUILDUP_STYLES[ceBuildup.classification] || 'text-terminal-muted'}`}
                           >
                             {BUILDUP_CODES[ceBuildup.classification]}
                           </span>
@@ -880,7 +881,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                         {showBuildup && peBuildup && BUILDUP_CODES[peBuildup.classification] && BUILDUP_CODES[peBuildup.classification] !== '—' && (
                           <span
                             title={buildupTooltip(peBuildup, buildupPayload?.baseline_timestamp, buildupPayload?.as_of_timestamp)}
-                            className={`shrink-0 text-[8px] font-bold tracking-tight ${BUILDUP_STYLES[peBuildup.classification] || 'text-terminal-muted'}`}
+                            className={`inline-flex min-w-[26px] shrink-0 items-center justify-center rounded-md px-1.5 py-0.5 text-[9px] sm:text-[10px] leading-none font-extrabold tracking-wide shadow-sm ${BUILDUP_STYLES[peBuildup.classification] || 'text-terminal-muted'}`}
                           >
                             {BUILDUP_CODES[peBuildup.classification]}
                           </span>
