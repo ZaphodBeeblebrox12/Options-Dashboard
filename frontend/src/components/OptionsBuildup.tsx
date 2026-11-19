@@ -147,10 +147,14 @@ export const OptionsBuildup: React.FC<OptionsBuildupProps> = ({
       try {
         const params = new URLSearchParams({
           index: indexName,
-          date,
           interval,
         });
-        if (!liveMode && timestamp) params.set('timestamp', timestamp);
+        // In LIVE mode let the API choose the most recent persisted session.
+        // This keeps the panel useful after market close, on weekends and holidays.
+        if (!liveMode) {
+          params.set('date', date);
+          if (timestamp) params.set('timestamp', timestamp);
+        }
 
         const response = await fetch(`/api/options-buildup?${params.toString()}`, {
           signal: requestController.signal,
