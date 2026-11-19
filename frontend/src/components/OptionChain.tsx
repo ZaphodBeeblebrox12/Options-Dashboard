@@ -110,8 +110,8 @@ function buildupTooltip(side: BuildupSide | null, baseline?: string | null, curr
   const timeLabel = (value?: string | null) => value && value.length >= 16 ? value.slice(11, 19) : '—';
   return [
     side.classification,
-    `Premium ${signedMetric(side.premium_change, 2)} (${signedMetric(side.premium_change_pct, 2)}%)`,
-    `OI ${signedMetric(side.oi_change)} (${signedMetric(side.oi_change_pct, 2)}%)`,
+    `Premium ${signedMetric(side.premium_change, 2)} (${side.premium_change_pct == null ? '—' : `${signedMetric(side.premium_change_pct, 2)}%`})`,
+    `OI ${signedMetric(side.oi_change)} (${side.oi_change_pct == null ? '—' : `${signedMetric(side.oi_change_pct, 2)}%`})`,
     `Volume ${signedMetric(side.volume_change)}`,
     `${timeLabel(baseline)} → ${timeLabel(current)}`,
   ].join(' · ');
