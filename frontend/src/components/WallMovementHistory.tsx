@@ -90,6 +90,14 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
   const [hoverPosition, setHoverPosition] = useState<{ x: number; y: number } | null>(null);
   const chartWrapRef = useRef<HTMLDivElement>(null);
 
+  // As the replay cursor moves, re-focus the latest wall change at or before
+  // that time. A manual event selection remains until the cursor changes again.
+  useEffect(() => {
+    setSelectedEventKey(null);
+    setHoveredEventKey(null);
+    setHoverPosition(null);
+  }, [asOfTimestamp]);
+
   const requestKey = `${date}|${indexName}`;
 
   useEffect(() => {
@@ -518,11 +526,11 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
                     <line x1={chart.replayX} x2={chart.replayX}
                       y1={chart.top} y2={chart.height - chart.bottom}
                       stroke="#FBBF24" strokeWidth="2.5" strokeDasharray="5 4" />
-                    <rect x={Math.max(chart.left, Math.min(chart.replayX - 43, chart.width - chart.right - 86))}
-                      y={4} width="86" height="16" rx="3" fill="#78350F" />
-                    <text x={Math.max(chart.left, Math.min(chart.replayX, chart.width - chart.right - 43))}
+                    <rect x={Math.max(chart.left, Math.min(chart.replayX - 54, chart.width - chart.right - 108))}
+                      y={4} width="108" height="16" rx="3" fill="#78350F" />
+                    <text x={Math.max(chart.left + 54, Math.min(chart.replayX, chart.width - chart.right - 54))}
                       y={15} fill="#FDE68A" fontSize="9" fontWeight="700" textAnchor="middle">
-                      REPLAY {timeLabel(cutoff)}
+                      REPLAY {timeLabel(cutoff, true)}
                     </text>
                   </g>
                 )}
