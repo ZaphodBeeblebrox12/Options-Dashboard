@@ -251,13 +251,19 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
 
   const handleChartPointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
     if (!chart || events.length === 0) return;
-    const svgRect = event.currentTarget.getBoundingClientRect();
-    if (!svgRect.width || !svgRect.height) return;
+    const svg = event.currentTarget;
+    const screenMatrix = svg.getScreenCTM();
+    if (!screenMatrix) return;
 
-    // Convert the pointer into the SVG viewBox coordinate system so the
-    // hit target remains accurate at every responsive chart width.
-    const pointerX = ((event.clientX - svgRect.left) / svgRect.width) * chart.width;
-    const pointerY = ((event.clientY - svgRect.top) / svgRect.height) * chart.height;
+    // Convert screen coordinates through the actual SVG transform. This
+    // remains correct when the responsive SVG preserves its viewBox ratio
+    // and leaves horizontal letterboxing at wider dashboard sizes.
+    const screenPoint = svg.createSVGPoint();
+    screenPoint.x = event.clientX;
+    screenPoint.y = event.clientY;
+    const chartPoint = screenPoint.matrixTransform(screenMatrix.inverse());
+    const pointerX = chartPoint.x;
+    const pointerY = chartPoint.y;
     if (pointerY < chart.top || pointerY > chart.height - chart.bottom) {
       setHoveredEventKey(null);
       setHoverPosition(null);
@@ -391,7 +397,7 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
               <div ref={chartWrapRef} className="relative">
                 <svg
                   viewBox={`0 0 ${chart.width} ${chart.height}`}
-                  className="block h-[250px] w-full overflow-visible"
+                  className="block h-[250px] w-full cursor-crosshair overflow-visible"
                   role="img"
                   aria-label="Step chart showing Call and Put open-interest wall strikes over time. Hover over a vertical event marker to inspect its timestamp and old and new wall strikes."
                   onPointerMove={handleChartPointerMove}
@@ -507,7 +513,7 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
                 No wall changes in this window.
               </div>
             ) : newestFirstEvents.map((event) => {
-              const selected = selectedEvent && eventKey(selectedEvent) === eventKey(event);
+              const selected = activeEvent && eventKey(activeEvent) === eventKey(event);
               const rising = event.to_strike > event.from_strike;
               return (
                 <button
