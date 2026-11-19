@@ -987,6 +987,114 @@ async def app_health():
     }
 
 
+# ── Intraday CE / PE OI-wall movement history ─────────────────────────
+# Wall changes are derived from persisted option-chain snapshots. The
+# timestamp is the first saved snapshot in which a new dominant OI strike
+# appears; it is not an exchange tick timestamp between snapshot writes.
+_WALL_HISTORY_CACHE: dict = {}
+_WALL_HISTORY_CACHE_TTL = 10.0
+
+
+def _load_wall_history_payload(date_str: str, index_name: str) -> dict:
+    """Return the strongest CE and PE OI strike at each saved snapshot.
+
+    ROW_NUMBER keeps this query to two result rows per market snapshot while
+    applying the same deterministic rule as wall_watch.calculate_wall_strikes:
+    largest OI wins, with ties resolved to the lower strike.
+    """
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            WITH ranked_walls AS (
+                SELECT
+                    s.timestamp AS timestamp,
+                    o.option_type AS side,
+                    o.strike AS strike,
+                    COALESCE(o.oi, 0) AS oi,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY s.id, o.option_type
+                        ORDER BY COALESCE(o.oi, 0) DESC, o.strike ASC
+                    ) AS wall_rank
+                FROM snapshots AS s
+                JOIN option_snapshots AS o
+                  ON o.snapshot_id = s.id
+                 AND o.index_name = s.index_name
+                WHERE s.index_name = ?
+                  AND date(s.timestamp) = ?
+                  AND o.option_type IN ('CE', 'PE')
+            )
+            SELECT timestamp, side, strike, oi
+            FROM ranked_walls
+            WHERE wall_rank = 1
+            ORDER BY timestamp ASC, side ASC
+            """,
+            (index_name, date_str),
+        ).fetchall()
+
+    by_timestamp: dict = {}
+    for row in rows:
+        timestamp = str(row["timestamp"])
+        point = by_timestamp.setdefault(timestamp, {
+            "timestamp": timestamp,
+            "ce_wall": None,
+            "ce_oi": None,
+            "pe_wall": None,
+            "pe_oi": None,
+        })
+        prefix = "ce" if row["side"] == "CE" else "pe"
+        point[f"{prefix}_wall"] = int(row["strike"]) if float(row["strike"]).is_integer() else float(row["strike"])
+        point[f"{prefix}_oi"] = int(row["oi"] or 0)
+
+    points = [by_timestamp[key] for key in sorted(by_timestamp)]
+    events = []
+    previous = {"CE": None, "PE": None}
+
+    for point in points:
+        for side, prefix in (("CE", "ce"), ("PE", "pe")):
+            strike = point[f"{prefix}_wall"]
+            oi = point[f"{prefix}_oi"]
+            if strike is None:
+                continue
+            prior = previous[side]
+            if prior is not None and prior["strike"] != strike:
+                events.append({
+                    "side": side,
+                    "timestamp": point["timestamp"],
+                    "from_strike": prior["strike"],
+                    "to_strike": strike,
+                    "from_oi": prior["oi"],
+                    "to_oi": oi,
+                })
+            previous[side] = {"strike": strike, "oi": oi}
+
+    return {
+        "date": date_str,
+        "index_name": index_name,
+        "points": points,
+        "events": events,
+    }
+
+
+@app.get("/api/wall-history")
+async def get_wall_history(
+    date_str: str = Query(..., alias="date"),
+    index: str = Query(default="NIFTY", description="Instrument name"),
+):
+    """Intraday wall levels and their first-recorded transition timestamps."""
+    index_name = index.strip().upper()
+    key = (date_str, index_name)
+    now = time.monotonic()
+    cached = _WALL_HISTORY_CACHE.get(key)
+    if cached and now - cached[0] < _WALL_HISTORY_CACHE_TTL:
+        return cached[1]
+
+    payload = await asyncio.to_thread(_load_wall_history_payload, date_str, index_name)
+    if len(_WALL_HISTORY_CACHE) > 64:
+        _WALL_HISTORY_CACHE.clear()
+    _WALL_HISTORY_CACHE[key] = (time.monotonic(), payload)
+    return payload
+
+
 @app.get("/api/snapshots")
 async def get_snapshots(
     date_str: str = Query(..., alias="date"),
