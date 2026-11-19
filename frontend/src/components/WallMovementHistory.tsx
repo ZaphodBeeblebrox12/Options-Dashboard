@@ -255,7 +255,12 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
         else path += ` H ${x} V ${y}`;
         previousValue = value;
       });
-      if (sourcePoints.length === 1 && previousValue != null) path += ` H ${width - right}`;
+      if (sourcePoints.length === 1 && previousValue != null) {
+        const endX = cutoff && sourcePoints !== points
+          ? Math.max(left, Math.min(xFor(cutoff), width - right))
+          : width - right;
+        path += ` H ${endX}`;
+      }
       return path;
     };
 
