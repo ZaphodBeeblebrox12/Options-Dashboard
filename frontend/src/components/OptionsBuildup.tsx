@@ -126,6 +126,9 @@ export const OptionsBuildup: React.FC<OptionsBuildupProps> = ({
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
+    // Do not poll while the compact panel is collapsed. Start fetching on open,
+    // and stop the live timer again when the user closes it.
+    if (!expanded) return;
     if (!indexName || !date) {
       setPayload(null);
       return;
@@ -169,7 +172,7 @@ export const OptionsBuildup: React.FC<OptionsBuildupProps> = ({
       controller?.abort();
       if (poll !== null) window.clearInterval(poll);
     };
-  }, [indexName, date, timestamp, liveMode, interval]);
+  }, [indexName, date, timestamp, liveMode, interval, expanded]);
 
   const visibleRows = useMemo(() => {
     const rows = payload?.rows ?? [];
@@ -223,7 +226,7 @@ export const OptionsBuildup: React.FC<OptionsBuildupProps> = ({
       <>
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-2 sm:px-3 py-1.5 text-[9px] font-mono text-terminal-muted">
         <span>
-          {liveMode ? 'LIVE SNAPSHOT' : 'REPLAY SNAPSHOT'}
+          {liveMode ? 'LIVE · SAVED SNAPSHOTS' : 'REPLAY SNAPSHOT'}
           {payload?.as_of_timestamp ? ` · AS OF ${formatTime(payload.as_of_timestamp)}` : ''}
           {payload?.baseline_timestamp ? ` · BASE ${formatTime(payload.baseline_timestamp)}` : ''}
         </span>
