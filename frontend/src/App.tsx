@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { AnalyticsHeader } from './components/AnalyticsHeader';
 import { MarketTimer } from './components/MarketTimer';
 import { BuildupCard } from './components/BuildupCard';
-import { OptionsBuildup } from './components/OptionsBuildup';
 import { OptionChain } from './components/OptionChain';
 import { WallMovementHistory } from './components/WallMovementHistory';
 import { ReplayControls } from './components/ReplayControls';
@@ -11,6 +10,8 @@ import { GexChart } from './components/GexChart';
 import { StrikeChart } from './components/StrikeChart';
 import { NetGexChart } from './components/NetGexChart';
 import { SettingsModal } from './components/SettingsModal';
+import { loadOptionChainColumns, saveOptionChainColumns, COMPACT_OPTION_CHAIN_COLUMNS, FULL_OPTION_CHAIN_COLUMNS } from './components/optionChainColumns';
+import type { OptionChainColumnVisibility } from './components/optionChainColumns';
 import { AlertHistoryPanel } from './components/AlertHistory';
 import { AlertToastContainer } from './components/AlertToast';
 import { useWebSocket } from './hooks/useWebSocket';
@@ -76,6 +77,7 @@ function App() {
   const [currentIndex, setCurrentIndex] = useState(-1);
   const [isPlaying, setIsPlaying] = useState(false);
   const [fullMode, setFullMode] = useState(persisted.fullMode ?? false);
+  const [columnVisibility, setColumnVisibility] = useState<OptionChainColumnVisibility>(() => loadOptionChainColumns(persisted.fullMode ?? false));
   const [selectedStrike, setSelectedStrike] = useState<number | null>(persisted.selectedStrike ?? null);
   const [liveMode, setLiveMode] = useState(initialLiveMode);
   const [marketOpenMap, setMarketOpenMap] = useState<Record<string, boolean>>({});
@@ -186,6 +188,8 @@ function App() {
     const t = setInterval(load, 60000);
     return () => { alive = false; clearInterval(t); };
   }, []);
+
+  useEffect(() => { saveOptionChainColumns(columnVisibility); }, [columnVisibility]);
 
   const saveableStateRef = useRef<PersistedState>({
     selectedIndex, selectedDate, currentTimestamp: null,
@@ -460,7 +464,11 @@ function App() {
     scrollRestoredRef.current = false;
   }, [liveMode]);
   const handleSelectStrike = useCallback((strike: number) => setSelectedStrike(strike), []);
-  const handleFullModeChange = useCallback((v: boolean) => setFullMode(v), []);
+  const handleFullModeChange = useCallback((v: boolean) => {
+    setFullMode(v);
+    setColumnVisibility(v ? { ...FULL_OPTION_CHAIN_COLUMNS } : { ...COMPACT_OPTION_CHAIN_COLUMNS });
+  }, []);
+  const handleColumnVisibilityChange = useCallback((next: OptionChainColumnVisibility) => setColumnVisibility(next), []);
   const toggleLiveMode = useCallback(() => {
     hasUserSelectedDateRef.current = false;
     setLiveMode((prev) => {
@@ -735,7 +743,8 @@ function App() {
         </ReplayPreviewProvider>
         <OptionChain
           options={normalizedOptions} spot={spot} maxPain={maxPain} gammaFlip={gammaFlip}
-          fullMode={fullMode} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike}
+          columnVisibility={columnVisibility} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike}
+          buildupDate={selectedDate} buildupTimestamp={!liveMode ? (currentTimestamp || undefined) : undefined}
           indexName={selectedIndex} timestamp={timestamp} historyDate={selectedDate} liveMode={liveMode} canArm={canArmWallWatch}
           isLoading={!liveMode && snapshotLoading}
           emptyTitle={!liveMode
@@ -753,15 +762,6 @@ function App() {
             : (!marketOpen
               ? 'Check snapshot history or select a date with available data.'
               : 'Check backend logs and the Angel One connection before changing credentials.')}
-        />
-        <OptionsBuildup
-          indexName={selectedIndex}
-          date={selectedDate}
-          timestamp={!liveMode ? (currentTimestamp || undefined) : undefined}
-          liveMode={liveMode}
-          spot={spot}
-          selectedStrike={selectedStrike}
-          onSelectStrike={handleSelectStrike}
         />
         <WallMovementHistory
           date={selectedDate}
@@ -784,6 +784,8 @@ function App() {
           onClose={() => setShowSettings(false)}
           fullMode={fullMode}
           onFullModeChange={handleFullModeChange}
+          columnVisibility={columnVisibility}
+          onColumnVisibilityChange={handleColumnVisibilityChange}
           onTestToast={handleTestToast}
         />
       )}
