@@ -1445,6 +1445,10 @@ def _classify_option_buildup(previous_ltp, current_ltp, previous_oi, current_oi)
     """
     if previous_ltp is None or current_ltp is None or previous_oi is None or current_oi is None:
         return "UNAVAILABLE"
+    # Zero/negative LTP is an unquoted or invalid contract reading, not a
+    # meaningful premium move. Never classify it as buildup.
+    if float(previous_ltp) <= 0 or float(current_ltp) <= 0:
+        return "UNAVAILABLE"
 
     premium_delta = float(current_ltp) - float(previous_ltp)
     oi_delta = int(current_oi) - int(previous_oi)
