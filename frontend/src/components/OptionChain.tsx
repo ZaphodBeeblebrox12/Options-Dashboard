@@ -778,7 +778,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                   } ${getGammaFlipClass(row.strike)}`}
                 >
                   {/* CE Side */}
-                  <div className="grid gap-0" style={sideGridStyle}>
+                  <div className={`grid gap-0 ${ceItm ? ITM_TINT_CLASS : ''}`} style={sideGridStyle}>
                     {columnVisibility.oiChange && (
                       <div className={`px-1 sm:px-2 py-1 text-right flex items-center justify-end gap-1 min-w-0 ${(ce?.oi_change ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                         <span className="truncate">{(ce?.oi_change ?? 0) > 0 ? '+' : ''}{fmt(ce?.oi_change)}</span>
@@ -838,7 +838,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                   </div>
 
                   {/* PE Side */}
-                  <div className="grid gap-0" style={sideGridStyle}>
+                  <div className={`grid gap-0 ${peItm ? ITM_TINT_CLASS : ''}`} style={sideGridStyle}>
                     {columnVisibility.oi && (
                       <div
                         className={`group/peoi relative px-1 sm:px-2 py-1 text-left flex items-center min-w-0 ${getPeOiClass(row.strike)}`}
