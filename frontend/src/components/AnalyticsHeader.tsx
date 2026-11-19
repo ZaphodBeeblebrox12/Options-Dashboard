@@ -43,7 +43,6 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
   maxPain,
   gammaFlip,
   timestamp,
-  isLive,
   isStale = false,
   isFetching,
   children,
@@ -105,11 +104,6 @@ export const AnalyticsHeader: React.FC<AnalyticsHeaderProps> = ({
             >
               <WifiOff className="w-3 h-3" />
               STALE
-            </span>
-          ) : isLive ? (
-            <span className="flex items-center gap-1 text-[10px] font-mono text-terminal-pe">
-              <span className="w-1.5 h-1.5 rounded-full bg-terminal-pe animate-pulse" />
-              LIVE
             </span>
           ) : null}
           {isFetching && (
