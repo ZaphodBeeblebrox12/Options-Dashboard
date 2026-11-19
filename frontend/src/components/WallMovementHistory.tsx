@@ -89,6 +89,8 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
   const [hoveredEventKey, setHoveredEventKey] = useState<string | null>(null);
   const [hoverPosition, setHoverPosition] = useState<{ x: number; y: number } | null>(null);
   const chartWrapRef = useRef<HTMLDivElement>(null);
+  const eventListRef = useRef<HTMLDivElement>(null);
+  const eventRowRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
 
   // As the replay cursor moves, re-focus the latest wall change at or before
   // that time. A manual event selection remains until the cursor changes again.
@@ -303,6 +305,31 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
     ? events.find((event) => eventKey(event) === hoveredEventKey) ?? null
     : null;
   const activeEvent = hoveredEvent ?? selectedEvent;
+  const activeEventKey = activeEvent ? eventKey(activeEvent) : null;
+
+  // Keep the active change visible inside the event panel. Scroll only its
+  // own list viewport, not the page or the full dashboard.
+  useEffect(() => {
+    if (!activeEventKey) return;
+    const container = eventListRef.current;
+    const row = eventRowRefs.current.get(activeEventKey);
+    if (!container || !row) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    const fullyVisible =
+      rowRect.top >= containerRect.top + 4 &&
+      rowRect.bottom <= containerRect.bottom - 4;
+
+    if (!fullyVisible) {
+      const rowTop = container.scrollTop + rowRect.top - containerRect.top;
+      const centeredTop = rowTop - (container.clientHeight - rowRect.height) / 2;
+      container.scrollTo({
+        top: Math.max(0, centeredTop),
+        behavior: 'smooth',
+      });
+    }
+  }, [activeEventKey, events]);
 
   const handleChartPointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
     if (!chart || events.length === 0) return;
@@ -605,7 +632,7 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
             </div>
             <Clock3 className="h-4 w-4 text-terminal-muted" />
           </div>
-          <div className="max-h-[272px] overflow-y-auto px-2 py-1">
+          <div ref={eventListRef} className="max-h-[272px] overflow-y-auto px-2 py-1">
             {newestFirstEvents.length === 0 ? (
               <div className="flex min-h-[115px] items-center justify-center px-3 text-center text-[11px] font-mono text-terminal-muted">
                 No wall changes in this window.
@@ -617,6 +644,11 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
               return (
                 <button
                   key={eventKey(event)}
+                  ref={(node) => {
+                    const key = eventKey(event);
+                    if (node) eventRowRefs.current.set(key, node);
+                    else eventRowRefs.current.delete(key);
+                  }}
                   type="button"
                   onClick={() => setSelectedEventKey(eventKey(event))}
                   onMouseEnter={() => setHoveredEventKey(eventKey(event))}
