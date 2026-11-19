@@ -151,7 +151,8 @@ All endpoints accept an `?index=NIFTY|SENSEX` parameter (defaults to NIFTY).
 - **Strike Selection**: Click any strike to see LTP/OI/Gamma history
 - **Visual Highlights**: ATM (yellow/cyan/magenta), Max OI #1-3 (red/green), Max Pain, Gamma Flip
 - **GEX Analytics**: Net GEX, GEX by strike chart, GEX time-series
-- **Options Buildup**: Strike-level CE/PE classification using premium and OI changes, with interval selection and replay support
+- **Dual Options Buildup Views**: Compact CE/PE buildup codes inside the OI-change cells plus a full comparison panel below the chain. Each view has an independent interval selector and replay-aware comparisons
+- **Custom Option Chain Columns**: Hide or show OI change, volume, LTP, OI, IV, delta, and gamma independently; preferences persist in the browser
 - **Max Pain Engine**: Recalculated per snapshot
 - **Gamma Flip**: Zero-crossing of cumulative gamma
 

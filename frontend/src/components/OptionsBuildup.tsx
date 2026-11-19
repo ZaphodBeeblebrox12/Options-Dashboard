@@ -123,7 +123,7 @@ export const OptionsBuildup: React.FC<OptionsBuildupProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
 
   useEffect(() => {
     // Do not poll while the compact panel is collapsed. Start fetching on open,

@@ -6,6 +6,7 @@ import { ConnectionsTab } from './ConnectionsTab';
 import { AnalyticsTab } from './AnalyticsTab';
 import { DisplayTab } from './DisplayTab';
 import { SettingsSwitch } from './SettingsSwitch';
+import type { OptionChainColumnVisibility } from './optionChainColumns';
 import './settings-typography.css';
 
 type Tab = 'stocks' | 'alerts' | 'analytics' | 'display' | 'connections';
@@ -15,6 +16,8 @@ interface SettingsModalProps {
   fullMode: boolean;
   onFullModeChange: (v: boolean) => void;
   onTestToast: () => void;
+  columnVisibility: OptionChainColumnVisibility;
+  onColumnVisibilityChange: (next: OptionChainColumnVisibility) => void;
 }
 
 const CONFIGURE_TABS: { id: Tab; label: string; icon: string }[] = [
@@ -27,7 +30,7 @@ const MONITOR_TABS: { id: Tab; label: string; icon: string }[] = [
   { id: 'connections', label: 'Connections', icon: '🔌' },
 ];
 
-export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, fullMode, onFullModeChange, onTestToast }) => {
+export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, fullMode, onFullModeChange, onTestToast, columnVisibility, onColumnVisibilityChange }) => {
   const [tab, setTab] = useState<Tab>('stocks');
   const [armed, setArmed] = useState(true);
   const [scope, setScope] = useState<'viewed' | 'all'>('viewed');
@@ -164,7 +167,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, fullMode,
       case 'analytics':
         return <AnalyticsTab onSaved={flashSaved} />;
       case 'display':
-        return <DisplayTab fullMode={fullMode} onFullModeChange={onFullModeChange} />;
+        return <DisplayTab fullMode={fullMode} onFullModeChange={onFullModeChange} columnVisibility={columnVisibility} onColumnVisibilityChange={onColumnVisibilityChange} />;
       case 'connections':
         return <ConnectionsTab />;
     }

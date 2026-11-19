@@ -2,6 +2,7 @@ import React, { useMemo, useRef, useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom';
 import { AlertTriangle, ArrowDown, ArrowUp, Bell, BellRing, Loader2 } from 'lucide-react';
 import { ScreenshotButton } from './ScreenshotButton';
+import { COMPACT_OPTION_CHAIN_COLUMNS, type OptionChainColumnVisibility } from './optionChainColumns';
 
 interface OptionData {
   strike: number;
@@ -47,12 +48,83 @@ interface WallHoverState {
   top: number;
 }
 
+type BuildupInterval = '5m' | '15m' | '30m' | '1h' | 'session';
+
+interface BuildupSide {
+  classification: string;
+  bias: 'BULLISH' | 'BEARISH' | null;
+  premium_change: number | null;
+  premium_change_pct: number | null;
+  oi_change: number | null;
+  oi_change_pct: number | null;
+  volume_change: number | null;
+}
+
+interface BuildupPayload {
+  ready: boolean;
+  reason?: string;
+  index_name: string;
+  date: string | null;
+  interval: BuildupInterval;
+  as_of_timestamp?: string;
+  baseline_timestamp?: string | null;
+  rows: Array<{ strike: number; CE: BuildupSide | null; PE: BuildupSide | null }>;
+}
+
+const BUILDUP_INTERVALS: Array<{ value: BuildupInterval; label: string }> = [
+  { value: '5m', label: '5m' },
+  { value: '15m', label: '15m' },
+  { value: '30m', label: '30m' },
+  { value: '1h', label: '1H' },
+  { value: 'session', label: 'Session' },
+];
+
+const BUILDUP_CODES: Record<string, string> = {
+  'LONG BUILDUP': 'LB',
+  'SHORT BUILDUP': 'SB',
+  'SHORT COVERING': 'SC',
+  'LONG UNWINDING': 'LU',
+  'MIXED': 'MX',
+  'NO CHANGE': '—',
+};
+
+const BUILDUP_STYLES: Record<string, string> = {
+  'LONG BUILDUP': 'text-emerald-300',
+  'SHORT BUILDUP': 'text-red-300',
+  'SHORT COVERING': 'text-cyan-300',
+  'LONG UNWINDING': 'text-amber-300',
+  'MIXED': 'text-terminal-muted',
+  'NO CHANGE': 'text-terminal-muted/50',
+};
+
+function signedMetric(value: number | null | undefined, digits = 0): string {
+  if (value == null || !Number.isFinite(value)) return '—';
+  return `${value > 0 ? '+' : ''}${value.toLocaleString('en-IN', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })}`;
+}
+
+function buildupTooltip(side: BuildupSide | null, baseline?: string | null, current?: string): string {
+  if (!side) return 'No matching contract in comparison snapshot';
+  const timeLabel = (value?: string | null) => value && value.length >= 16 ? value.slice(11, 19) : '—';
+  return [
+    side.classification,
+    `Premium ${signedMetric(side.premium_change, 2)} (${side.premium_change_pct == null ? '—' : `${signedMetric(side.premium_change_pct, 2)}%`})`,
+    `OI ${signedMetric(side.oi_change)} (${side.oi_change_pct == null ? '—' : `${signedMetric(side.oi_change_pct, 2)}%`})`,
+    `Volume ${signedMetric(side.volume_change)}`,
+    `${timeLabel(baseline)} → ${timeLabel(current)}`,
+  ].join(' · ');
+}
+
 interface OptionChainProps {
   options: OptionData[];
   spot: number | null;
   maxPain: number | null;
   gammaFlip: number | null;
-  fullMode: boolean;
+  columnVisibility?: OptionChainColumnVisibility;
+  buildupDate?: string;
+  buildupTimestamp?: string;
   selectedStrike: number | null;
   onSelectStrike: (strike: number) => void;
   indexName?: string;
@@ -83,7 +155,9 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   options,
   spot,
   gammaFlip,
-  fullMode,
+  columnVisibility = COMPACT_OPTION_CHAIN_COLUMNS,
+  buildupDate = '',
+  buildupTimestamp,
   selectedStrike,
   onSelectStrike,
   indexName = 'INDEX',
@@ -107,6 +181,10 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   const [wallHistory, setWallHistory] = useState<WallHistoryPayload | null>(null);
   const [wallHistoryError, setWallHistoryError] = useState(false);
   const [wallHover, setWallHover] = useState<WallHoverState | null>(null);
+  const [buildupInterval, setBuildupInterval] = useState<BuildupInterval>('15m');
+  const [buildupPayload, setBuildupPayload] = useState<BuildupPayload | null>(null);
+  const [buildupError, setBuildupError] = useState<string | null>(null);
+  const showBuildup = columnVisibility.buildup && columnVisibility.oiChange;
 
   const effectiveHistoryDate = historyDate || timestamp?.slice(0, 10) || '';
 
@@ -146,6 +224,51 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
       if (poll != null) window.clearInterval(poll);
     };
   }, [effectiveHistoryDate, indexName, liveMode]);
+
+  useEffect(() => {
+    if (!showBuildup || !indexName) {
+      setBuildupPayload(null);
+      setBuildupError(null);
+      return;
+    }
+
+    let alive = true;
+    let controller: AbortController | null = null;
+    setBuildupPayload(null);
+    setBuildupError(null);
+
+    const load = async () => {
+      controller?.abort();
+      const requestController = new AbortController();
+      controller = requestController;
+      try {
+        const params = new URLSearchParams({ index: indexName, interval: buildupInterval });
+        if (!liveMode) {
+          if (buildupDate) params.set('date', buildupDate);
+          if (buildupTimestamp) params.set('timestamp', buildupTimestamp);
+        }
+        const response = await fetch(`/api/options-buildup?${params.toString()}`, {
+          signal: requestController.signal,
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.detail || `Buildup request failed (HTTP ${response.status})`);
+        if (!alive) return;
+        setBuildupPayload(body as BuildupPayload);
+        setBuildupError(null);
+      } catch (error) {
+        if (!alive || (error instanceof Error && error.name === 'AbortError')) return;
+        setBuildupError(error instanceof Error ? error.message : 'Unable to load buildup');
+      }
+    };
+
+    void load();
+    const poll = liveMode ? window.setInterval(() => void load(), 30000) : null;
+    return () => {
+      alive = false;
+      controller?.abort();
+      if (poll !== null) window.clearInterval(poll);
+    };
+  }, [indexName, liveMode, buildupDate, buildupTimestamp, buildupInterval, showBuildup]);
 
   const refreshWallWatches = useCallback(async () => {
     try {
@@ -345,6 +468,23 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     });
   }, [atmSpot]);
 
+  const buildupByStrike = useMemo(() => {
+    const map = new Map<number, { CE: BuildupSide | null; PE: BuildupSide | null }>();
+    for (const row of buildupPayload?.rows ?? []) map.set(row.strike, { CE: row.CE, PE: row.PE });
+    return map;
+  }, [buildupPayload]);
+
+  const visibleColumnCount = [
+    columnVisibility.oiChange,
+    columnVisibility.volume,
+    columnVisibility.ltp,
+    columnVisibility.iv,
+    columnVisibility.delta,
+    columnVisibility.gamma,
+    columnVisibility.oi,
+  ].filter(Boolean).length;
+  const sideGridStyle = { gridTemplateColumns: `repeat(${Math.max(1, visibleColumnCount)}, minmax(0, 1fr))` };
+
   const fmt = (n: number | undefined | null, digits = 0) => {
     if (n === undefined || n === null) return '—';
     if (digits === 0) return n.toLocaleString('en-IN');
@@ -440,7 +580,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     );
   }
 
-  const totalMinWidth = fullMode ? 'min-w-[900px]' : 'min-w-[680px]';
+  const totalMinWidth = visibleColumnCount >= 7 ? 'min-w-[900px]' : visibleColumnCount >= 5 ? 'min-w-[760px]' : 'min-w-[680px]';
 
   return (
     <div className="terminal-panel overflow-hidden" ref={panelRef}>
@@ -499,6 +639,27 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
               <span className="w-3 h-3 rounded bg-cyan-500/40" />
               <span className="text-terminal-muted">ATM Fut</span>
             </div>
+            {showBuildup && (
+              <div className="flex items-center gap-1" title={buildupError || buildupPayload?.reason || 'Premium and OI movement classification. Hover the LB/SB/SC/LU code for details.'}>
+                <span className="text-terminal-muted mr-0.5">Build</span>
+                {BUILDUP_INTERVALS.map((item) => (
+                  <button
+                    key={item.value}
+                    type="button"
+                    onClick={() => setBuildupInterval(item.value)}
+                    aria-pressed={buildupInterval === item.value}
+                    className={`px-1.5 py-0.5 rounded border text-[9px] font-mono transition-colors ${
+                      buildupInterval === item.value
+                        ? 'border-terminal-atm/40 bg-terminal-atm/10 text-terminal-atm'
+                        : 'border-terminal-border/60 text-terminal-muted hover:text-terminal-text hover:bg-white/5'
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+                {buildupError && <span className="text-amber-300 text-[9px]" title={buildupError}>!</span>}
+              </div>
+            )}
             <button
               type="button"
               onClick={() => setStrikeOrder(order => order === 'asc' ? 'desc' : 'asc')}
@@ -566,22 +727,26 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
           {/* Sticky Header */}
           <div className="sticky top-0 z-10 grid grid-cols-[1fr_64px_1fr] sm:grid-cols-[1fr_80px_1fr] gap-0 text-[9px] sm:text-[10px] font-mono text-terminal-muted border-b border-terminal-border bg-terminal-bg/95 backdrop-blur-sm">
             {/* CE Header */}
-            <div className="grid" style={{ gridTemplateColumns: fullMode ? 'repeat(7, 1fr)' : 'repeat(4, 1fr)' }}>
-              <div className="px-1 sm:px-2 py-1.5 text-center">Chg</div>
-              <div className="px-1 sm:px-2 py-1.5 text-center">Vol</div>
-              <div className="px-1 sm:px-2 py-1.5 text-center">LTP</div>
-              {fullMode && <><div className="px-1 sm:px-2 py-1.5 text-center">IV</div><div className="px-1 sm:px-2 py-1.5 text-center">Δ</div><div className="px-1 sm:px-2 py-1.5 text-center">Γ</div></>}
-              <div className="px-1 sm:px-2 py-1.5 text-center">OI</div>
+            <div className="grid" style={sideGridStyle}>
+              {columnVisibility.oiChange && <div className="px-1 sm:px-2 py-1.5 text-center">Chg</div>}
+              {columnVisibility.volume && <div className="px-1 sm:px-2 py-1.5 text-center">Vol</div>}
+              {columnVisibility.ltp && <div className="px-1 sm:px-2 py-1.5 text-center">LTP</div>}
+              {columnVisibility.iv && <div className="px-1 sm:px-2 py-1.5 text-center">IV</div>}
+              {columnVisibility.delta && <div className="px-1 sm:px-2 py-1.5 text-center">Δ</div>}
+              {columnVisibility.gamma && <div className="px-1 sm:px-2 py-1.5 text-center">Γ</div>}
+              {columnVisibility.oi && <div className="px-1 sm:px-2 py-1.5 text-center">OI</div>}
             </div>
             {/* Strike Header */}
             <div className="px-1 sm:px-2 py-1.5 text-center font-bold">STRIKE</div>
             {/* PE Header */}
-            <div className="grid" style={{ gridTemplateColumns: fullMode ? 'repeat(7, 1fr)' : 'repeat(4, 1fr)' }}>
-              <div className="px-1 sm:px-2 py-1.5 text-center">OI</div>
-              <div className="px-1 sm:px-2 py-1.5 text-center">LTP</div>
-              <div className="px-1 sm:px-2 py-1.5 text-center">Vol</div>
-              <div className="px-1 sm:px-2 py-1.5 text-center">Chg</div>
-              {fullMode && <><div className="px-1 sm:px-2 py-1.5 text-center">Γ</div><div className="px-1 sm:px-2 py-1.5 text-center">Δ</div><div className="px-1 sm:px-2 py-1.5 text-center">IV</div></>}
+            <div className="grid" style={sideGridStyle}>
+              {columnVisibility.oi && <div className="px-1 sm:px-2 py-1.5 text-center">OI</div>}
+              {columnVisibility.ltp && <div className="px-1 sm:px-2 py-1.5 text-center">LTP</div>}
+              {columnVisibility.volume && <div className="px-1 sm:px-2 py-1.5 text-center">Vol</div>}
+              {columnVisibility.oiChange && <div className="px-1 sm:px-2 py-1.5 text-center">Chg</div>}
+              {columnVisibility.gamma && <div className="px-1 sm:px-2 py-1.5 text-center">Γ</div>}
+              {columnVisibility.delta && <div className="px-1 sm:px-2 py-1.5 text-center">Δ</div>}
+              {columnVisibility.iv && <div className="px-1 sm:px-2 py-1.5 text-center">IV</div>}
             </div>
           </div>
 
@@ -596,6 +761,9 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
               const isSelected = row.strike === selectedStrike;
               const ceRank = ceOiRanks[row.strike];
               const peRank = peOiRanks[row.strike];
+              const buildup = buildupByStrike.get(row.strike);
+              const ceBuildup = buildup?.CE ?? null;
+              const peBuildup = buildup?.PE ?? null;
               // FIX (ITM tint): CE is ITM below spot, PE is ITM above spot.
               const ceItm = spot != null && row.strike < spot;
               const peItm = spot != null && row.strike > spot;
@@ -610,50 +778,58 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                   } ${getGammaFlipClass(row.strike)}`}
                 >
                   {/* CE Side */}
-                  <div className={`grid ${fullMode ? 'grid-cols-7' : 'grid-cols-4'} gap-0 ${ceItm ? ITM_TINT_CLASS : ''}`}>
-                    <div className={`px-1 sm:px-2 py-1 text-right ${(ce?.oi_change ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      {(ce?.oi_change ?? 0) > 0 ? '+' : ''}{fmt(ce?.oi_change)}
-                    </div>
-                    <div className="px-1 sm:px-2 py-1 text-right text-terminal-muted">{fmt(ce?.volume)}</div>
-                    <div className="px-1 sm:px-2 py-1 text-right text-terminal-ce font-semibold">{fmt(ce?.ltp, 2)}</div>
-                    {fullMode && (
-                      <>
-                        <div className="px-1 sm:px-2 py-1 text-right text-terminal-muted">{fmt(ce?.iv, 1)}</div>
-                        <div className="px-1 sm:px-2 py-1 text-right text-terminal-muted">{fmt(ce?.delta, 3)}</div>
-                        <div className="px-1 sm:px-2 py-1 text-right text-terminal-muted">{fmt(ce?.gamma, 4)}</div>
-                      </>
+                  <div className={`grid gap-0 ${ceItm ? ITM_TINT_CLASS : ''}`} style={sideGridStyle}>
+                    {columnVisibility.oiChange && (
+                      <div className={`px-1 sm:px-2 py-1 text-right flex items-center justify-end gap-1 min-w-0 ${(ce?.oi_change ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        <span className="truncate">{(ce?.oi_change ?? 0) > 0 ? '+' : ''}{fmt(ce?.oi_change)}</span>
+                        {showBuildup && ceBuildup && BUILDUP_CODES[ceBuildup.classification] && BUILDUP_CODES[ceBuildup.classification] !== '—' && (
+                          <span
+                            title={buildupTooltip(ceBuildup, buildupPayload?.baseline_timestamp, buildupPayload?.as_of_timestamp)}
+                            className={`shrink-0 text-[8px] font-bold tracking-tight ${BUILDUP_STYLES[ceBuildup.classification] || 'text-terminal-muted'}`}
+                          >
+                            {BUILDUP_CODES[ceBuildup.classification]}
+                          </span>
+                        )}
+                      </div>
                     )}
-                    <div
-                      className={`group/ceoi relative px-1 sm:px-2 py-1 text-right flex items-center justify-end ${getCeOiClass(row.strike)}`}
-                      onMouseEnter={currentWalls.CE === row.strike ? (event) => showWallHover('CE', row.strike, event.currentTarget) : undefined}
-                      onMouseLeave={currentWalls.CE === row.strike ? hideWallHover : undefined}
-                      onFocus={currentWalls.CE === row.strike ? (event) => showWallHover('CE', row.strike, event.currentTarget) : undefined}
-                      onBlur={currentWalls.CE === row.strike ? hideWallHover : undefined}
-                      tabIndex={currentWalls.CE === row.strike ? 0 : undefined}
-                      aria-label={currentWalls.CE === row.strike ? `Call wall at ${fmt(row.strike)}. Hover or focus to view its last movement.` : undefined}
-                    >
-                      <OiRankBadge rank={ceRank} />
-                      {currentWalls.CE === row.strike && (
-                        <button
-                          type="button"
-                          onClick={(event) => void toggleWallWatch('CE', event)}
-                          disabled={watchBusy === 'CE' || (!wallWatches.CE?.armed && !canArm)}
-                          title={wallWatches.CE?.armed
-                            ? `Disarm Call Wall watch at ${fmt(wallWatches.CE.watched_strike)}`
-                            : canArm ? `Arm Call Wall watch at ${fmt(row.strike)}` : 'Wall watch requires a connected, non-stale live feed'}
-                          aria-label={wallWatches.CE?.armed ? 'Disarm Call Wall alert' : 'Arm Call Wall alert'}
-                          aria-busy={watchBusy === 'CE'}
-                          className={`relative z-10 ml-0.5 inline-flex h-5 w-5 shrink-0 pointer-events-auto items-center justify-center rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${wallWatches.CE?.armed ? 'text-amber-200 bg-amber-500/20 hover:bg-amber-500/30' : 'text-terminal-muted hover:text-amber-300 hover:bg-amber-500/10'} disabled:cursor-not-allowed disabled:opacity-40`}
-                        >
-                          {watchBusy === 'CE'
-                            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            : wallWatches.CE?.armed
-                              ? <BellRing className="h-3.5 w-3.5" />
-                              : <Bell className="h-3.5 w-3.5" />}
-                        </button>
-                      )}
-                      <span className="ml-0.5">{fmt(ce?.oi)}</span>
-                    </div>
+                    {columnVisibility.volume && <div className="px-1 sm:px-2 py-1 text-right text-terminal-muted">{fmt(ce?.volume)}</div>}
+                    {columnVisibility.ltp && <div className="px-1 sm:px-2 py-1 text-right text-terminal-ce font-semibold">{fmt(ce?.ltp, 2)}</div>}
+                    {columnVisibility.iv && <div className="px-1 sm:px-2 py-1 text-right text-terminal-muted">{fmt(ce?.iv, 1)}</div>}
+                    {columnVisibility.delta && <div className="px-1 sm:px-2 py-1 text-right text-terminal-muted">{fmt(ce?.delta, 3)}</div>}
+                    {columnVisibility.gamma && <div className="px-1 sm:px-2 py-1 text-right text-terminal-muted">{fmt(ce?.gamma, 4)}</div>}
+                    {columnVisibility.oi && (
+                      <div
+                        className={`group/ceoi relative px-1 sm:px-2 py-1 text-right flex items-center justify-end min-w-0 ${getCeOiClass(row.strike)}`}
+                        onMouseEnter={currentWalls.CE === row.strike ? (event) => showWallHover('CE', row.strike, event.currentTarget) : undefined}
+                        onMouseLeave={currentWalls.CE === row.strike ? hideWallHover : undefined}
+                        onFocus={currentWalls.CE === row.strike ? (event) => showWallHover('CE', row.strike, event.currentTarget) : undefined}
+                        onBlur={currentWalls.CE === row.strike ? hideWallHover : undefined}
+                        tabIndex={currentWalls.CE === row.strike ? 0 : undefined}
+                        aria-label={currentWalls.CE === row.strike ? `Call wall at ${fmt(row.strike)}. Hover or focus to view its last movement.` : undefined}
+                      >
+                        <OiRankBadge rank={ceRank} />
+                        {currentWalls.CE === row.strike && (
+                          <button
+                            type="button"
+                            onClick={(event) => void toggleWallWatch('CE', event)}
+                            disabled={watchBusy === 'CE' || (!wallWatches.CE?.armed && !canArm)}
+                            title={wallWatches.CE?.armed
+                              ? `Disarm Call Wall watch at ${fmt(wallWatches.CE.watched_strike)}`
+                              : canArm ? `Arm Call Wall watch at ${fmt(row.strike)}` : 'Wall watch requires a connected, non-stale live feed'}
+                            aria-label={wallWatches.CE?.armed ? 'Disarm Call Wall alert' : 'Arm Call Wall alert'}
+                            aria-busy={watchBusy === 'CE'}
+                            className={`relative z-10 ml-0.5 inline-flex h-5 w-5 shrink-0 pointer-events-auto items-center justify-center rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${wallWatches.CE?.armed ? 'text-amber-200 bg-amber-500/20 hover:bg-amber-500/30' : 'text-terminal-muted hover:text-amber-300 hover:bg-amber-500/10'} disabled:cursor-not-allowed disabled:opacity-40`}
+                          >
+                            {watchBusy === 'CE'
+                              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              : wallWatches.CE?.armed
+                                ? <BellRing className="h-3.5 w-3.5" />
+                                : <Bell className="h-3.5 w-3.5" />}
+                          </button>
+                        )}
+                        <span className="ml-0.5">{fmt(ce?.oi)}</span>
+                      </div>
+                    )}
                   </div>
 
                   {/* Strike */}
@@ -662,50 +838,58 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                   </div>
 
                   {/* PE Side */}
-                  <div className={`grid ${fullMode ? 'grid-cols-7' : 'grid-cols-4'} gap-0 ${peItm ? ITM_TINT_CLASS : ''}`}>
-                    <div
-                      className={`group/peoi relative px-1 sm:px-2 py-1 text-left flex items-center ${getPeOiClass(row.strike)}`}
-                      onMouseEnter={currentWalls.PE === row.strike ? (event) => showWallHover('PE', row.strike, event.currentTarget) : undefined}
-                      onMouseLeave={currentWalls.PE === row.strike ? hideWallHover : undefined}
-                      onFocus={currentWalls.PE === row.strike ? (event) => showWallHover('PE', row.strike, event.currentTarget) : undefined}
-                      onBlur={currentWalls.PE === row.strike ? hideWallHover : undefined}
-                      tabIndex={currentWalls.PE === row.strike ? 0 : undefined}
-                      aria-label={currentWalls.PE === row.strike ? `Put wall at ${fmt(row.strike)}. Hover or focus to view its last movement.` : undefined}
-                    >
-                      <PeOiRankBadge rank={peRank} />
-                      {currentWalls.PE === row.strike && (
-                        <button
-                          type="button"
-                          onClick={(event) => void toggleWallWatch('PE', event)}
-                          disabled={watchBusy === 'PE' || (!wallWatches.PE?.armed && !canArm)}
-                          title={wallWatches.PE?.armed
-                            ? `Disarm Put Wall watch at ${fmt(wallWatches.PE.watched_strike)}`
-                            : canArm ? `Arm Put Wall watch at ${fmt(row.strike)}` : 'Wall watch requires a connected, non-stale live feed'}
-                          aria-label={wallWatches.PE?.armed ? 'Disarm Put Wall alert' : 'Arm Put Wall alert'}
-                          aria-busy={watchBusy === 'PE'}
-                          className={`relative z-10 ml-0.5 inline-flex h-5 w-5 shrink-0 pointer-events-auto items-center justify-center rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${wallWatches.PE?.armed ? 'text-amber-200 bg-amber-500/20 hover:bg-amber-500/30' : 'text-terminal-muted hover:text-amber-300 hover:bg-amber-500/10'} disabled:cursor-not-allowed disabled:opacity-40`}
-                        >
-                          {watchBusy === 'PE'
-                            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            : wallWatches.PE?.armed
-                              ? <BellRing className="h-3.5 w-3.5" />
-                              : <Bell className="h-3.5 w-3.5" />}
-                        </button>
-                      )}
-                      <span className="ml-0.5">{fmt(pe?.oi)}</span>
-                    </div>
-                    <div className="px-1 sm:px-2 py-1 text-left text-terminal-pe font-semibold">{fmt(pe?.ltp, 2)}</div>
-                    <div className="px-1 sm:px-2 py-1 text-left text-terminal-muted">{fmt(pe?.volume)}</div>
-                    <div className={`px-1 sm:px-2 py-1 text-left ${(pe?.oi_change ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      {(pe?.oi_change ?? 0) > 0 ? '+' : ''}{fmt(pe?.oi_change)}
-                    </div>
-                    {fullMode && (
-                      <>
-                        <div className="px-1 sm:px-2 py-1 text-left text-terminal-muted">{fmt(pe?.gamma, 4)}</div>
-                        <div className="px-1 sm:px-2 py-1 text-left text-terminal-muted">{fmt(pe?.delta, 3)}</div>
-                        <div className="px-1 sm:px-2 py-1 text-left text-terminal-muted">{fmt(pe?.iv, 1)}</div>
-                      </>
+                  <div className={`grid gap-0 ${peItm ? ITM_TINT_CLASS : ''}`} style={sideGridStyle}>
+                    {columnVisibility.oi && (
+                      <div
+                        className={`group/peoi relative px-1 sm:px-2 py-1 text-left flex items-center min-w-0 ${getPeOiClass(row.strike)}`}
+                        onMouseEnter={currentWalls.PE === row.strike ? (event) => showWallHover('PE', row.strike, event.currentTarget) : undefined}
+                        onMouseLeave={currentWalls.PE === row.strike ? hideWallHover : undefined}
+                        onFocus={currentWalls.PE === row.strike ? (event) => showWallHover('PE', row.strike, event.currentTarget) : undefined}
+                        onBlur={currentWalls.PE === row.strike ? hideWallHover : undefined}
+                        tabIndex={currentWalls.PE === row.strike ? 0 : undefined}
+                        aria-label={currentWalls.PE === row.strike ? `Put wall at ${fmt(row.strike)}. Hover or focus to view its last movement.` : undefined}
+                      >
+                        <PeOiRankBadge rank={peRank} />
+                        {currentWalls.PE === row.strike && (
+                          <button
+                            type="button"
+                            onClick={(event) => void toggleWallWatch('PE', event)}
+                            disabled={watchBusy === 'PE' || (!wallWatches.PE?.armed && !canArm)}
+                            title={wallWatches.PE?.armed
+                              ? `Disarm Put Wall watch at ${fmt(wallWatches.PE.watched_strike)}`
+                              : canArm ? `Arm Put Wall watch at ${fmt(row.strike)}` : 'Wall watch requires a connected, non-stale live feed'}
+                            aria-label={wallWatches.PE?.armed ? 'Disarm Put Wall alert' : 'Arm Put Wall alert'}
+                            aria-busy={watchBusy === 'PE'}
+                            className={`relative z-10 ml-0.5 inline-flex h-5 w-5 shrink-0 pointer-events-auto items-center justify-center rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${wallWatches.PE?.armed ? 'text-amber-200 bg-amber-500/20 hover:bg-amber-500/30' : 'text-terminal-muted hover:text-amber-300 hover:bg-amber-500/10'} disabled:cursor-not-allowed disabled:opacity-40`}
+                          >
+                            {watchBusy === 'PE'
+                              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              : wallWatches.PE?.armed
+                                ? <BellRing className="h-3.5 w-3.5" />
+                                : <Bell className="h-3.5 w-3.5" />}
+                          </button>
+                        )}
+                        <span className="ml-0.5">{fmt(pe?.oi)}</span>
+                      </div>
                     )}
+                    {columnVisibility.ltp && <div className="px-1 sm:px-2 py-1 text-left text-terminal-pe font-semibold">{fmt(pe?.ltp, 2)}</div>}
+                    {columnVisibility.volume && <div className="px-1 sm:px-2 py-1 text-left text-terminal-muted">{fmt(pe?.volume)}</div>}
+                    {columnVisibility.oiChange && (
+                      <div className={`px-1 sm:px-2 py-1 text-left flex items-center gap-1 min-w-0 ${(pe?.oi_change ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        <span className="truncate">{(pe?.oi_change ?? 0) > 0 ? '+' : ''}{fmt(pe?.oi_change)}</span>
+                        {showBuildup && peBuildup && BUILDUP_CODES[peBuildup.classification] && BUILDUP_CODES[peBuildup.classification] !== '—' && (
+                          <span
+                            title={buildupTooltip(peBuildup, buildupPayload?.baseline_timestamp, buildupPayload?.as_of_timestamp)}
+                            className={`shrink-0 text-[8px] font-bold tracking-tight ${BUILDUP_STYLES[peBuildup.classification] || 'text-terminal-muted'}`}
+                          >
+                            {BUILDUP_CODES[peBuildup.classification]}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {columnVisibility.gamma && <div className="px-1 sm:px-2 py-1 text-left text-terminal-muted">{fmt(pe?.gamma, 4)}</div>}
+                    {columnVisibility.delta && <div className="px-1 sm:px-2 py-1 text-left text-terminal-muted">{fmt(pe?.delta, 3)}</div>}
+                    {columnVisibility.iv && <div className="px-1 sm:px-2 py-1 text-left text-terminal-muted">{fmt(pe?.iv, 1)}</div>}
                   </div>
                 </div>
               );
