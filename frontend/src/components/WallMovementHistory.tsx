@@ -192,6 +192,7 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
     const allStrikes = points.flatMap((point) =>
       [point.ce_wall, point.pe_wall].filter((value): value is number => value != null),
     );
+    if (allStrikes.length === 0) return null;
     const uniqueStrikes = [...new Set(allStrikes)].sort((a, b) => a - b);
     const increments = uniqueStrikes.slice(1)
       .map((value, index) => value - uniqueStrikes[index])
@@ -221,6 +222,7 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
         else path += ` H ${x} V ${y}`;
         previousValue = value;
       });
+      if (points.length === 1 && previousValue != null) path += ` H ${width - right}`;
       return path;
     };
 
@@ -355,6 +357,10 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
                     </g>
                   );
                 })}
+                <path d={chart.cePath} fill="none" stroke="#f87171" strokeWidth="3"
+                  strokeLinejoin="round" strokeLinecap="round" />
+                <path d={chart.pePath} fill="none" stroke="#34d399" strokeWidth="3"
+                  strokeLinejoin="round" strokeLinecap="round" />
                 {events.map((event) => {
                   const x = chart.xFor(event.timestamp);
                   const y = chart.yFor(event.to_strike);
@@ -372,10 +378,6 @@ const WallMovementHistoryComponent: React.FC<WallMovementHistoryProps> = ({
                     </g>
                   );
                 })}
-                <path d={chart.cePath} fill="none" stroke="#f87171" strokeWidth="3"
-                  strokeLinejoin="round" strokeLinecap="round" />
-                <path d={chart.pePath} fill="none" stroke="#34d399" strokeWidth="3"
-                  strokeLinejoin="round" strokeLinecap="round" />
                 <line x1={chart.left} x2={chart.width - chart.right}
                   y1={chart.height - chart.bottom} y2={chart.height - chart.bottom}
                   stroke="currentColor" strokeOpacity="0.35" />
