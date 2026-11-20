@@ -18,6 +18,8 @@ interface SettingsModalProps {
   onTestToast: () => void;
   columnVisibility: OptionChainColumnVisibility;
   onColumnVisibilityChange: (next: OptionChainColumnVisibility) => void;
+  highlightHighestVolume: boolean;
+  onHighlightHighestVolumeChange: (enabled: boolean) => void;
 }
 
 const CONFIGURE_TABS: { id: Tab; label: string; icon: string }[] = [
@@ -30,7 +32,7 @@ const MONITOR_TABS: { id: Tab; label: string; icon: string }[] = [
   { id: 'connections', label: 'Connections', icon: '🔌' },
 ];
 
-export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, fullMode, onFullModeChange, onTestToast, columnVisibility, onColumnVisibilityChange }) => {
+export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, fullMode, onFullModeChange, onTestToast, columnVisibility, onColumnVisibilityChange, highlightHighestVolume, onHighlightHighestVolumeChange }) => {
   const [tab, setTab] = useState<Tab>('stocks');
   const [armed, setArmed] = useState(true);
   const [scope, setScope] = useState<'viewed' | 'all'>('viewed');
@@ -167,7 +169,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, fullMode,
       case 'analytics':
         return <AnalyticsTab onSaved={flashSaved} />;
       case 'display':
-        return <DisplayTab fullMode={fullMode} onFullModeChange={onFullModeChange} columnVisibility={columnVisibility} onColumnVisibilityChange={onColumnVisibilityChange} />;
+        return <DisplayTab
+          fullMode={fullMode}
+          onFullModeChange={onFullModeChange}
+          columnVisibility={columnVisibility}
+          onColumnVisibilityChange={onColumnVisibilityChange}
+          highlightHighestVolume={highlightHighestVolume}
+          onHighlightHighestVolumeChange={onHighlightHighestVolumeChange}
+        />;
       case 'connections':
         return <ConnectionsTab />;
     }

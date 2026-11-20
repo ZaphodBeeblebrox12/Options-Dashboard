@@ -124,6 +124,7 @@ interface OptionChainProps {
   maxPain: number | null;
   gammaFlip: number | null;
   columnVisibility?: OptionChainColumnVisibility;
+  highlightHighestVolume?: boolean;
   buildupDate?: string;
   buildupTimestamp?: string;
   selectedStrike: number | null;
@@ -157,6 +158,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   spot,
   gammaFlip,
   columnVisibility = COMPACT_OPTION_CHAIN_COLUMNS,
+  highlightHighestVolume = true,
   buildupDate = '',
   buildupTimestamp,
   selectedStrike,
@@ -368,6 +370,22 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     const ranks: Record<number, number> = {};
     sorted.slice(0, 3).forEach((row, i) => { ranks[row.strike] = i + 1; });
     return ranks;
+  }, [rankableRows]);
+
+  // Highlight the single highest-volume contract on each side using the same
+  // near-spot ranking window as OI, so distant strikes cannot dominate the view.
+  const highestVolumeStrikes = useMemo(() => {
+    const find = (side: 'CE' | 'PE') => {
+      const candidates = rankableRows.filter((row) => {
+        const volume = row[side]?.volume;
+        return volume != null && Number.isFinite(volume) && volume > 0;
+      });
+      candidates.sort((a, b) =>
+        ((b[side]?.volume ?? 0) - (a[side]?.volume ?? 0)) || a.strike - b.strike
+      );
+      return candidates[0]?.strike ?? null;
+    };
+    return { CE: find('CE'), PE: find('PE') };
   }, [rankableRows]);
 
   // Walls are the strongest OI concentrations in the loaded expiry chain.
@@ -804,7 +822,14 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                         )}
                       </div>
                     )}
-                    {columnVisibility.volume && <div className="px-1 sm:px-2 py-1 text-right text-terminal-muted">{fmt(ce?.volume)}</div>}
+                    {columnVisibility.volume && (
+                      <div
+                        className={`px-1 sm:px-2 py-1 text-right ${highlightHighestVolume && highestVolumeStrikes.CE === row.strike ? 'bg-red-800 text-red-100 font-bold shadow-sm shadow-red-900/50' : 'text-terminal-muted'}`}
+                        title={highlightHighestVolume && highestVolumeStrikes.CE === row.strike ? 'Highest CE volume in the ±5% spot window' : undefined}
+                      >
+                        {fmt(ce?.volume)}
+                      </div>
+                    )}
                     {columnVisibility.ltp && <div className="px-1 sm:px-2 py-1 text-right text-terminal-ce font-semibold">{fmt(ce?.ltp, 2)}</div>}
                     {columnVisibility.iv && <div className="px-1 sm:px-2 py-1 text-right text-terminal-muted">{fmt(ce?.iv, 1)}</div>}
                     {columnVisibility.delta && <div className="px-1 sm:px-2 py-1 text-right text-terminal-muted">{fmt(ce?.delta, 3)}</div>}
@@ -885,7 +910,14 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                       </div>
                     )}
                     {columnVisibility.ltp && <div className="px-1 sm:px-2 py-1 text-left text-terminal-pe font-semibold">{fmt(pe?.ltp, 2)}</div>}
-                    {columnVisibility.volume && <div className="px-1 sm:px-2 py-1 text-left text-terminal-muted">{fmt(pe?.volume)}</div>}
+                    {columnVisibility.volume && (
+                      <div
+                        className={`px-1 sm:px-2 py-1 text-left ${highlightHighestVolume && highestVolumeStrikes.PE === row.strike ? 'bg-green-800 text-green-100 font-bold shadow-sm shadow-green-900/50' : 'text-terminal-muted'}`}
+                        title={highlightHighestVolume && highestVolumeStrikes.PE === row.strike ? 'Highest PE volume in the ±5% spot window' : undefined}
+                      >
+                        {fmt(pe?.volume)}
+                      </div>
+                    )}
                     {columnVisibility.oiChange && (
                       <div className={`px-1 sm:px-2 py-1 text-left flex items-center gap-1 min-w-0 ${(pe?.oi_change ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                         <span className="truncate">{(pe?.oi_change ?? 0) > 0 ? '+' : ''}{fmt(pe?.oi_change)}</span>
