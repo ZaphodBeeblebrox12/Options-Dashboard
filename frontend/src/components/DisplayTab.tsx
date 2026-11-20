@@ -1,4 +1,5 @@
 import React from 'react';
+import { SettingsSwitch } from './SettingsSwitch';
 import {
   COMPACT_OPTION_CHAIN_COLUMNS,
   FULL_OPTION_CHAIN_COLUMNS,
@@ -12,6 +13,8 @@ interface DisplayTabProps {
   onFullModeChange: (v: boolean) => void;
   columnVisibility: OptionChainColumnVisibility;
   onColumnVisibilityChange: (next: OptionChainColumnVisibility) => void;
+  highlightHighestVolume: boolean;
+  onHighlightHighestVolumeChange: (enabled: boolean) => void;
 }
 
 const CORE_COLUMNS: OptionChainColumnKey[] = ['oiChange', 'volume', 'ltp', 'oi'];
@@ -22,6 +25,8 @@ export const DisplayTab: React.FC<DisplayTabProps> = ({
   onFullModeChange,
   columnVisibility,
   onColumnVisibilityChange,
+  highlightHighestVolume,
+  onHighlightHighestVolumeChange,
 }) => {
   const matchesPreset = (preset: OptionChainColumnVisibility) =>
     (Object.keys(preset) as OptionChainColumnKey[]).every((key) => columnVisibility[key] === preset[key]);
@@ -98,6 +103,22 @@ export const DisplayTab: React.FC<DisplayTabProps> = ({
         <div className="st-card-title mb-1">Greeks</div>
         <p className="st-helper mb-2">Add only the Greeks you need; the chain reflows automatically.</p>
         {GREEK_COLUMNS.map((key) => renderColumn(key))}
+      </div>
+
+      <div className="border border-terminal-border rounded-lg p-4">
+        <div className="st-card-title mb-1">Cell highlights</div>
+        <div className="flex items-center justify-between gap-4 py-2.5">
+          <span className="min-w-0">
+            <span className="block st-label">Highlight highest volume</span>
+            <span className="block st-helper mt-0.5">Highlight the highest-volume CE and PE cell within ±5% of spot.</span>
+          </span>
+          <SettingsSwitch
+            checked={highlightHighestVolume}
+            onChange={onHighlightHighestVolumeChange}
+            label="Highlight highest volume"
+            tone="cyan"
+          />
+        </div>
       </div>
 
       <div className="border border-terminal-border rounded-lg p-4">
