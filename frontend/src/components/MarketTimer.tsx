@@ -60,17 +60,19 @@ export const MarketTimer: React.FC<MarketTimerProps> = ({
   const exchangeLabel = instrumentKind === "commodity" || instrumentKind === "mcx"
     ? "MCX"
     : "NSE / BSE";
+  // Keep data mode separate from market-session status. The badge must say
+  // LIVE or REPLAY even before the open, after the close, and on weekends.
   const statusLabel = isPreviewing
-    ? "PREVIEW"
-    : state.status === "OPEN"
-      ? timerMode.toUpperCase()
-      : state.status === "WAITING" && timerMode === "replay"
-        ? "REPLAY"
-        : state.status;
-  const statusClass = state.status === "OPEN"
-    ? timerMode === "live" ? "text-emerald-400 bg-emerald-500/10" : "text-sky-300 bg-sky-500/10"
-    : state.status === "PRE-OPEN" ? "text-amber-300 bg-amber-500/10"
-      : "text-terminal-muted bg-white/5";
+    ? "REPLAY PREVIEW"
+    : timerMode === "live" ? "LIVE" : "REPLAY";
+  const statusClass = timerMode === "live"
+    ? "text-emerald-400 bg-emerald-500/10"
+    : "text-sky-300 bg-sky-500/10";
+  const statusTitle = isPreviewing
+    ? "Previewing the historical replay timestamp"
+    : timerMode === "live"
+      ? "Live mode — showing the current dashboard view"
+      : "Replay mode — showing the selected historical snapshot";
 
   if (variant === "mobile") {
     return (
@@ -78,7 +80,7 @@ export const MarketTimer: React.FC<MarketTimerProps> = ({
         <div className="mc-mt-head">
           <span className="mc-mt-title">{exchangeLabel} · IST</span>
           <strong>{state.clock}</strong>
-          <span className={"mc-mt-status " + (statusLabel === "LIVE" ? "live" : statusLabel === "REPLAY" ? "replay" : "")}>{statusLabel}</span>
+          <span className={"mc-mt-status " + (timerMode === "live" ? "live" : "replay")} title={statusTitle}>{statusLabel}</span>
         </div>
         <div className="mc-mt-frames">
           {state.frames.map((frame) => (
@@ -107,7 +109,10 @@ export const MarketTimer: React.FC<MarketTimerProps> = ({
           <div className="flex items-center gap-2">
             <strong className="font-mono text-base font-bold tabular-nums text-terminal-text">{state.clock}</strong>
             <span className="text-[9px] font-mono text-terminal-muted">IST</span>
-            <span className={"rounded px-1.5 py-0.5 text-[10px] font-mono font-bold " + statusClass}>{statusLabel}</span>
+            <span className={"inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-mono font-bold " + statusClass} title={statusTitle}>
+              <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />
+              {statusLabel}
+            </span>
           </div>
         </div>
       </div>
