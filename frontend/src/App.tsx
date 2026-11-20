@@ -25,6 +25,7 @@ import { useIsMobile } from "./components/mobile/useIsMobile";
 import MobileApp from "./components/mobile/MobileApp";
 
 const STORAGE_KEY = 'option_chain_view_state';
+const HIGHEST_VOLUME_HIGHLIGHT_STORAGE_KEY = 'option_chain_highest_volume_highlight_v1';
 const HISTORY_LAST_OPENED_KEY = 'history_last_opened_at';
 const SCROLL_KEY = 'option_chain_scroll_y';
 
@@ -55,6 +56,21 @@ function savePersistedState(state: PersistedState) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch {}
 }
+
+function loadHighestVolumeHighlight(): boolean {
+  try {
+    const saved = localStorage.getItem(HIGHEST_VOLUME_HIGHLIGHT_STORAGE_KEY);
+    return saved === null ? true : saved === 'true';
+  } catch {
+    return true;
+  }
+}
+
+function saveHighestVolumeHighlight(enabled: boolean): void {
+  try {
+    localStorage.setItem(HIGHEST_VOLUME_HIGHLIGHT_STORAGE_KEY, String(enabled));
+  } catch {}
+}
 function getLastOpenedHistory(): string {
   try { return localStorage.getItem(HISTORY_LAST_OPENED_KEY) || ''; } catch { return ''; }
 }
@@ -78,6 +94,7 @@ function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [fullMode, setFullMode] = useState(persisted.fullMode ?? false);
   const [columnVisibility, setColumnVisibility] = useState<OptionChainColumnVisibility>(() => loadOptionChainColumns(persisted.fullMode ?? false));
+  const [highlightHighestVolume, setHighlightHighestVolume] = useState<boolean>(() => loadHighestVolumeHighlight());
   const [selectedStrike, setSelectedStrike] = useState<number | null>(persisted.selectedStrike ?? null);
   const [liveMode, setLiveMode] = useState(initialLiveMode);
   const [marketOpenMap, setMarketOpenMap] = useState<Record<string, boolean>>({});
@@ -190,6 +207,7 @@ function App() {
   }, []);
 
   useEffect(() => { saveOptionChainColumns(columnVisibility); }, [columnVisibility]);
+  useEffect(() => { saveHighestVolumeHighlight(highlightHighestVolume); }, [highlightHighestVolume]);
 
   const saveableStateRef = useRef<PersistedState>({
     selectedIndex, selectedDate, currentTimestamp: null,
@@ -743,7 +761,8 @@ function App() {
         </ReplayPreviewProvider>
         <OptionChain
           options={normalizedOptions} spot={spot} maxPain={maxPain} gammaFlip={gammaFlip}
-          columnVisibility={columnVisibility} selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike}
+          columnVisibility={columnVisibility} highlightHighestVolume={highlightHighestVolume}
+          selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike}
           buildupDate={selectedDate} buildupTimestamp={!liveMode ? (currentTimestamp || undefined) : undefined}
           indexName={selectedIndex} timestamp={timestamp} historyDate={selectedDate} liveMode={liveMode} canArm={canArmWallWatch}
           isLoading={!liveMode && snapshotLoading}
@@ -786,6 +805,8 @@ function App() {
           onFullModeChange={handleFullModeChange}
           columnVisibility={columnVisibility}
           onColumnVisibilityChange={handleColumnVisibilityChange}
+          highlightHighestVolume={highlightHighestVolume}
+          onHighlightHighestVolumeChange={setHighlightHighestVolume}
           onTestToast={handleTestToast}
         />
       )}
