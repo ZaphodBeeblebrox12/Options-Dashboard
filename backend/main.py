@@ -997,25 +997,27 @@ _WALL_HISTORY_CACHE_TTL = 10.0
 
 
 def _load_wall_history_payload(date_str: str, index_name: str) -> dict:
-    """Return the strongest CE and PE OI strike at each saved snapshot.
+    """Return actionable CE and PE OI walls at each saved snapshot.
 
-    ROW_NUMBER keeps this query to two result rows per market snapshot while
-    applying the same deterministic rule as wall_watch.calculate_wall_strikes:
-    largest OI wins, with ties resolved to the lower strike.
+    Far-OTM strikes (>=5% from spot) with numeric zero volume on both sides
+    are excluded before ranking, matching wall_watch.calculate_wall_strikes.
+    Raw option snapshot records remain untouched.
     """
     with get_db() as conn:
         rows = conn.execute(
             """
-            WITH ranked_walls AS (
+            WITH contract_rows AS (
                 SELECT
+                    s.id AS snapshot_id,
                     s.timestamp AS timestamp,
+                    s.spot AS spot,
                     o.option_type AS side,
                     o.strike AS strike,
                     COALESCE(o.oi, 0) AS oi,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY s.id, o.option_type
-                        ORDER BY COALESCE(o.oi, 0) DESC, o.strike ASC
-                    ) AS wall_rank
+                    MAX(CASE WHEN o.option_type = 'CE' THEN o.volume END)
+                        OVER (PARTITION BY s.id, o.strike) AS ce_volume,
+                    MAX(CASE WHEN o.option_type = 'PE' THEN o.volume END)
+                        OVER (PARTITION BY s.id, o.strike) AS pe_volume
                 FROM snapshots AS s
                 JOIN option_snapshots AS o
                   ON o.snapshot_id = s.id
@@ -1023,6 +1025,29 @@ def _load_wall_history_payload(date_str: str, index_name: str) -> dict:
                 WHERE s.index_name = ?
                   AND date(s.timestamp) = ?
                   AND o.option_type IN ('CE', 'PE')
+            ),
+            eligible_contracts AS (
+                SELECT *
+                FROM contract_rows
+                WHERE NOT (
+                    spot IS NOT NULL
+                    AND spot > 0
+                    AND ABS(strike - spot) * 100.0 / spot >= 5.0
+                    AND COALESCE(ce_volume, -1) = 0
+                    AND COALESCE(pe_volume, -1) = 0
+                )
+            ),
+            ranked_walls AS (
+                SELECT
+                    timestamp,
+                    side,
+                    strike,
+                    oi,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY snapshot_id, side
+                        ORDER BY oi DESC, strike ASC
+                    ) AS wall_rank
+                FROM eligible_contracts
             )
             SELECT timestamp, side, strike, oi
             FROM ranked_walls
