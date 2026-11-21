@@ -4,7 +4,7 @@ import { AlertToastContainer } from "../AlertToast";
 import type { AlertFiring } from "../../hooks/useAlerts";
 import { fetchInstruments } from "../../instrumentsCache";
 import MobileChain from "./MobileChain";
-import { shouldHideZeroVolumeStrike } from "../optionChainColumns";
+import { hasEligibleVolumeContract } from "../optionChainColumns";
 import MobileScanner from "./MobileScanner";
 import MobileMap from "./MobileMap";
 import MobileAlerts from "./MobileAlerts";
@@ -191,28 +191,13 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
   const baseData = replay
     ? replaySnap
     : (hasUsableLiveData ? data : (!marketOpen ? lastKnownSnapshot ?? null : data ?? null)); // replay overrides live; CLOSED may use the persisted last-known snapshot
-  // wall chips for the Walls tab: max-OI strikes among eligible contracts.
-  // Far-OTM strikes with zero volume on both sides are excluded consistently.
+  // Walls tab uses only contracts with volume >= 2, evaluated per side.
   const wallChips = useMemo(() => {
     const options: any[] = (baseData as any)?.options ?? [];
     const wallSpot = (baseData as any)?.spot ?? null;
-    const pairs = new Map<number, { CE?: any; PE?: any }>();
-    for (const option of options) {
-      const pair = pairs.get(option.strike) ?? {};
-      if (option.option_type === "CE") pair.CE = option;
-      else if (option.option_type === "PE") pair.PE = option;
-      pairs.set(option.strike, pair);
-    }
-    const eligibleOptions = options.filter((option) =>
-      !shouldHideZeroVolumeStrike(
-        pairs.get(option.strike)?.CE,
-        pairs.get(option.strike)?.PE,
-        option.strike,
-        wallSpot,
-      )
-    );
     let cew: number | null = null, pew: number | null = null, ceo = -1, peo = -1;
-    for (const o of eligibleOptions) {
+    for (const o of options) {
+      if (!hasEligibleVolumeContract(o)) continue;
       if (o?.option_type === "CE" && (wallSpot == null || o.strike >= wallSpot) && (o.oi ?? 0) > ceo) { ceo = o.oi; cew = o.strike; }
       if (o?.option_type === "PE" && (wallSpot == null || o.strike <= wallSpot) && (o.oi ?? 0) > peo) { peo = o.oi; pew = o.strike; }
     }
@@ -243,6 +228,7 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
     if (ceW == null || peW == null) {
       let cm = -1, pm = -1;
       (d.options ?? []).forEach((o: any) => {
+        if (!hasEligibleVolumeContract(o)) return;
         if (o.option_type === "CE" && o.oi > cm) { cm = o.oi; ceW = o.strike; }
         if (o.option_type === "PE" && o.oi > pm) { pm = o.oi; peW = o.strike; }
       });
@@ -254,24 +240,11 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
     return acc + (step > 0 && dist <= step * 1.5 ? 1 : 0);
   }, 0), [scanners]);
 
-  // Market levels: OI walls from eligible strikes only. A far-OTM strike with
-  // zero volume on both CE and PE must not become the actionable level.
+  // Market levels use eligible contracts independently on CE and PE.
   const walls = useMemo(() => {
-    const options: any[] = viewData?.options ?? [];
-    const pairs = new Map<number, { CE?: any; PE?: any }>();
-    for (const option of options) {
-      const pair = pairs.get(option.strike) ?? {};
-      if (option.option_type === "CE") pair.CE = option;
-      else if (option.option_type === "PE") pair.PE = option;
-      pairs.set(option.strike, pair);
-    }
-    const eligibleOptions = options.filter((option) => {
-      const pair = pairs.get(option.strike);
-      return !shouldHideZeroVolumeStrike(pair?.CE, pair?.PE, option.strike, viewData?.spot ?? null);
-    });
-
     let ceW: number | null = null, peW: number | null = null, ceOI: number | null = null, peOI: number | null = null, cm = -1, pm = -1;
-    eligibleOptions.forEach((o: any) => {
+    (viewData?.options ?? []).forEach((o: any) => {
+      if (!hasEligibleVolumeContract(o)) return;
       if (o.option_type === "CE" && (viewData?.spot == null || o.strike >= viewData.spot) && o.oi > cm) { cm = o.oi; ceW = o.strike; ceOI = o.oi; }
       if (o.option_type === "PE" && (viewData?.spot == null || o.strike <= viewData.spot) && o.oi > pm) { pm = o.oi; peW = o.strike; peOI = o.oi; }
     });
