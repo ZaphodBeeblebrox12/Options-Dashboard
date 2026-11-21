@@ -606,8 +606,9 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     <div className="terminal-panel overflow-hidden" ref={panelRef}>
       <style>{`
         .terminal-scroll {
+          overflow-x: auto;
           overflow-y: auto;
-          overscroll-behavior-y: contain;
+          overscroll-behavior: contain;
           scrollbar-gutter: stable;
           scrollbar-width: thin;
           scrollbar-color: #4b5563 transparent;
@@ -820,7 +821,10 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
 
       {/* ── HORIZONTAL SCROLL WRAPPER ── */}
       {watchError && <div role="alert" aria-live="polite" className="px-2 py-1 text-[10px] font-mono text-amber-300 bg-amber-500/[0.06] border-b border-amber-500/20">{watchError}</div>}
-      <div className="overflow-x-auto terminal-scroll">
+      <div
+        ref={scrollContainerRef}
+        className="max-h-[50vh] sm:max-h-[65vh] terminal-scroll"
+      >
         <div className={totalMinWidth}>
 
           {/* Sticky Header */}
@@ -849,11 +853,8 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
             </div>
           </div>
 
-          {/* Scrollable Rows */}
-          <div
-            ref={scrollContainerRef}
-            className="max-h-[50vh] sm:max-h-[65vh] terminal-scroll"
-          >
+          {/* Option rows share the header's scroll container and width. */}
+          <div>
             {displayRows.map((row) => {
               const ce = row.CE;
               const pe = row.PE;
@@ -1032,7 +1033,6 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
             {/* Bottom fade */}
             <div className="sticky bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-terminal-bg to-transparent pointer-events-none" />
           </div>
-
         </div>
       </div>
       {wallHover && createPortal((() => {
