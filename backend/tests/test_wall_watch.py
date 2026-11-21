@@ -35,7 +35,7 @@ def test_crossing_call_wall_does_not_move_it_when_oi_is_unchanged():
 
 def test_crossing_put_wall_does_not_move_it_when_oi_is_unchanged():
     options = [
-        {"strike": 24900, "option_type": "PE", "oi": 500},
+        {"strike": 24900, "option_type": "PE", "oi": 500, "volume": 2},
         {"strike": 25000, "option_type": "PE", "oi": 800, "volume": 2},
         {"strike": 25100, "option_type": "PE", "oi": 700, "volume": 2},
     ]
