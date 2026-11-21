@@ -297,11 +297,16 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     return () => window.clearInterval(timer);
   }, [refreshWallWatches]);
 
-  const toggleWallWatch = useCallback(async (side: 'CE' | 'PE', event: React.MouseEvent) => {
+  const toggleWallWatch = useCallback(async (side: 'CE' | 'PE', strike: number, event: React.MouseEvent) => {
     // Keep the strike-row selection click separate from the watch action.
     event.preventDefault();
     event.stopPropagation();
-    const action = wallWatches[side]?.armed ? 'disarm' : 'arm';
+    // A side may still have a watch armed at an older wall. Only disarm when
+    // the bell pressed belongs to that exact watched strike; otherwise re-arm
+    // at the current wall selected by the backend.
+    const watch = wallWatches[side];
+    const isThisStrikeWatched = Boolean(watch?.armed && Number(watch.watched_strike) === strike);
+    const action = isThisStrikeWatched ? 'disarm' : 'arm';
     setWatchBusy(side);
     setWatchError(null);
 
@@ -1110,6 +1115,8 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
             ) : displayRows.map((row) => {
               const ce = row.CE;
               const pe = row.PE;
+              const ceWatchArmed = Boolean(ceWatchArmed && Number(wallWatches.CE.watched_strike) === row.strike);
+              const peWatchArmed = Boolean(peWatchArmed && Number(wallWatches.PE.watched_strike) === row.strike);
               const isSelected = row.strike === selectedStrike;
               const ceRank = ceOiRanks[row.strike];
               const peRank = peOiRanks[row.strike];
@@ -1184,18 +1191,18 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                         {currentWalls.CE === row.strike && (
                           <button
                             type="button"
-                            onClick={(event) => void toggleWallWatch('CE', event)}
-                            disabled={watchBusy === 'CE' || (!wallWatches.CE?.armed && !canArm)}
-                            title={wallWatches.CE?.armed
+                            onClick={(event) => void toggleWallWatch('CE', row.strike, event)}
+                            disabled={watchBusy === 'CE' || (!ceWatchArmed && !canArm)}
+                            title={ceWatchArmed
                               ? `Disarm Call Wall watch at ${fmt(wallWatches.CE.watched_strike)}`
                               : canArm ? `Arm Call Wall watch at ${fmt(row.strike)}` : 'Wall watch requires a connected, non-stale live feed'}
-                            aria-label={wallWatches.CE?.armed ? 'Disarm Call Wall alert' : 'Arm Call Wall alert'}
+                            aria-label={ceWatchArmed ? 'Disarm Call Wall alert' : 'Arm Call Wall alert'}
                             aria-busy={watchBusy === 'CE'}
-                            className={`relative z-10 ml-0.5 inline-flex h-5 w-5 shrink-0 pointer-events-auto items-center justify-center rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${wallWatches.CE?.armed ? 'text-amber-200 bg-amber-500/20 hover:bg-amber-500/30' : 'text-terminal-muted hover:text-amber-300 hover:bg-amber-500/10'} disabled:cursor-not-allowed disabled:opacity-40`}
+                            className={`relative z-10 ml-0.5 inline-flex h-5 w-5 shrink-0 pointer-events-auto items-center justify-center rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${ceWatchArmed ? 'text-amber-200 bg-amber-500/20 hover:bg-amber-500/30' : 'text-terminal-muted hover:text-amber-300 hover:bg-amber-500/10'} disabled:cursor-not-allowed disabled:opacity-40`}
                           >
                             {watchBusy === 'CE'
                               ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              : wallWatches.CE?.armed
+                              : ceWatchArmed
                                 ? <BellRing className="h-3.5 w-3.5" />
                                 : <Bell className="h-3.5 w-3.5" />}
                           </button>
@@ -1226,18 +1233,18 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                         {currentWalls.PE === row.strike && (
                           <button
                             type="button"
-                            onClick={(event) => void toggleWallWatch('PE', event)}
-                            disabled={watchBusy === 'PE' || (!wallWatches.PE?.armed && !canArm)}
-                            title={wallWatches.PE?.armed
+                            onClick={(event) => void toggleWallWatch('PE', row.strike, event)}
+                            disabled={watchBusy === 'PE' || (!peWatchArmed && !canArm)}
+                            title={peWatchArmed
                               ? `Disarm Put Wall watch at ${fmt(wallWatches.PE.watched_strike)}`
                               : canArm ? `Arm Put Wall watch at ${fmt(row.strike)}` : 'Wall watch requires a connected, non-stale live feed'}
-                            aria-label={wallWatches.PE?.armed ? 'Disarm Put Wall alert' : 'Arm Put Wall alert'}
+                            aria-label={peWatchArmed ? 'Disarm Put Wall alert' : 'Arm Put Wall alert'}
                             aria-busy={watchBusy === 'PE'}
-                            className={`relative z-10 ml-0.5 inline-flex h-5 w-5 shrink-0 pointer-events-auto items-center justify-center rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${wallWatches.PE?.armed ? 'text-amber-200 bg-amber-500/20 hover:bg-amber-500/30' : 'text-terminal-muted hover:text-amber-300 hover:bg-amber-500/10'} disabled:cursor-not-allowed disabled:opacity-40`}
+                            className={`relative z-10 ml-0.5 inline-flex h-5 w-5 shrink-0 pointer-events-auto items-center justify-center rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${peWatchArmed ? 'text-amber-200 bg-amber-500/20 hover:bg-amber-500/30' : 'text-terminal-muted hover:text-amber-300 hover:bg-amber-500/10'} disabled:cursor-not-allowed disabled:opacity-40`}
                           >
                             {watchBusy === 'PE'
                               ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              : wallWatches.PE?.armed
+                              : peWatchArmed
                                 ? <BellRing className="h-3.5 w-3.5" />
                                 : <Bell className="h-3.5 w-3.5" />}
                           </button>
