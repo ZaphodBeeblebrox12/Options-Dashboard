@@ -89,6 +89,42 @@ def test_equal_oi_ties_choose_lowest_strike_deterministically():
     assert calculate_wall_strikes(options, 25000)["CE"] == (25100, True)
 
 
+def test_far_otm_zero_volume_pair_is_excluded_before_wall_selection():
+    options = [
+        {"strike": 10600, "option_type": "CE", "oi": 50000, "volume": 0},
+        {"strike": 10600, "option_type": "PE", "oi": 40000, "volume": 0},
+        {"strike": 9400, "option_type": "CE", "oi": 30000, "volume": 0},
+        {"strike": 9400, "option_type": "PE", "oi": 35000, "volume": 0},
+        # A non-zero volume on either side keeps the entire strike eligible.
+        {"strike": 10400, "option_type": "CE", "oi": 1000, "volume": 1},
+        {"strike": 10400, "option_type": "PE", "oi": 2000, "volume": 0},
+    ]
+    assert calculate_wall_strikes(options, 10000) == {
+        "CE": (10400, True),
+        "PE": (10400, True),
+    }
+
+
+def test_five_percent_boundary_is_excluded_but_missing_spot_is_not():
+    boundary_pair = [
+        {"strike": 10500, "option_type": "CE", "oi": 9000, "volume": 0},
+        {"strike": 10500, "option_type": "PE", "oi": 8000, "volume": 0},
+        {"strike": 10400, "option_type": "CE", "oi": 1000, "volume": 10},
+    ]
+    assert calculate_wall_strikes(boundary_pair, 10000)["CE"] == (10400, True)
+    # Without spot, the system cannot establish OTM distance, so no row is excluded.
+    assert calculate_wall_strikes(boundary_pair, None)["CE"] == (10500, True)
+
+
+def test_non_numeric_zero_volume_is_not_treated_as_confirmed_zero():
+    options = [
+        {"strike": 10600, "option_type": "CE", "oi": 9000, "volume": "0"},
+        {"strike": 10600, "option_type": "PE", "oi": 8000, "volume": "0"},
+        {"strike": 10400, "option_type": "CE", "oi": 1000, "volume": 10},
+    ]
+    assert calculate_wall_strikes(options, 10000)["CE"] == (10600, True)
+
+
 
 def _wall_watch_manager_with_test_db(monkeypatch):
     """Create an isolated manager whose state survives its DB context calls."""
