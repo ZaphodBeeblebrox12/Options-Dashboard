@@ -178,6 +178,7 @@ class LiveDataStore:
                 "ltp": ltp,
                 "oi": oi,
                 "volume": volume,
+                "volume_valid": True,
                 "last_update": datetime.now().isoformat()
             }
             key = (strike, option_type)
@@ -555,9 +556,19 @@ if ANGEL_ONE_AVAILABLE:
                 info = self.token_map.get(token)
                 if not info:
                     return
-                ltp = float(message.get("last_traded_price", 0) or 0) / 100.0
-                oi = int(message.get("open_interest", 0) or 0)
-                volume = int(message.get("volume_trade_for_the_day", 0) or 0)
+                raw_ltp = message.get("last_traded_price")
+                raw_oi = message.get("open_interest")
+                raw_volume = message.get("volume_trade_for_the_day")
+                if any(value in (None, "") for value in (raw_ltp, raw_oi, raw_volume)):
+                    logger.warning(
+                        "[%s] Ignoring incomplete option tick token=%s "
+                        "(ltp=%r oi=%r volume=%r); retaining last complete contract state",
+                        self.index_name, token, raw_ltp, raw_oi, raw_volume,
+                    )
+                    return
+                ltp = float(raw_ltp) / 100.0
+                oi = int(raw_oi)
+                volume = int(raw_volume)
                 self.data_store.update(info["strike"], info["type"], ltp, oi, volume)
             except Exception as e:
                 logger.error(f"[{self.index_name}] Option tick error: {e}")
@@ -670,7 +681,9 @@ if ANGEL_ONE_AVAILABLE:
                         enriched_options.append({
                             "strike": strike, "option_type": opt_type,
                             "oi": current_oi, "oi_change": oi_change, "oi_change_pct": oi_change_pct,
-                            "volume": opt.get("volume", 0), "ltp": opt.get("ltp", 0),
+                            "volume": opt.get("volume", 0),
+                            "volume_valid": bool(opt.get("volume_valid", False)),
+                            "ltp": opt.get("ltp", 0),
                             "source_updated_at": source_updated_at,
                             "source_age_sec": source_age_sec,
                             "iv": analytics_opt.get("iv"), "delta": analytics_opt.get("delta"),
