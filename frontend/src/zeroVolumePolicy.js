@@ -1,10 +1,11 @@
 /**
- * Display-only filter for inactive option strikes far from spot.
+ * Shared eligibility rule for inactive option strikes far from spot.
  *
- * A strike is hidden only when it is at least 5% away from spot and both
- * its CE and PE contracts have an explicit numeric zero volume. This applies
- * equally to live and replay data; volume_valid/OI/LTP provenance is irrelevant.
- * The underlying options data and all OI calculations remain untouched.
+ * A strike is excluded from row display (when the display setting is enabled)
+ * and actionable wall selection when it is at least 5% away from spot and
+ * both CE and PE have an explicit numeric zero volume. Raw snapshots and
+ * contract OI values are never modified; provenance flags do not override an
+ * explicit numeric zero volume.
  */
 export const ZERO_VOLUME_OTM_THRESHOLD_PCT = 5;
 
