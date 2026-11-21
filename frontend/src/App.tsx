@@ -10,7 +10,10 @@ import { GexChart } from './components/GexChart';
 import { StrikeChart } from './components/StrikeChart';
 import { NetGexChart } from './components/NetGexChart';
 import { SettingsModal } from './components/SettingsModal';
-import { loadOptionChainColumns, saveOptionChainColumns, COMPACT_OPTION_CHAIN_COLUMNS, FULL_OPTION_CHAIN_COLUMNS } from './components/optionChainColumns';
+import {
+  loadOptionChainColumns, saveOptionChainColumns, COMPACT_OPTION_CHAIN_COLUMNS, FULL_OPTION_CHAIN_COLUMNS,
+  loadHideZeroVolumeStrikes, saveHideZeroVolumeStrikes,
+} from './components/optionChainColumns';
 import type { OptionChainColumnVisibility } from './components/optionChainColumns';
 import { AlertHistoryPanel } from './components/AlertHistory';
 import { AlertToastContainer } from './components/AlertToast';
@@ -95,6 +98,7 @@ function App() {
   const [fullMode, setFullMode] = useState(persisted.fullMode ?? false);
   const [columnVisibility, setColumnVisibility] = useState<OptionChainColumnVisibility>(() => loadOptionChainColumns(persisted.fullMode ?? false));
   const [highlightHighestVolume, setHighlightHighestVolume] = useState<boolean>(() => loadHighestVolumeHighlight());
+  const [hideZeroVolumeStrikes, setHideZeroVolumeStrikes] = useState<boolean>(() => loadHideZeroVolumeStrikes());
   const [selectedStrike, setSelectedStrike] = useState<number | null>(persisted.selectedStrike ?? null);
   const [liveMode, setLiveMode] = useState(initialLiveMode);
   const [marketOpenMap, setMarketOpenMap] = useState<Record<string, boolean>>({});
@@ -208,6 +212,7 @@ function App() {
 
   useEffect(() => { saveOptionChainColumns(columnVisibility); }, [columnVisibility]);
   useEffect(() => { saveHighestVolumeHighlight(highlightHighestVolume); }, [highlightHighestVolume]);
+  useEffect(() => { saveHideZeroVolumeStrikes(hideZeroVolumeStrikes); }, [hideZeroVolumeStrikes]);
 
   const saveableStateRef = useRef<PersistedState>({
     selectedIndex, selectedDate, currentTimestamp: null,
@@ -762,6 +767,7 @@ function App() {
         <OptionChain
           options={normalizedOptions} spot={spot} maxPain={maxPain} gammaFlip={gammaFlip}
           columnVisibility={columnVisibility} highlightHighestVolume={highlightHighestVolume}
+          hideZeroVolumeStrikes={hideZeroVolumeStrikes}
           selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike}
           buildupDate={selectedDate} buildupTimestamp={!liveMode ? (currentTimestamp || undefined) : undefined}
           indexName={selectedIndex} timestamp={timestamp} historyDate={selectedDate} liveMode={liveMode} canArm={canArmWallWatch}
@@ -807,6 +813,8 @@ function App() {
           onColumnVisibilityChange={handleColumnVisibilityChange}
           highlightHighestVolume={highlightHighestVolume}
           onHighlightHighestVolumeChange={setHighlightHighestVolume}
+          hideZeroVolumeStrikes={hideZeroVolumeStrikes}
+          onHideZeroVolumeStrikesChange={setHideZeroVolumeStrikes}
           onTestToast={handleTestToast}
         />
       )}
