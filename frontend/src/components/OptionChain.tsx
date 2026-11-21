@@ -1032,53 +1032,6 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
         )}
       </div>
 
-      {/* Always-visible access to the true whole-expiry OI walls. Rank #1 badges
-          are a separate ±5% spot-window ranking and need not be the wall strike. */}
-      <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1.5 border-b border-terminal-border bg-terminal-bg/75">
-        <span className="mr-0.5 text-[8px] sm:text-[9px] font-mono font-semibold tracking-wider text-terminal-muted">OI WALLS</span>
-        {(['CE', 'PE'] as const).map((side) => {
-          const strike = currentWalls[side];
-          const wallOption = currentWallOptions[side];
-          const armed = wallWatches[side]?.armed ?? false;
-          const accent = side === 'CE'
-            ? 'border-red-500/25 bg-red-500/[0.06] text-red-200 hover:bg-red-500/[0.10]'
-            : 'border-green-500/25 bg-green-500/[0.06] text-green-200 hover:bg-green-500/[0.10]';
-          return (
-            <div
-              key={side}
-              className={`inline-flex min-w-0 items-center gap-1.5 rounded border px-1.5 py-1 transition-colors ${accent}`}
-              onMouseEnter={strike != null ? (event) => showWallHover(side, strike, event.currentTarget) : undefined}
-              onMouseLeave={hideWallHover}
-              onFocus={strike != null ? (event) => showWallHover(side, strike, event.currentTarget) : undefined}
-              onBlur={hideWallHover}
-            >
-              <span className="text-[8px] font-mono font-bold tracking-wide opacity-75">{side} WALL</span>
-              <strong className="text-[10px] sm:text-[11px] font-mono tabular-nums">{strike == null ? '—' : fmt(strike)}</strong>
-              <span className="hidden sm:inline text-[9px] font-mono tabular-nums opacity-70">{wallOption?.oi != null ? `${fmt(wallOption.oi)} OI` : 'OI —'}</span>
-              <button
-                type="button"
-                onClick={(event) => void toggleWallWatch(side, event)}
-                disabled={watchBusy === side || (!armed && !canArm) || strike == null}
-                title={armed
-                  ? `Disarm ${side === 'CE' ? 'Call' : 'Put'} Wall watch at ${fmt(strike)}`
-                  : canArm
-                    ? `Arm ${side === 'CE' ? 'Call' : 'Put'} Wall watch at ${fmt(strike)}`
-                    : 'Switch to a live, connected market feed to arm this wall alert'}
-                aria-label={armed ? `Disarm ${side} wall alert` : `Arm ${side} wall alert`}
-                aria-busy={watchBusy === side}
-                className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${armed ? 'bg-amber-500/20 text-amber-200 hover:bg-amber-500/30' : 'text-terminal-muted hover:text-amber-200 hover:bg-white/10'} disabled:cursor-not-allowed disabled:opacity-60`}
-              >
-                {watchBusy === side
-                  ? <Loader2 className="h-3 w-3 animate-spin" />
-                  : armed
-                    ? <BellRing className="h-3 w-3" />
-                    : <Bell className="h-3 w-3" />}
-              </button>
-            </div>
-          );
-        })}
-      </div>
-
       {/* ── HORIZONTAL SCROLL WRAPPER ── */}
       {watchError && <div role="alert" aria-live="polite" className="px-2 py-1 text-[10px] font-mono text-amber-300 bg-amber-500/[0.06] border-b border-amber-500/20">{watchError}</div>}
       <div
@@ -1086,9 +1039,59 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
         className="max-h-[50vh] sm:max-h-[65vh] terminal-scroll"
       >
         <div style={totalMinWidth}>
+          {/* Pinned below the desktop Market Timer so wall access remains visible
+              while the option rows scroll vertically. */}
+          <div className="sticky top-0 sm:top-[52px] z-20">
+        {/* Always-visible access to the true whole-expiry OI walls. Rank #1 badges
+            are a separate ±5% spot-window ranking and need not be the wall strike. */}
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1.5 border-b border-terminal-border bg-terminal-bg/75">
+          <span className="mr-0.5 text-[8px] sm:text-[9px] font-mono font-semibold tracking-wider text-terminal-muted">OI WALLS</span>
+          {(['CE', 'PE'] as const).map((side) => {
+            const strike = currentWalls[side];
+            const wallOption = currentWallOptions[side];
+            const armed = wallWatches[side]?.armed ?? false;
+            const accent = side === 'CE'
+              ? 'border-red-500/25 bg-red-500/[0.06] text-red-200 hover:bg-red-500/[0.10]'
+              : 'border-green-500/25 bg-green-500/[0.06] text-green-200 hover:bg-green-500/[0.10]';
+            return (
+              <div
+                key={side}
+                className={`inline-flex min-w-0 items-center gap-1.5 rounded border px-1.5 py-1 transition-colors ${accent}`}
+                onMouseEnter={strike != null ? (event) => showWallHover(side, strike, event.currentTarget) : undefined}
+                onMouseLeave={hideWallHover}
+                onFocus={strike != null ? (event) => showWallHover(side, strike, event.currentTarget) : undefined}
+                onBlur={hideWallHover}
+              >
+                <span className="text-[8px] font-mono font-bold tracking-wide opacity-75">{side} WALL</span>
+                <strong className="text-[10px] sm:text-[11px] font-mono tabular-nums">{strike == null ? '—' : fmt(strike)}</strong>
+                <span className="hidden sm:inline text-[9px] font-mono tabular-nums opacity-70">{wallOption?.oi != null ? `${fmt(wallOption.oi)} OI` : 'OI —'}</span>
+                <button
+                  type="button"
+                  onClick={(event) => void toggleWallWatch(side, event)}
+                  disabled={watchBusy === side || (!armed && !canArm) || strike == null}
+                  title={armed
+                    ? `Disarm ${side === 'CE' ? 'Call' : 'Put'} Wall watch at ${fmt(strike)}`
+                    : canArm
+                      ? `Arm ${side === 'CE' ? 'Call' : 'Put'} Wall watch at ${fmt(strike)}`
+                      : 'Switch to a live, connected market feed to arm this wall alert'}
+                  aria-label={armed ? `Disarm ${side} wall alert` : `Arm ${side} wall alert`}
+                  aria-busy={watchBusy === side}
+                  className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${armed ? 'bg-amber-500/20 text-amber-200 hover:bg-amber-500/30' : 'text-terminal-muted hover:text-amber-200 hover:bg-white/10'} disabled:cursor-not-allowed disabled:opacity-60`}
+                >
+                  {watchBusy === side
+                    ? <Loader2 className="h-3 w-3 animate-spin" />
+                    : armed
+                      ? <BellRing className="h-3 w-3" />
+                      : <Bell className="h-3 w-3" />}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+          </div>
 
           {/* Sticky Header */}
-          <div className="tt-chain-head-row sticky top-0 z-10 grid grid-cols-[1fr_64px_1fr] sm:grid-cols-[1fr_80px_1fr] gap-0 text-[9px] sm:text-[10px] font-mono text-terminal-muted border-b border-terminal-border bg-terminal-bg/95 backdrop-blur-sm">
+          <div className="tt-chain-head-row sticky top-[30px] sm:top-[82px] z-10 grid grid-cols-[1fr_64px_1fr] sm:grid-cols-[1fr_80px_1fr] gap-0 text-[9px] sm:text-[10px] font-mono text-terminal-muted border-b border-terminal-border bg-terminal-bg/95 backdrop-blur-sm">
             {/* CE Header */}
             <div className="tt-chain-head-ce grid" style={sideGridStyle}>
               {columnVisibility.oiChange && <div className="px-1 sm:px-2 py-1.5 text-center">OI Chg</div>}
