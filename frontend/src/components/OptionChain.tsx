@@ -352,6 +352,16 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     ).strike;
   }, [spot, chainData]);
 
+  // The optional row-visibility setting must not allow dead, far-OTM strikes
+  // to become actionable OI walls. Keep those raw rows available for display
+  // when the user disables the filter, but exclude them from wall selection.
+  const wallCandidateRows = useMemo(
+    () => chainData.filter(
+      (row) => !shouldHideZeroVolumeStrike(row.CE, row.PE, row.strike, spot)
+    ),
+    [chainData, spot],
+  );
+
   // ── FIX: rank only strikes within ±OI_RANK_WINDOW_PCT of spot ──
   const rankableRows = useMemo(() => {
     if (!spot) return chainData;
@@ -394,12 +404,12 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     return { CE: find('CE'), PE: find('PE') };
   }, [rankableRows]);
 
-  // Walls are the strongest OI concentrations in the loaded expiry chain.
-  // Spot crossing a wall, or moving far away from it, must never reclassify
-  // the wall. Only a change in relative CE/PE OI can move these levels.
+  // Walls are the strongest OI concentrations among wall-eligible strikes.
+  // Far-OTM strikes with zero volume on both sides are ignored before ranking,
+  // so a hidden data-quality row can never steal the bell/watch position.
   const currentWalls = useMemo(() => {
     const find = (side: 'CE' | 'PE') => {
-      const sideRows = chainData.filter(row => side === 'CE' ? !!row.CE : !!row.PE);
+      const sideRows = wallCandidateRows.filter(row => side === 'CE' ? !!row.CE : !!row.PE);
       sideRows.sort((a, b) =>
         ((side === 'CE' ? b.CE?.oi ?? 0 : b.PE?.oi ?? 0) -
           (side === 'CE' ? a.CE?.oi ?? 0 : a.PE?.oi ?? 0)) ||
@@ -408,7 +418,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
       return sideRows[0]?.strike ?? null;
     };
     return { CE: find('CE'), PE: find('PE') };
-  }, [chainData]);
+  }, [wallCandidateRows]);
 
   const visibleWallEvents = useMemo(() => {
     const events = wallHistory?.events ?? [];
@@ -482,8 +492,8 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
       visibleRows = chainData.filter((row) => visibleStrikes.has(row.strike));
     }
 
-    // Hide only extreme (>=10% from spot) strikes with zero volume on both sides.
-    // This is display-only and applies equally to live and replay.
+    // Hide 5%+ OTM strikes with exact zero volume on both sides.
+    // This row filter also applies equally to live and replay.
     if (hideZeroVolumeStrikes) {
       visibleRows = visibleRows.filter(
         (row) => !shouldHideZeroVolumeStrike(row.CE, row.PE, row.strike, spot)
