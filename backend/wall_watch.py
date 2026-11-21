@@ -106,7 +106,7 @@ def calculate_wall_strikes(options: Any, spot: Optional[float] = None) -> Dict[s
         if excluded_strikes:
             rows = [row for row in rows if row["strike"] not in excluded_strikes]
 
-    results: Dict[str, Tuple[Optional[float], bool]] = {
+    results: Dict[str, Tuple[Optional[float], bool]] = {}
     for side in SIDES:
         side_rows = [row for row in rows if row["option_type"] == side]
         if not side_rows:
