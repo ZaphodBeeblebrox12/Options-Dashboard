@@ -55,6 +55,7 @@ import faulthandler
 from alert_db import init_alert_db
 from alert_engine import alert_engine
 from wall_watch import wall_watch_manager, calculate_wall_strikes
+from volume_history import load_volume_leader_rows, build_volume_history
 from alert_models import (
     AlertSettings, AlertHistoryResponse, BacktestRequest, BacktestResponse,
     AlertStatus, AlertTriggerPayload, NotificationChannel,
@@ -1030,6 +1031,7 @@ def _load_wall_history_payload(date_str: str, index_name: str) -> dict:
             """,
             (index_name, date_str),
         ).fetchall()
+        volume_rows = load_volume_leader_rows(conn, index_name, date_str)
 
     by_timestamp: dict = {}
     for row in rows:
@@ -1067,11 +1069,13 @@ def _load_wall_history_payload(date_str: str, index_name: str) -> dict:
                 })
             previous[side] = {"strike": strike, "oi": oi}
 
+    volume_history = build_volume_history(volume_rows)
     return {
         "date": date_str,
         "index_name": index_name,
         "points": points,
         "events": events,
+        **volume_history,
     }
 
 
