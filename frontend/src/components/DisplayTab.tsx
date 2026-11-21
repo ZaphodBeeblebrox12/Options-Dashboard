@@ -126,7 +126,7 @@ export const DisplayTab: React.FC<DisplayTabProps> = ({
         <div className="flex items-center justify-between gap-4 py-2.5">
           <span className="min-w-0">
             <span className="block st-label">Hide zero-volume strikes</span>
-            <span className="block st-helper mt-0.5">Hide a strike when it is at least 10% away from spot and both CE and PE volume are zero. Applies to live and replay; display only, with stored data and OI calculations untouched.</span>
+            <span className="block st-helper mt-0.5">Hide strikes at least 5% from spot when both CE and PE volume are zero. These strikes are also excluded from actionable wall selection; stored snapshots and contract OI values remain unchanged.</span>
           </span>
           <SettingsSwitch
             checked={hideZeroVolumeStrikes}
