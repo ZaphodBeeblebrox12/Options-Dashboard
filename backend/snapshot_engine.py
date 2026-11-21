@@ -468,6 +468,17 @@ class SnapshotEngine:
                     oi_change = current_oi - baseline
                     oi_change_pct = round((oi_change / baseline) * 100, 2) if baseline > 0 else 0.0
 
+                    source_updated_at = opt.get("last_update")
+                    source_age_sec = None
+                    if source_updated_at:
+                        try:
+                            source_age_sec = round(
+                                max(0.0, (datetime.now() - datetime.fromisoformat(source_updated_at)).total_seconds()),
+                                1,
+                            )
+                        except (TypeError, ValueError):
+                            print(f"[SnapshotEngine] {index_name} {strike} {opt_type}: invalid source timestamp {source_updated_at!r}")
+
                     opt_snapshot = {
                         "index_name": index_name,
                         "strike": strike,
@@ -476,6 +487,9 @@ class SnapshotEngine:
                         "oi_change": oi_change,
                         "oi_change_pct": oi_change_pct,
                         "volume": opt.get("volume", 0),
+                        "volume_valid": bool(opt.get("volume_valid", False)),
+                        "source_updated_at": source_updated_at,
+                        "source_age_sec": source_age_sec,
                         "ltp": opt.get("ltp", 0),
                         "iv": opt.get("iv"),
                         "delta": opt.get("delta"),
