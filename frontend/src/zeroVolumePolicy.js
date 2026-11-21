@@ -1,39 +1,27 @@
 /**
- * Shared zero-volume policy for desktop and mobile option chains.
+ * Display-only filter for extreme, inactive option strikes.
  *
- * volume_valid was added after older snapshots had already been stored.
- * SQLite migration defaults those old rows to 0, which means provenance was
- * not recorded, not that the exchange reported a non-zero/unknown value.
- *
- * For replay only, a legacy zero is eligible when that contract has both a
- * positive persisted OI and LTP, and no source-age measurement (the shape of
- * pre-provenance rows). Empty/unpopulated sides and rows with new freshness
- * telemetry remain unverified. This inference is deliberately never used for
- * live payloads.
+ * A strike is hidden only when it is at least 10% away from spot and both
+ * its CE and PE contracts have an explicit numeric zero volume. This applies
+ * equally to live and replay data; volume_valid/OI/LTP provenance is irrelevant.
+ * The underlying options data and all OI calculations remain untouched.
  */
-function isPositiveNumber(value) {
-  return typeof value === "number" && Number.isFinite(value) && value > 0;
-}
+export const ZERO_VOLUME_OTM_THRESHOLD_PCT = 10;
 
-export function isConfirmedZeroVolume(side, allowLegacyReplay = false) {
-  if (!side || side.volume !== 0) return false;
-
-  if (side.volume_valid === true || side.volume_valid === 1) {
-    return true;
+export function shouldHideZeroVolumeStrike(ce, pe, strike, spot) {
+  if (
+    typeof strike !== 'number' ||
+    !Number.isFinite(strike) ||
+    typeof spot !== 'number' ||
+    !Number.isFinite(spot) ||
+    spot <= 0 ||
+    strike <= 0
+  ) {
+    return false;
   }
 
-  return (
-    allowLegacyReplay &&
-    (side.volume_valid === false || side.volume_valid === 0) &&
-    side.source_age_sec == null &&
-    isPositiveNumber(side.oi) &&
-    isPositiveNumber(side.ltp)
-  );
-}
+  const distancePct = (Math.abs(strike - spot) / spot) * 100;
+  if (distancePct < ZERO_VOLUME_OTM_THRESHOLD_PCT) return false;
 
-export function shouldHideZeroVolumeStrike(ce, pe, allowLegacyReplay = false) {
-  return (
-    isConfirmedZeroVolume(ce, allowLegacyReplay) &&
-    isConfirmedZeroVolume(pe, allowLegacyReplay)
-  );
+  return ce?.volume === 0 && pe?.volume === 0;
 }
