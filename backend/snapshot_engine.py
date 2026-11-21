@@ -619,8 +619,8 @@ class SnapshotEngine:
             cursor.execute("""
                 INSERT OR REPLACE INTO option_snapshots
                 (snapshot_id, index_name, strike, option_type, oi, oi_change, oi_change_pct,
-                 volume, volume_valid, source_updated_at, source_age_sec, ltp, iv, delta, gamma, theta, vega, gex)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 volume, volume_valid, source_age_sec, ltp, iv, delta, gamma, theta, vega, gex)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 snapshot_id,
                 opt["index_name"],
@@ -631,7 +631,6 @@ class SnapshotEngine:
                 opt["oi_change_pct"],
                 opt["volume"],
                 1 if opt.get("volume_valid") else 0,
-                opt.get("source_updated_at"),
                 opt.get("source_age_sec"),
                 opt["ltp"],
                 opt["iv"],
