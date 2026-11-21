@@ -1115,8 +1115,8 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
             ) : displayRows.map((row) => {
               const ce = row.CE;
               const pe = row.PE;
-              const ceWatchArmed = Boolean(ceWatchArmed && Number(wallWatches.CE.watched_strike) === row.strike);
-              const peWatchArmed = Boolean(peWatchArmed && Number(wallWatches.PE.watched_strike) === row.strike);
+              const ceWatchArmed = Boolean(wallWatches.CE?.armed && Number(wallWatches.CE.watched_strike) === row.strike);
+              const peWatchArmed = Boolean(wallWatches.PE?.armed && Number(wallWatches.PE.watched_strike) === row.strike);
               const isSelected = row.strike === selectedStrike;
               const ceRank = ceOiRanks[row.strike];
               const peRank = peOiRanks[row.strike];
