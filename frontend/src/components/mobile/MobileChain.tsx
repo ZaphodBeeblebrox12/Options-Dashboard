@@ -57,7 +57,7 @@ const ChainRow = React.memo(function ChainRow(props: {
 
 const IDLE_RECENTER_MS = 8000;
 
-export default function MobileChain({ data, onSelect, floating = true, recenterTick = 0, focusStrike = null, focusTick = 0, replayMode = false }: {
+export default function MobileChain({ data, onSelect, floating = true, recenterTick = 0, focusStrike = null, focusTick = 0, }: {
   data: any;
   onSelect: (s: number) => void;
   /** false in Replay: no floating pill over the replay bar. */
