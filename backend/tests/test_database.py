@@ -29,6 +29,13 @@ def test_init_db_creates_expected_tables_and_columns(tmp_path, monkeypatch):
         assert "futures_oi" in snapshot_columns
         assert "index_name" in snapshot_columns
         assert "oi_change_pct" in option_columns
+        assert {"volume_valid", "source_updated_at", "source_age_sec"} <= option_columns
+
+        # New schema defaults legacy/unknown volume provenance to invalid.
+        row = conn.execute(
+            "SELECT volume_valid FROM option_snapshots LIMIT 1"
+        ).fetchone()
+        assert row is None
     finally:
         conn.close()
 
