@@ -16,6 +16,7 @@ from alert_db import get_alert_db, save_alert_history
 from alert_engine import alert_engine
 from alert_models import AlertRuleType, AlertTriggerPayload, NotificationChannel
 from telegram_notifier import resolve_telegram_destination
+from volume_policy import has_eligible_volume
 
 logger = logging.getLogger(__name__)
 SIDES = ("CE", "PE")
@@ -28,15 +29,6 @@ def _number(value, fallback=None):
     except (TypeError, ValueError):
         return fallback
 
-
-def _is_exact_zero_volume(value: Any) -> bool:
-    """Treat only a numeric zero as zero volume; missing/string values are unknown."""
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(float(value))
-        and float(value) == 0.0
-    )
 
 
 def normalize_wall_options(options: Any) -> List[dict]:
@@ -81,31 +73,19 @@ def normalize_wall_options(options: Any) -> List[dict]:
 
 
 def calculate_wall_strikes(options: Any, spot: Optional[float] = None) -> Dict[str, Tuple[Optional[float], bool]]:
-    """Return the strongest CE and PE OI concentrations among eligible strikes.
+    """Return the strongest CE and PE OI concentrations among volume-eligible contracts.
 
-    A strike at least 5% from spot is excluded only when both its CE and PE
-    contracts have exact numeric zero volume. The raw snapshot is never
-    modified. Missing/invalid spot or volume leaves the strike eligible.
+    Volume eligibility is independent for each side: each contract must have
+    at least two traded contracts. The raw snapshot is never modified.
+    Missing or invalid volume is ineligible, not inferred to be active.
 
     The boolean reports whether eligible contracts for that side were present.
     Equal-OI ties resolve to the lower strike for deterministic results.
     """
-    rows = normalize_wall_options(options)
-    numeric_spot = _number(spot)
-    if numeric_spot is not None and numeric_spot > 0:
-        volumes_by_strike: Dict[float, Dict[str, Any]] = {}
-        for row in rows:
-            volumes_by_strike.setdefault(row["strike"], {})[row["option_type"]] = row.get("volume")
-        excluded_strikes = {
-            strike
-            for strike, volumes in volumes_by_strike.items()
-            if abs(strike - numeric_spot) * 100.0 / numeric_spot >= 5.0
-            and _is_exact_zero_volume(volumes.get("CE"))
-            and _is_exact_zero_volume(volumes.get("PE"))
-        }
-        if excluded_strikes:
-            rows = [row for row in rows if row["strike"] not in excluded_strikes]
-
+    rows = [
+        row for row in normalize_wall_options(options)
+        if has_eligible_volume(row.get("volume"))
+    ]
     results: Dict[str, Tuple[Optional[float], bool]] = {}
     for side in SIDES:
         side_rows = [row for row in rows if row["option_type"] == side]
