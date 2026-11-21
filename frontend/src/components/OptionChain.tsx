@@ -2,7 +2,7 @@ import React, { useMemo, useRef, useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom';
 import { AlertTriangle, ArrowDown, ArrowUp, Bell, BellRing, Loader2 } from 'lucide-react';
 import { ScreenshotButton } from './ScreenshotButton';
-import { COMPACT_OPTION_CHAIN_COLUMNS, shouldHideZeroVolumeStrike, type OptionChainColumnVisibility } from './optionChainColumns';
+import { COMPACT_OPTION_CHAIN_COLUMNS, hasEligibleVolumeContract, shouldHideStrikeForVolume, type OptionChainColumnVisibility } from './optionChainColumns';
 
 interface OptionData {
   strike: number;
@@ -349,45 +349,45 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
       .sort((a, b) => a.strike - b.strike);
   }, [options]);
 
-  // ── Calculate ATM ──
+  // A strike participates in chain analysis when at least one side has
+  // volume >= 2. CE and PE are tested independently.
+  const volumeEligibleRows = useMemo(
+    () => chainData.filter(
+      (row) => hasEligibleVolumeContract(row.CE) || hasEligibleVolumeContract(row.PE)
+    ),
+    [chainData],
+  );
+
+  // ── Calculate ATM from contracts with meaningful traded volume ──
   const atmSpot = useMemo(() => {
-    if (!spot || chainData.length === 0) return null;
-    return chainData.reduce((closest, row) =>
+    if (!spot || volumeEligibleRows.length === 0) return null;
+    return volumeEligibleRows.reduce((closest, row) =>
       Math.abs(row.strike - spot) < Math.abs(closest.strike - spot) ? row : closest
     ).strike;
-  }, [spot, chainData]);
-
-  // The optional row-visibility setting must not allow dead, far-OTM strikes
-  // to become actionable OI walls. Keep those raw rows available for display
-  // when the user disables the filter, but exclude them from wall selection.
-  const wallCandidateRows = useMemo(
-    () => chainData.filter(
-      (row) => !shouldHideZeroVolumeStrike(row.CE, row.PE, row.strike, spot)
-    ),
-    [chainData, spot],
-  );
+  }, [spot, volumeEligibleRows]);
 
   // ── FIX: rank only strikes within ±OI_RANK_WINDOW_PCT of spot ──
   const rankableRows = useMemo(() => {
-    if (!spot) return chainData;
+    if (!spot) return volumeEligibleRows;
     const lo = spot * (1 - OI_RANK_WINDOW_PCT / 100);
     const hi = spot * (1 + OI_RANK_WINDOW_PCT / 100);
-    const windowed = chainData.filter((r) => r.strike >= lo && r.strike <= hi);
-    // Safety: if the window somehow contains nothing, fall back to all rows
-    // so the badges never vanish entirely.
-    return windowed.length > 0 ? windowed : chainData;
-  }, [chainData, spot]);
+    const windowed = volumeEligibleRows.filter((r) => r.strike >= lo && r.strike <= hi);
+    // Safety: if the spot window contains nothing, rank the eligible chain.
+    return windowed.length > 0 ? windowed : volumeEligibleRows;
+  }, [volumeEligibleRows, spot]);
 
   // ── CE/PE OI ranking — TOP 3 (within the spot window) ──
   const ceOiRanks = useMemo(() => {
-    const sorted = [...rankableRows].sort((a, b) => (b.CE?.oi ?? 0) - (a.CE?.oi ?? 0));
+    const sorted = rankableRows.filter(row => hasEligibleVolumeContract(row.CE))
+      .sort((a, b) => (b.CE?.oi ?? 0) - (a.CE?.oi ?? 0));
     const ranks: Record<number, number> = {};
     sorted.slice(0, 3).forEach((row, i) => { ranks[row.strike] = i + 1; });
     return ranks;
   }, [rankableRows]);
 
   const peOiRanks = useMemo(() => {
-    const sorted = [...rankableRows].sort((a, b) => (b.PE?.oi ?? 0) - (a.PE?.oi ?? 0));
+    const sorted = rankableRows.filter(row => hasEligibleVolumeContract(row.PE))
+      .sort((a, b) => (b.PE?.oi ?? 0) - (a.PE?.oi ?? 0));
     const ranks: Record<number, number> = {};
     sorted.slice(0, 3).forEach((row, i) => { ranks[row.strike] = i + 1; });
     return ranks;
@@ -398,8 +398,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   const highestVolumeStrikes = useMemo(() => {
     const find = (side: 'CE' | 'PE') => {
       const candidates = rankableRows.filter((row) => {
-        const volume = row[side]?.volume;
-        return volume != null && Number.isFinite(volume) && volume > 0;
+        return hasEligibleVolumeContract(row[side]);
       });
       candidates.sort((a, b) =>
         ((b[side]?.volume ?? 0) - (a[side]?.volume ?? 0)) || a.strike - b.strike
@@ -409,12 +408,13 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     return { CE: find('CE'), PE: find('PE') };
   }, [rankableRows]);
 
-  // Walls are the strongest OI concentrations among wall-eligible strikes.
-  // Far-OTM strikes with zero volume on both sides are ignored before ranking,
-  // so a hidden data-quality row can never steal the bell/watch position.
+  // Walls are the strongest OI concentrations among contracts with volume >= 2.
+  // Eligibility is independent: a quiet CE does not disqualify an active PE.
   const currentWalls = useMemo(() => {
     const find = (side: 'CE' | 'PE') => {
-      const sideRows = wallCandidateRows.filter(row => side === 'CE' ? !!row.CE : !!row.PE);
+      const sideRows = volumeEligibleRows.filter(row =>
+        hasEligibleVolumeContract(side === 'CE' ? row.CE : row.PE)
+      );
       sideRows.sort((a, b) =>
         ((side === 'CE' ? b.CE?.oi ?? 0 : b.PE?.oi ?? 0) -
           (side === 'CE' ? a.CE?.oi ?? 0 : a.PE?.oi ?? 0)) ||
@@ -423,7 +423,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
       return sideRows[0]?.strike ?? null;
     };
     return { CE: find('CE'), PE: find('PE') };
-  }, [wallCandidateRows]);
+  }, [volumeEligibleRows]);
 
   const visibleWallEvents = useMemo(() => {
     const events = wallHistory?.events ?? [];
@@ -472,7 +472,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   // ── Center view around ATM ──
   const displayRows = useMemo(() => {
     const center = atmSpot;
-    let visibleRows = chainData;
+    let visibleRows = hideZeroVolumeStrikes ? volumeEligibleRows : chainData;
     if (center && chainData.length > 21) {
       const centerIdx = chainData.findIndex((r) => r.strike === center);
       if (centerIdx < 0) {
@@ -494,19 +494,21 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     if (requiredWallStrikes.size > 0) {
       const visibleStrikes = new Set(visibleRows.map((row) => row.strike));
       for (const strike of requiredWallStrikes) visibleStrikes.add(strike);
-      visibleRows = chainData.filter((row) => visibleStrikes.has(row.strike));
+      visibleRows = (hideZeroVolumeStrikes ? volumeEligibleRows : chainData)
+        .filter((row) => visibleStrikes.has(row.strike));
     }
 
-    // Hide 5%+ OTM strikes with exact zero volume on both sides.
-    // This row filter also applies equally to live and replay.
-    if (hideZeroVolumeStrikes) {
-      visibleRows = visibleRows.filter(
-        (row) => !shouldHideZeroVolumeStrike(row.CE, row.PE, row.strike, spot)
-      );
-    }
+    // Never display low-volume values on an individual side. The row stays
+    // when its opposite side has eligible volume; otherwise the default
+    // setting removes the empty strike altogether.
+    visibleRows = visibleRows.map((row) => ({
+      ...row,
+      CE: hasEligibleVolumeContract(row.CE) ? row.CE : undefined,
+      PE: hasEligibleVolumeContract(row.PE) ? row.PE : undefined,
+    }));
 
     return strikeOrder === 'asc' ? visibleRows : [...visibleRows].reverse();
-  }, [chainData, atmSpot, strikeOrder, currentWalls, hideZeroVolumeStrikes, spot]);
+  }, [chainData, volumeEligibleRows, atmSpot, strikeOrder, currentWalls, hideZeroVolumeStrikes]);
 
   // ── Jump to ATM ──
   // Scroll only the option-chain rows. Element.scrollIntoView() can also
@@ -1110,7 +1112,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
           <div>
             {displayRows.length === 0 ? (
               <div className="px-4 py-8 text-center text-xs font-mono text-terminal-muted">
-                No displayed strikes have confirmed trading volume. You can show them again in Settings → Display.
+                No contracts meet the minimum volume of 2. Adjust Settings → Display to show inactive strike rows.
               </div>
             ) : displayRows.map((row) => {
               const ce = row.CE;
@@ -1121,8 +1123,8 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
               const ceRank = ceOiRanks[row.strike];
               const peRank = peOiRanks[row.strike];
               const buildup = buildupByStrike.get(row.strike);
-              const ceBuildup = buildup?.CE ?? null;
-              const peBuildup = buildup?.PE ?? null;
+              const ceBuildup = hasEligibleVolumeContract(ce) ? buildup?.CE ?? null : null;
+              const peBuildup = hasEligibleVolumeContract(pe) ? buildup?.PE ?? null : null;
               // FIX (ITM tint): CE is ITM below spot, PE is ITM above spot.
               const ceItm = spot != null && row.strike < spot;
               const peItm = spot != null && row.strike > spot;
