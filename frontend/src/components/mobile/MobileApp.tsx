@@ -261,10 +261,9 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
     const pairs = new Map<number, { CE?: any; PE?: any }>();
     for (const option of options) {
       const pair = pairs.get(option.strike) ?? {};
-      if (option.option_type === "CE" || option.option_type === "PE") {
-        pair[option.option_type] = option;
-        pairs.set(option.strike, pair);
-      }
+      if (option.option_type === "CE") pair.CE = option;
+      else if (option.option_type === "PE") pair.PE = option;
+      pairs.set(option.strike, pair);
     }
     const eligibleOptions = options.filter((option) => {
       const pair = pairs.get(option.strike);
