@@ -2,7 +2,7 @@ export interface ZeroVolumeOptionSide {
   volume?: number | null;
 }
 
-export declare const ZERO_VOLUME_OTM_THRESHOLD_PCT: 10;
+export declare const ZERO_VOLUME_OTM_THRESHOLD_PCT: 5;
 
 export declare function shouldHideZeroVolumeStrike(
   ce: ZeroVolumeOptionSide | null | undefined,
