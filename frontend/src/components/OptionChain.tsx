@@ -672,6 +672,8 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
         .tt-chain-row {
           position: relative;
           border-bottom: 1px solid rgba(148, 163, 184, 0.065);
+          font-family: 'Inter', system-ui, sans-serif;
+          font-variant-numeric: tabular-nums lining-nums;
         }
         .tt-chain-row--atm::before {
           content: "";
@@ -873,7 +875,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                   key={row.strike}
                   data-strike={row.strike}
                   onClick={() => onSelectStrike(row.strike)}
-                  className={`tt-chain-row grid grid-cols-[1fr_64px_1fr] sm:grid-cols-[1fr_80px_1fr] gap-0 text-[10px] sm:text-xs font-mono cursor-pointer transition-colors hover:bg-white/5 ${
+                  className={`tt-chain-row grid grid-cols-[1fr_64px_1fr] sm:grid-cols-[1fr_80px_1fr] gap-0 text-[10px] sm:text-xs tabular-nums cursor-pointer transition-colors hover:bg-white/5 ${
                     isSelected ? 'bg-white/10' : ''
                   } ${row.strike === atmSpot ? 'tt-chain-row--atm' : ''} ${getGammaFlipClass(row.strike)}`}
                 >
