@@ -359,7 +359,7 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
         {tab === "watch" && (
           isScanner
             ? <MobileScanner scanners={scanners} promoted={activePromoted} now={now} onPromoteEnd={(n) => setPromoted(p => { const c = { ...p }; delete c[n]; return c; })} />
-            : <MobileChain data={viewData} onSelect={openStrike} floating={!replay} recenterTick={recenterTick} focusStrike={focusStrike} focusTick={focusTickN} />
+            : <MobileChain data={viewData} onSelect={openStrike} floating={!replay} replayMode={!!replay} recenterTick={recenterTick} focusStrike={focusStrike} focusTick={focusTickN} />
         )}
         {tab === "scan" && (
           <MobileScanner scanners={scanners} promoted={activePromoted} now={now}
