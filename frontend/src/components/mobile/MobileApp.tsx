@@ -4,6 +4,7 @@ import { AlertToastContainer } from "../AlertToast";
 import type { AlertFiring } from "../../hooks/useAlerts";
 import { fetchInstruments } from "../../instrumentsCache";
 import MobileChain from "./MobileChain";
+import { shouldHideZeroVolumeStrike } from "../optionChainColumns";
 import MobileScanner from "./MobileScanner";
 import MobileMap from "./MobileMap";
 import MobileAlerts from "./MobileAlerts";
@@ -236,11 +237,25 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
     return acc + (step > 0 && dist <= step * 1.5 ? 1 : 0);
   }, 0), [scanners]);
 
-  // Market levels: walls (argmax OI, same definition as the alert engine)
-  // with their OI amounts, for the levels rail.
+  // Market levels: OI walls from eligible strikes only. A far-OTM strike with
+  // zero volume on both CE and PE must not become the actionable level.
   const walls = useMemo(() => {
+    const options: any[] = viewData?.options ?? [];
+    const pairs = new Map<number, { CE?: any; PE?: any }>();
+    for (const option of options) {
+      const pair = pairs.get(option.strike) ?? {};
+      if (option.option_type === "CE" || option.option_type === "PE") {
+        pair[option.option_type] = option;
+        pairs.set(option.strike, pair);
+      }
+    }
+    const eligibleOptions = options.filter((option) => {
+      const pair = pairs.get(option.strike);
+      return !shouldHideZeroVolumeStrike(pair?.CE, pair?.PE, option.strike, viewData?.spot ?? null);
+    });
+
     let ceW: number | null = null, peW: number | null = null, ceOI: number | null = null, peOI: number | null = null, cm = -1, pm = -1;
-    (viewData?.options ?? []).forEach((o: any) => {
+    eligibleOptions.forEach((o: any) => {
       if (o.option_type === "CE" && (viewData?.spot == null || o.strike >= viewData.spot) && o.oi > cm) { cm = o.oi; ceW = o.strike; ceOI = o.oi; }
       if (o.option_type === "PE" && (viewData?.spot == null || o.strike <= viewData.spot) && o.oi > pm) { pm = o.oi; peW = o.strike; peOI = o.oi; }
     });
@@ -373,8 +388,8 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
                      sessionRange={kind === "commodity" ? "09:00–23:30 IST" : "09:15–15:30 IST"}
                      tier={(viewData as any)?.tier ?? 1}
                      atm={atmStrike}
-                     ceWall={(viewData as any)?.ce_wall ?? null}
-                     peWall={(viewData as any)?.pe_wall ?? null}
+                     ceWall={walls.ceWall}
+                     peWall={walls.peWall}
                      negGex={(viewData as any)?.max_negative_gex_strike ?? (viewData as any)?.max_gex_strike ?? null}
                      replayDate={replay?.date ?? null}
                      onSymbolTap={() => setSheet("inst")} />
