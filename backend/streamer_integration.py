@@ -442,11 +442,42 @@ if ANGEL_ONE_AVAILABLE:
         def _build_token_map(self):
             from stock_streamer import option_type
             self.token_map = {}
+            seen_contracts = {}
+            duplicate_tokens = []
+            duplicate_contracts = []
+
             for _, row in self.options_df.iterrows():
-                self.token_map[str(row["token"])] = {
-                    "strike": int(row["strike"]),
-                    "type": option_type(str(row["symbol"])),
+                token = str(row["token"])
+                strike = int(row["strike"])
+                opt_type = option_type(str(row["symbol"]))
+                contract_key = (strike, opt_type)
+
+                if token in self.token_map:
+                    duplicate_tokens.append(token)
+                if contract_key in seen_contracts:
+                    duplicate_contracts.append({
+                        "strike": strike,
+                        "option_type": opt_type,
+                        "tokens": [seen_contracts[contract_key], token],
+                    })
+
+                seen_contracts[contract_key] = token
+                self.token_map[token] = {
+                    "strike": strike,
+                    "type": opt_type,
                 }
+
+            logger.info(
+                "[%s] Contract map audit: rows=%d unique_tokens=%d "
+                "unique_strike_sides=%d duplicate_tokens=%d duplicate_strike_sides=%d",
+                self.index_name, len(self.options_df), len(self.token_map),
+                len(seen_contracts), len(duplicate_tokens), len(duplicate_contracts),
+            )
+            if duplicate_tokens or duplicate_contracts:
+                logger.error(
+                    "[%s] Scrip-master contract-map duplicates detected: tokens=%s contracts=%s",
+                    self.index_name, duplicate_tokens[:20], duplicate_contracts[:20],
+                )
 
         def register_with_manager(self, manager: SubscriptionManager):
             """Register all tokens as a Tier-1 atomic group. No WS ownership here."""
@@ -623,10 +654,25 @@ if ANGEL_ONE_AVAILABLE:
                         analytics_opt = analytics["strikes_data"].get(strike, {}).get(opt_type, {})
                         current_oi = opt.get("oi", 0)
                         oi_change, oi_change_pct = self.data_store.compute_oi_change(strike, opt_type, current_oi)
+                        source_updated_at = opt.get("last_update")
+                        source_age_sec = None
+                        if source_updated_at:
+                            try:
+                                source_age_sec = round(
+                                    max(0.0, (datetime.now() - datetime.fromisoformat(source_updated_at)).total_seconds()),
+                                    1,
+                                )
+                            except (TypeError, ValueError):
+                                logger.warning(
+                                    "[%s] Invalid per-contract source timestamp for %s %s: %r",
+                                    self.index_name, strike, opt_type, source_updated_at,
+                                )
                         enriched_options.append({
                             "strike": strike, "option_type": opt_type,
                             "oi": current_oi, "oi_change": oi_change, "oi_change_pct": oi_change_pct,
                             "volume": opt.get("volume", 0), "ltp": opt.get("ltp", 0),
+                            "source_updated_at": source_updated_at,
+                            "source_age_sec": source_age_sec,
                             "iv": analytics_opt.get("iv"), "delta": analytics_opt.get("delta"),
                             "gamma": analytics_opt.get("gamma"), "theta": analytics_opt.get("theta"),
                             "vega": analytics_opt.get("vega"), "gex": analytics_opt.get("gex"),
