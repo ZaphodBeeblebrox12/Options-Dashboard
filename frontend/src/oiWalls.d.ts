@@ -2,6 +2,7 @@ export interface OiWallInput {
   strike: number;
   option_type: string;
   oi?: number | null;
+  volume?: number | null;
 }
 
 export interface OiWalls {
