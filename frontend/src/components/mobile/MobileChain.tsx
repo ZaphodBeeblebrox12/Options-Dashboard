@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { fmtOI, fmtDelta, fmtPx } from "./mobileFormat";
 import { nearestStrike } from "../../strikeUtils";
-import { HIDE_ZERO_VOLUME_EVENT, shouldHideZeroVolumeStrike, loadHideZeroVolumeStrikes } from "../optionChainColumns";
+import { HIDE_ZERO_VOLUME_EVENT, hasEligibleVolumeContract, loadHideZeroVolumeStrikes } from "../optionChainColumns";
 
 interface Opt {
   strike: number; option_type: string; oi: number; oi_change: number;
-  volume: number; volume_valid?: boolean | number | null; source_age_sec?: number | null; ltp: number; iv?: number | null; delta?: number | null;
+  volume?: number | null; volume_valid?: boolean | number | null; source_age_sec?: number | null; ltp: number; iv?: number | null; delta?: number | null;
   gamma?: number | null; theta?: number | null; vega?: number | null; gex?: number | null;
 }
 interface RowData { strike: number; ce?: Opt; pe?: Opt }
@@ -99,33 +99,36 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
   }, [data?.options]);
 
   const spot: number | null = data?.spot ?? null;
-  // Single source of truth: backend payload `atm` when present (same
-  // nearest-strike definition as the backend); shared fallback otherwise.
-  const atmStrike = useMemo(() => {
-    if (data?.atm != null && rows.some(r => r.strike === data.atm)) return data.atm;
-    if (spot == null || !rows.length) return null;
-    return nearestStrike(spot, rows.map(r => r.strike));
-  }, [data?.atm, rows, spot]);
-
-  // Wall selection always ignores far-OTM strikes with zero volume on both
-  // sides, even when the user chooses to show those raw rows in the chain.
-  const wallCandidateRows = useMemo(
-    () => rows.filter(r => !shouldHideZeroVolumeStrike(r.ce, r.pe, r.strike, spot)),
-    [rows, spot],
+  // A strike is active when either contract has volume >= 2. Each option side
+  // is then handled independently for OI walls and GEX.
+  const volumeEligibleRows = useMemo(
+    () => rows.filter(r => hasEligibleVolumeContract(r.ce) || hasEligibleVolumeContract(r.pe)),
+    [rows],
   );
+
+  // Single source of truth: backend ATM when it remains in the eligible chain.
+  const atmStrike = useMemo(() => {
+    if (data?.atm != null && volumeEligibleRows.some(r => r.strike === data.atm)) return data.atm;
+    if (spot == null || !volumeEligibleRows.length) return null;
+    return nearestStrike(spot, volumeEligibleRows.map(r => r.strike));
+  }, [data?.atm, volumeEligibleRows, spot]);
 
   const walls = useMemo(() => {
     let ceW: number | null = null, peW: number | null = null, ceM = -1, peM = -1;
-    for (const r of wallCandidateRows) {
-      if (r.ce && r.ce.oi > ceM) { ceM = r.ce.oi; ceW = r.strike; }
-      if (r.pe && r.pe.oi > peM) { peM = r.pe.oi; peW = r.strike; }
+    for (const r of volumeEligibleRows) {
+      if (hasEligibleVolumeContract(r.ce) && r.ce!.oi > ceM) { ceM = r.ce!.oi; ceW = r.strike; }
+      if (hasEligibleVolumeContract(r.pe) && r.pe!.oi > peM) { peM = r.pe!.oi; peW = r.strike; }
     }
     return { ceWall: ceW, peWall: peW };
-  }, [wallCandidateRows]);
+  }, [volumeEligibleRows]);
 
-  // GEX scale for the embedded shading (per side, shared across rows).
-  const gMax = useMemo(() => rows.reduce((m, r) =>
-    Math.max(m, Math.abs(r.ce?.gex ?? 0), Math.abs(r.pe?.gex ?? 0)), 0), [rows]);
+  // GEX scale for the embedded shading includes eligible contract contributions only.
+  const gMax = useMemo(() => volumeEligibleRows.reduce((m, r) =>
+    Math.max(
+      m,
+      hasEligibleVolumeContract(r.ce) ? Math.abs(r.ce!.gex ?? 0) : 0,
+      hasEligibleVolumeContract(r.pe) ? Math.abs(r.pe!.gex ?? 0) : 0,
+    ), 0), [volumeEligibleRows]);
 
   // Robust native positioning: scrollIntoView resolves the correct scroll
   // container itself, immune to CSS changes and offsetParent drift.
@@ -194,12 +197,14 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
     return () => { el.removeEventListener("scroll", onScroll); if (rafRef.current) cancelAnimationFrame(rafRef.current); };
   }, [centerKey, rows.length, atmStrike]);
 
-  const displayRows = useMemo(
-    () => hideZeroVolumeStrikes
-      ? rows.filter(r => !shouldHideZeroVolumeStrike(r.ce, r.pe, r.strike, spot))
-      : rows,
-    [rows, hideZeroVolumeStrikes, spot],
-  );
+  const displayRows = useMemo(() => {
+    const sourceRows = hideZeroVolumeStrikes ? volumeEligibleRows : rows;
+    return sourceRows.map(r => ({
+      ...r,
+      ce: hasEligibleVolumeContract(r.ce) ? r.ce : undefined,
+      pe: hasEligibleVolumeContract(r.pe) ? r.pe : undefined,
+    }));
+  }, [rows, volumeEligibleRows, hideZeroVolumeStrikes]);
 
   if (!rows.length || !displayRows.length) {
     return (
@@ -208,7 +213,7 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
           ? data?.market_open === false
             ? <>Session closed for {data?.index_name ?? "this instrument"}.<br />Live chain resumes in the next session.</>
             : <>Waiting for option ticks on {data?.index_name ?? "…"}<br /><span style={{ fontSize: 11 }}>{data?.window_state ?? ""}</span></>
-          : <>All strikes are hidden because both sides have confirmed zero volume.<br /><span style={{ fontSize: 11 }}>Change this in Settings → Display.</span></>}
+          : <>No contracts meet the minimum volume of 2.<br /><span style={{ fontSize: 11 }}>Change this in Settings → Display to show inactive strike rows.</span>}
       </div>
     );
   }
