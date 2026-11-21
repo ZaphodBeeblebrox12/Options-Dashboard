@@ -191,11 +191,28 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
   const baseData = replay
     ? replaySnap
     : (hasUsableLiveData ? data : (!marketOpen ? lastKnownSnapshot ?? null : data ?? null)); // replay overrides live; CLOSED may use the persisted last-known snapshot
-  // wall chips for the Walls tab: max-OI strikes from the visible chain
+  // wall chips for the Walls tab: max-OI strikes among eligible contracts.
+  // Far-OTM strikes with zero volume on both sides are excluded consistently.
   const wallChips = useMemo(() => {
+    const options: any[] = (baseData as any)?.options ?? [];
+    const wallSpot = (baseData as any)?.spot ?? null;
+    const pairs = new Map<number, { CE?: any; PE?: any }>();
+    for (const option of options) {
+      const pair = pairs.get(option.strike) ?? {};
+      if (option.option_type === "CE") pair.CE = option;
+      else if (option.option_type === "PE") pair.PE = option;
+      pairs.set(option.strike, pair);
+    }
+    const eligibleOptions = options.filter((option) =>
+      !shouldHideZeroVolumeStrike(
+        pairs.get(option.strike)?.CE,
+        pairs.get(option.strike)?.PE,
+        option.strike,
+        wallSpot,
+      )
+    );
     let cew: number | null = null, pew: number | null = null, ceo = -1, peo = -1;
-    const wallSpot = (baseData as any)?.spot;
-    for (const o of ((baseData as any)?.options ?? []) as any[]) {
+    for (const o of eligibleOptions) {
       if (o?.option_type === "CE" && (wallSpot == null || o.strike >= wallSpot) && (o.oi ?? 0) > ceo) { ceo = o.oi; cew = o.strike; }
       if (o?.option_type === "PE" && (wallSpot == null || o.strike <= wallSpot) && (o.oi ?? 0) > peo) { peo = o.oi; pew = o.strike; }
     }
