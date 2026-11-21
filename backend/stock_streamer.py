@@ -191,7 +191,7 @@ class InstrumentStreamer:
             group_id=self.spot_group_id, tier=self._tier_enum(),
             instrument_name=self.symbol, tokens=set(reqs),
         ))
-        self.manager.bind_handler(self._spot_token, self._on_underlying_tick)
+        self.manager.bind_handler(self._spot_token, self._on_underlying_tick, exchange_type=self._spot_exch_type, mode=1)
         return ok
 
     def _register_futures(self) -> bool:
@@ -206,7 +206,7 @@ class InstrumentStreamer:
             group_id=self.futures_group_id, tier=self._tier_enum(),
             instrument_name=self.symbol, tokens={req},
         ))
-        self.manager.bind_handler(self._futures_token, self._on_futures_tick)
+        self.manager.bind_handler(self._futures_token, self._on_futures_tick, exchange_type=self._deriv_exch_type, mode=1)
         return ok
 
     def start(self):
@@ -308,7 +308,7 @@ class InstrumentStreamer:
             for _, r in df.iterrows()
         }
         for tok in self.option_meta:
-            self.manager.bind_handler(tok, self._on_option_tick)
+            self.manager.bind_handler(tok, self._on_option_tick, exchange_type=self._deriv_exch_type, mode=3)
 
         logger.info(f"[{self.symbol}] Option metadata loaded ({self.kind}): expiry {self.expiry_str}, "
                     f"lot {self.contract_multiplier}, {len(self.strikes)} strikes")
