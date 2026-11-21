@@ -1093,7 +1093,11 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
 
           {/* Option rows share the header's scroll container and width. */}
           <div>
-            {displayRows.map((row) => {
+            {displayRows.length === 0 ? (
+              <div className="px-4 py-8 text-center text-xs font-mono text-terminal-muted">
+                No displayed strikes have confirmed trading volume. You can show them again in Settings → Display.
+              </div>
+            ) : displayRows.map((row) => {
               const ce = row.CE;
               const pe = row.PE;
               const isSelected = row.strike === selectedStrike;
