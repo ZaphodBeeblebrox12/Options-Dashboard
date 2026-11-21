@@ -189,9 +189,9 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
 
   const displayRows = useMemo(
     () => hideZeroVolumeStrikes
-      ? rows.filter(r => !shouldHideZeroVolumeStrike(r.ce, r.pe, replayMode))
+      ? rows.filter(r => !shouldHideZeroVolumeStrike(r.ce, r.pe, r.strike, spot))
       : rows,
-    [rows, hideZeroVolumeStrikes, replayMode],
+    [rows, hideZeroVolumeStrikes, spot],
   );
 
   if (!rows.length || !displayRows.length) {
