@@ -519,7 +519,7 @@ class InstrumentStreamer:
                 enriched.append({
                     "strike": strike, "option_type": opt_type,
                     "oi": opt.get("oi", 0), "oi_change": oi_change, "oi_change_pct": oi_change_pct,
-                    "volume": opt.get("volume", 0), "ltp": opt.get("ltp", 0),
+                    "volume": opt.get("volume", 0), "volume_valid": bool(opt.get("volume_valid", False)), "source_updated_at": opt.get("last_update"), "ltp": opt.get("ltp", 0),
                     "iv": opt.get("iv"), "delta": opt.get("delta"), "gamma": opt.get("gamma"),
                     "theta": opt.get("theta"), "vega": opt.get("vega"), "gex": opt.get("gex"),
                 })
@@ -1064,7 +1064,7 @@ class InstrumentStreamer:
                 enriched.append({
                     "strike": strike, "option_type": opt_type,
                     "oi": current_oi, "oi_change": oi_change, "oi_change_pct": oi_change_pct,
-                    "volume": opt.get("volume", 0), "ltp": opt.get("ltp", 0),
+                    "volume": opt.get("volume", 0), "volume_valid": bool(opt.get("volume_valid", False)), "source_updated_at": opt.get("last_update"), "ltp": opt.get("ltp", 0),
                     "iv": a_opt.get("iv"), "delta": a_opt.get("delta"),
                     "gamma": a_opt.get("gamma"), "theta": a_opt.get("theta"),
                     "vega": a_opt.get("vega"), "gex": a_opt.get("gex"),
@@ -1162,9 +1162,19 @@ class InstrumentStreamer:
             meta = self.option_meta.get(str(message.get("token", "")))
             if not meta:
                 return
-            ltp = float(message.get("last_traded_price", 0) or 0) / 100.0
-            oi = int(message.get("open_interest", 0) or 0)
-            vol = int(message.get("volume_trade_for_the_day", 0) or 0)
+            raw_ltp = message.get("last_traded_price")
+            raw_oi = message.get("open_interest")
+            raw_volume = message.get("volume_trade_for_the_day")
+            if any(value in (None, "") for value in (raw_ltp, raw_oi, raw_volume)):
+                logger.warning(
+                    "[%s] Ignoring incomplete option tick token=%s "
+                    "(ltp=%r oi=%r volume=%r); retaining last complete contract state",
+                    self.symbol, message.get("token"), raw_ltp, raw_oi, raw_volume,
+                )
+                return
+            ltp = float(raw_ltp) / 100.0
+            oi = int(raw_oi)
+            vol = int(raw_volume)
             self.data_store.update(meta["strike"], meta["type"], ltp, oi, vol)
         except Exception as e:
             logger.error(f"[{self.symbol}] Option tick error: {e}")
@@ -1195,7 +1205,7 @@ class InstrumentStreamer:
                 enriched.append({
                     "strike": strike, "option_type": opt_type,
                     "oi": current_oi, "oi_change": oi_change, "oi_change_pct": oi_change_pct,
-                    "volume": opt.get("volume", 0), "ltp": opt.get("ltp", 0),
+                    "volume": opt.get("volume", 0), "volume_valid": bool(opt.get("volume_valid", False)), "source_updated_at": opt.get("last_update"), "ltp": opt.get("ltp", 0),
                     "iv": None, "delta": None, "gamma": None,
                     "theta": None, "vega": None, "gex": None,
                 })
@@ -1301,7 +1311,7 @@ class InstrumentStreamer:
                     enriched.append({
                         "strike": strike, "option_type": opt_type,
                         "oi": current_oi, "oi_change": oi_change, "oi_change_pct": oi_change_pct,
-                        "volume": opt.get("volume", 0), "ltp": opt.get("ltp", 0),
+                        "volume": opt.get("volume", 0), "volume_valid": bool(opt.get("volume_valid", False)), "source_updated_at": opt.get("last_update"), "ltp": opt.get("ltp", 0),
                         "iv": a_opt.get("iv"), "delta": a_opt.get("delta"),
                         "gamma": a_opt.get("gamma"), "theta": a_opt.get("theta"),
                         "vega": a_opt.get("vega"), "gex": a_opt.get("gex"),
