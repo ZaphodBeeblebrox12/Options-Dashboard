@@ -518,17 +518,17 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
 
   const getCeOiClass = (strike: number) => {
     const rank = ceOiRanks[strike];
-    if (rank === 1) return 'bg-red-500/15 text-red-200 font-semibold ring-1 ring-inset ring-red-400/25';
-    if (rank === 2) return 'bg-red-500/[0.08] text-red-300 font-medium';
-    if (rank === 3) return 'bg-red-500/[0.04] text-red-300/90 font-medium';
+    if (rank === 1) return 'bg-red-800 text-red-100 font-bold shadow-sm shadow-red-900/50';
+    if (rank === 2) return 'bg-red-900/40 text-red-300 font-semibold';
+    if (rank === 3) return 'bg-red-950/30 text-red-400 font-medium';
     return 'text-terminal-text';
   };
 
   const getPeOiClass = (strike: number) => {
     const rank = peOiRanks[strike];
-    if (rank === 1) return 'bg-green-500/15 text-green-100 font-semibold ring-1 ring-inset ring-green-400/25';
-    if (rank === 2) return 'bg-green-500/[0.08] text-green-300 font-medium';
-    if (rank === 3) return 'bg-green-500/[0.04] text-green-300/90 font-medium';
+    if (rank === 1) return 'bg-green-800 text-green-100 font-bold shadow-sm shadow-green-900/50';
+    if (rank === 2) return 'bg-green-900/40 text-green-300 font-semibold';
+    if (rank === 3) return 'bg-green-950/30 text-green-400 font-medium';
     return 'text-terminal-text';
   };
 
@@ -538,7 +538,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
 
   const OiRankBadge = ({ rank }: { rank?: number }) => {
     if (!rank) return null;
-    const colors = ['', 'bg-red-500/80', 'bg-red-500/45', 'bg-red-500/25'];
+    const colors = ['', 'bg-red-600', 'bg-red-500/70', 'bg-red-400/50'];
     const textColors = ['', 'text-white', 'text-red-100', 'text-red-200'];
     return (
       <span className={`inline-flex items-center justify-center w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full text-[8px] sm:text-[9px] font-bold ml-0.5 sm:ml-1 ${colors[rank]} ${textColors[rank]}`}>
@@ -549,7 +549,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
 
   const PeOiRankBadge = ({ rank }: { rank?: number }) => {
     if (!rank) return null;
-    const colors = ['', 'bg-green-500/80', 'bg-green-500/45', 'bg-green-500/25'];
+    const colors = ['', 'bg-green-600', 'bg-green-500/70', 'bg-green-400/50'];
     const textColors = ['', 'text-white', 'text-green-100', 'text-green-200'];
     return (
       <span className={`inline-flex items-center justify-center w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full text-[8px] sm:text-[9px] font-bold mr-0.5 sm:mr-1 ${colors[rank]} ${textColors[rank]}`}>
@@ -707,15 +707,15 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
         <div className="flex items-center gap-2">
           <div className="hidden sm:flex items-center gap-3 text-[10px]">
             <div className="flex items-center gap-1.5">
-              <span className="w-5 h-4 rounded bg-red-500/80 text-white text-[8px] flex items-center justify-center font-bold">1</span>
-              <span className="w-5 h-4 rounded bg-red-500/45 text-red-100 text-[8px] flex items-center justify-center font-semibold">2</span>
-              <span className="w-5 h-4 rounded bg-red-500/25 text-red-200 text-[8px] flex items-center justify-center">3</span>
+              <span className="w-5 h-4 rounded bg-red-800 text-white text-[8px] flex items-center justify-center font-bold">1</span>
+              <span className="w-5 h-4 rounded bg-red-900/40 text-red-300 text-[8px] flex items-center justify-center font-semibold">2</span>
+              <span className="w-5 h-4 rounded bg-red-950/30 text-red-400 text-[8px] flex items-center justify-center">3</span>
               <span className="text-terminal-muted">CE OI</span>
             </div>
             <div className="flex items-center gap-1.5">
-              <span className="w-5 h-4 rounded bg-green-500/80 text-white text-[8px] flex items-center justify-center font-bold">1</span>
-              <span className="w-5 h-4 rounded bg-green-500/45 text-green-100 text-[8px] flex items-center justify-center font-semibold">2</span>
-              <span className="w-5 h-4 rounded bg-green-500/25 text-green-200 text-[8px] flex items-center justify-center">3</span>
+              <span className="w-5 h-4 rounded bg-green-800 text-white text-[8px] flex items-center justify-center font-bold">1</span>
+              <span className="w-5 h-4 rounded bg-green-900/40 text-green-300 text-[8px] flex items-center justify-center font-semibold">2</span>
+              <span className="w-5 h-4 rounded bg-green-950/30 text-green-400 text-[8px] flex items-center justify-center">3</span>
               <span className="text-terminal-muted">PE OI</span>
             </div>
             <div className="flex items-center gap-1.5">
