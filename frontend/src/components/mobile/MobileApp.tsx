@@ -282,11 +282,11 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
   // Single source of truth: backend payload `atm`; shared fallback util only
   // when the payload lacks it (replay snapshots).
   const atmStrike = useMemo(() => {
-    if (viewData?.atm != null) return viewData.atm;
-    const strikes: number[] = (viewData?.options ?? []).map((o: any) => o.strike);
+    const strikes: number[] = eligibleOptions.map((o: any) => o.strike);
+    if (viewData?.atm != null && strikes.includes(viewData.atm)) return viewData.atm;
     if (!strikes.length || viewData?.spot == null) return null;
     return nearestStrike(viewData.spot, strikes);
-  }, [viewData]);
+  }, [viewData?.atm, viewData?.spot, eligibleOptions]);
 
   const pick = (name: string) => {
     const inst = instList.find(i => i.name === name);
