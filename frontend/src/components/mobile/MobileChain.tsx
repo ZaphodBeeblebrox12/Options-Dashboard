@@ -213,7 +213,7 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
           ? data?.market_open === false
             ? <>Session closed for {data?.index_name ?? "this instrument"}.<br />Live chain resumes in the next session.</>
             : <>Waiting for option ticks on {data?.index_name ?? "…"}<br /><span style={{ fontSize: 11 }}>{data?.window_state ?? ""}</span></>
-          : <>No contracts meet the minimum volume of 2.<br /><span style={{ fontSize: 11 }}>Change this in Settings → Display to show inactive strike rows.</span>}
+          : <>No contracts meet the minimum volume of 2.<br /><span style={{ fontSize: 11 }}>Change this in Settings → Display to show inactive strike rows.</span></>}
       </div>
     );
   }
