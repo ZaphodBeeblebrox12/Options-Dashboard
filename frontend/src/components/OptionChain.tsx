@@ -810,14 +810,14 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
           border-radius: 5px;
         }
         .tt-wall-level--current-ce {
-          background: linear-gradient(145deg, rgba(156, 38, 57, 0.42), rgba(91, 26, 38, 0.34));
-          border-color: rgba(240, 139, 150, 0.68);
-          box-shadow: inset 0 0 0 1px rgba(240, 139, 150, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.045);
+          background: linear-gradient(145deg, rgba(156, 38, 57, 0.68), rgba(91, 26, 38, 0.54));
+          border-color: rgba(255, 133, 151, 0.92);
+          box-shadow: inset 0 0 0 1px rgba(255, 133, 151, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.07);
         }
         .tt-wall-level--current-pe {
-          background: linear-gradient(145deg, rgba(7, 112, 75, 0.50), rgba(5, 70, 52, 0.34));
-          border-color: rgba(84, 214, 161, 0.72);
-          box-shadow: inset 0 0 0 1px rgba(84, 214, 161, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.045);
+          background: linear-gradient(145deg, rgba(7, 112, 75, 0.70), rgba(5, 70, 52, 0.54));
+          border-color: rgba(91, 235, 177, 0.94);
+          box-shadow: inset 0 0 0 1px rgba(91, 235, 177, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.07);
         }
         .tt-wall-level-label {
           color: #a9b7c3;
@@ -1044,8 +1044,8 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
           <div className="sticky top-0 sm:top-[52px] z-20">
         {/* Always-visible access to the true whole-expiry OI walls. Rank #1 badges
             are a separate ±5% spot-window ranking and need not be the wall strike. */}
-        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1.5 border-b border-terminal-border bg-terminal-bg/75">
-          <span className="mr-0.5 text-[8px] sm:text-[9px] font-mono font-semibold tracking-wider text-terminal-muted">OI WALLS</span>
+        <div className="flex h-5 flex-nowrap items-center gap-1 px-2 border-b border-terminal-border bg-terminal-bg/75">
+          <span className="mr-0.5 shrink-0 text-[7px] font-mono font-semibold tracking-wide text-terminal-muted">WALL</span>
           {(['CE', 'PE'] as const).map((side) => {
             const strike = currentWalls[side];
             const wallOption = currentWallOptions[side];
@@ -1056,15 +1056,15 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
             return (
               <div
                 key={side}
-                className={`inline-flex min-w-0 items-center gap-1.5 rounded border px-1.5 py-1 transition-colors ${accent}`}
+                className={`inline-flex h-4 min-w-0 items-center gap-1 rounded border px-1 py-0 transition-colors ${accent}`}
                 onMouseEnter={strike != null ? (event) => showWallHover(side, strike, event.currentTarget) : undefined}
                 onMouseLeave={hideWallHover}
                 onFocus={strike != null ? (event) => showWallHover(side, strike, event.currentTarget) : undefined}
                 onBlur={hideWallHover}
               >
-                <span className="text-[8px] font-mono font-bold tracking-wide opacity-75">{side} WALL</span>
-                <strong className="text-[10px] sm:text-[11px] font-mono tabular-nums">{strike == null ? '—' : fmt(strike)}</strong>
-                <span className="hidden sm:inline text-[9px] font-mono tabular-nums opacity-70">{wallOption?.oi != null ? `${fmt(wallOption.oi)} OI` : 'OI —'}</span>
+                <span className="text-[7px] font-mono font-bold tracking-wide opacity-80">{side}</span>
+                <strong className="text-[9px] font-mono tabular-nums">{strike == null ? '—' : fmt(strike)}</strong>
+                <span className="hidden sm:inline text-[8px] font-mono tabular-nums opacity-75">{wallOption?.oi != null ? fmt(wallOption.oi) : '—'}</span>
                 <button
                   type="button"
                   onClick={(event) => void toggleWallWatch(side, event)}
@@ -1076,13 +1076,13 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                       : 'Switch to a live, connected market feed to arm this wall alert'}
                   aria-label={armed ? `Disarm ${side} wall alert` : `Arm ${side} wall alert`}
                   aria-busy={watchBusy === side}
-                  className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${armed ? 'bg-amber-500/20 text-amber-200 hover:bg-amber-500/30' : 'text-terminal-muted hover:text-amber-200 hover:bg-white/10'} disabled:cursor-not-allowed disabled:opacity-60`}
+                  className={`inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${armed ? 'bg-amber-500/20 text-amber-200 hover:bg-amber-500/30' : 'text-terminal-muted hover:text-amber-200 hover:bg-white/10'} disabled:cursor-not-allowed disabled:opacity-60`}
                 >
                   {watchBusy === side
-                    ? <Loader2 className="h-3 w-3 animate-spin" />
+                    ? <Loader2 className="h-2.5 w-2.5 animate-spin" />
                     : armed
-                      ? <BellRing className="h-3 w-3" />
-                      : <Bell className="h-3 w-3" />}
+                      ? <BellRing className="h-2.5 w-2.5" />
+                      : <Bell className="h-2.5 w-2.5" />}
                 </button>
               </div>
             );
