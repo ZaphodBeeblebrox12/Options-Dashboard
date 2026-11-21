@@ -3,15 +3,15 @@ from wall_watch import calculate_wall_strikes, normalize_wall_options
 
 def test_walls_use_highest_oi_per_side_across_loaded_expiry_chain():
     options = [
-        {"strike": 24500, "option_type": "CE", "oi": 1200},
-        {"strike": 24900, "option_type": "CE", "oi": 900},
-        {"strike": 25000, "option_type": "CE", "oi": 400},
-        {"strike": 25100, "option_type": "CE", "oi": 700},
-        {"strike": 25200, "option_type": "CE", "oi": 600},
-        {"strike": 24800, "option_type": "PE", "oi": 500},
-        {"strike": 25000, "option_type": "PE", "oi": 800},
-        {"strike": 25050, "option_type": "PE", "oi": 900},
-        {"strike": 25500, "option_type": "PE", "oi": 1100},
+        {"strike": 24500, "option_type": "CE", "oi": 1200, "volume": 2},
+        {"strike": 24900, "option_type": "CE", "oi": 900, "volume": 2},
+        {"strike": 25000, "option_type": "CE", "oi": 400, "volume": 2},
+        {"strike": 25100, "option_type": "CE", "oi": 700, "volume": 2},
+        {"strike": 25200, "option_type": "CE", "oi": 600, "volume": 2},
+        {"strike": 24800, "option_type": "PE", "oi": 500, "volume": 2},
+        {"strike": 25000, "option_type": "PE", "oi": 800, "volume": 2},
+        {"strike": 25050, "option_type": "PE", "oi": 900, "volume": 2},
+        {"strike": 25500, "option_type": "PE", "oi": 1100, "volume": 2},
     ]
     walls = calculate_wall_strikes(options, 25000)
     assert walls["CE"] == (24500, True)
@@ -20,9 +20,9 @@ def test_walls_use_highest_oi_per_side_across_loaded_expiry_chain():
 
 def test_crossing_call_wall_does_not_move_it_when_oi_is_unchanged():
     options = [
-        {"strike": 24900, "option_type": "CE", "oi": 900},
-        {"strike": 25000, "option_type": "CE", "oi": 400},
-        {"strike": 25100, "option_type": "CE", "oi": 700},
+        {"strike": 24900, "option_type": "CE", "oi": 900, "volume": 2},
+        {"strike": 25000, "option_type": "CE", "oi": 400, "volume": 2},
+        {"strike": 25100, "option_type": "CE", "oi": 700, "volume": 2},
     ]
 
     # Spot starts below the wall, moves above it, then returns below it.
@@ -36,8 +36,8 @@ def test_crossing_call_wall_does_not_move_it_when_oi_is_unchanged():
 def test_crossing_put_wall_does_not_move_it_when_oi_is_unchanged():
     options = [
         {"strike": 24900, "option_type": "PE", "oi": 500},
-        {"strike": 25000, "option_type": "PE", "oi": 800},
-        {"strike": 25100, "option_type": "PE", "oi": 700},
+        {"strike": 25000, "option_type": "PE", "oi": 800, "volume": 2},
+        {"strike": 25100, "option_type": "PE", "oi": 700, "volume": 2},
     ]
 
     # Spot moves from above the Put Wall to below it and then back.
@@ -49,21 +49,21 @@ def test_crossing_put_wall_does_not_move_it_when_oi_is_unchanged():
 
 def test_changed_oi_can_move_a_wall():
     before = [
-        {"strike": 24900, "option_type": "CE", "oi": 900},
-        {"strike": 25000, "option_type": "CE", "oi": 400},
-        {"strike": 25100, "option_type": "CE", "oi": 700},
+        {"strike": 24900, "option_type": "CE", "oi": 900, "volume": 2},
+        {"strike": 25000, "option_type": "CE", "oi": 400, "volume": 2},
+        {"strike": 25100, "option_type": "CE", "oi": 700, "volume": 2},
     ]
     after = [
-        {"strike": 24900, "option_type": "CE", "oi": 600},
-        {"strike": 25000, "option_type": "CE", "oi": 400},
-        {"strike": 25100, "option_type": "CE", "oi": 1000},
+        {"strike": 24900, "option_type": "CE", "oi": 600, "volume": 2},
+        {"strike": 25000, "option_type": "CE", "oi": 400, "volume": 2},
+        {"strike": 25100, "option_type": "CE", "oi": 1000, "volume": 2},
     ]
     assert calculate_wall_strikes(before, 25050)["CE"] == (24900, True)
     assert calculate_wall_strikes(after, 27000)["CE"] == (25100, True)
 
 
 def test_missing_side_is_incomplete_data_and_does_not_create_a_wall():
-    options = [{"strike": 25000, "option_type": "CE", "oi": 100}]
+    options = [{"strike": 25000, "option_type": "CE", "oi": 100, "volume": 2}]
     walls = calculate_wall_strikes(options, 25050)
     assert walls["CE"] == (25000, True)
     assert walls["PE"] == (None, False)
@@ -71,8 +71,8 @@ def test_missing_side_is_incomplete_data_and_does_not_create_a_wall():
 
 def test_accepts_strike_keyed_live_chain_shape():
     options = {
-        "25000": {"CE": {"oi": 100}, "PE": {"oi": 250}},
-        "25100": {"CE": {"oi": 500}, "PE": {"oi": 50}},
+        "25000": {"CE": {"oi": 100, "volume": 2}, "PE": {"oi": 250, "volume": 2}},
+        "25100": {"CE": {"oi": 500, "volume": 2}, "PE": {"oi": 50, "volume": 2}},
     }
     rows = normalize_wall_options(options)
     assert len(rows) == 4
@@ -83,46 +83,35 @@ def test_accepts_strike_keyed_live_chain_shape():
 
 def test_equal_oi_ties_choose_lowest_strike_deterministically():
     options = [
-        {"strike": 25100, "option_type": "CE", "oi": 500},
-        {"strike": 25200, "option_type": "CE", "oi": 500},
+        {"strike": 25100, "option_type": "CE", "oi": 500, "volume": 2},
+        {"strike": 25200, "option_type": "CE", "oi": 500, "volume": 2},
     ]
     assert calculate_wall_strikes(options, 25000)["CE"] == (25100, True)
 
 
-def test_far_otm_zero_volume_pair_is_excluded_before_wall_selection():
+def test_volume_below_two_is_excluded_per_contract_side():
     options = [
-        {"strike": 10600, "option_type": "CE", "oi": 50000, "volume": 0},
-        {"strike": 10600, "option_type": "PE", "oi": 40000, "volume": 0},
-        {"strike": 9400, "option_type": "CE", "oi": 30000, "volume": 0},
-        {"strike": 9400, "option_type": "PE", "oi": 35000, "volume": 0},
-        # A non-zero volume on either side keeps the entire strike eligible.
-        {"strike": 10400, "option_type": "CE", "oi": 1000, "volume": 1},
-        {"strike": 10400, "option_type": "PE", "oi": 2000, "volume": 0},
+        {"strike": 26000, "option_type": "CE", "oi": 90000, "volume": 1},
+        {"strike": 26000, "option_type": "PE", "oi": 80000, "volume": 20},
+        {"strike": 25500, "option_type": "CE", "oi": 1000, "volume": 2},
+        {"strike": 25500, "option_type": "PE", "oi": 1200, "volume": 0},
     ]
-    assert calculate_wall_strikes(options, 10000) == {
-        "CE": (10400, True),
-        "PE": (10400, True),
+    assert calculate_wall_strikes(options, 25000) == {
+        "CE": (25500, True),
+        "PE": (26000, True),
     }
 
 
-def test_five_percent_boundary_is_excluded_but_missing_spot_is_not():
-    boundary_pair = [
-        {"strike": 10500, "option_type": "CE", "oi": 9000, "volume": 0},
-        {"strike": 10500, "option_type": "PE", "oi": 8000, "volume": 0},
-        {"strike": 10400, "option_type": "CE", "oi": 1000, "volume": 10},
-    ]
-    assert calculate_wall_strikes(boundary_pair, 10000)["CE"] == (10400, True)
-    # Without spot, the system cannot establish OTM distance, so no row is excluded.
-    assert calculate_wall_strikes(boundary_pair, None)["CE"] == (10500, True)
-
-
-def test_non_numeric_zero_volume_is_not_treated_as_confirmed_zero():
+def test_volume_two_is_eligible_and_missing_volume_is_not():
     options = [
-        {"strike": 10600, "option_type": "CE", "oi": 9000, "volume": "0"},
-        {"strike": 10600, "option_type": "PE", "oi": 8000, "volume": "0"},
-        {"strike": 10400, "option_type": "CE", "oi": 1000, "volume": 10},
+        {"strike": 25000, "option_type": "CE", "oi": 900, "volume": 2},
+        {"strike": 25100, "option_type": "CE", "oi": 5000},
+        {"strike": 25000, "option_type": "PE", "oi": 700, "volume": 1},
     ]
-    assert calculate_wall_strikes(options, 10000)["CE"] == (10600, True)
+    assert calculate_wall_strikes(options, None) == {
+        "CE": (25000, True),
+        "PE": (None, False),
+    }
 
 
 
@@ -195,8 +184,8 @@ def test_manual_watch_fires_even_when_automatic_alert_switch_and_rule_are_off(mo
                 "timestamp": "2026-10-30T10:00:00",
                 "spot": 25050,
                 "options": [
-                    {"strike": 25000, "option_type": "CE", "oi": 900},
-                    {"strike": 25100, "option_type": "CE", "oi": 1200},
+                    {"strike": 25000, "option_type": "CE", "oi": 900, "volume": 2},
+                    {"strike": 25100, "option_type": "CE", "oi": 1200, "volume": 2},
                 ],
             },
             "NIFTY",
@@ -228,7 +217,7 @@ def test_armed_symbol_index_only_includes_active_manual_watches(monkeypatch):
 
 
 
-def test_manual_watch_does_not_move_to_far_otm_zero_volume_strike(monkeypatch):
+def test_manual_watch_does_not_move_to_sub_two_volume_contract(monkeypatch):
     manager, conn = _wall_watch_manager_with_test_db(monkeypatch)
     try:
         manager.arm("NIFTY", "CE", 10400)
@@ -237,17 +226,17 @@ def test_manual_watch_does_not_move_to_far_otm_zero_volume_strike(monkeypatch):
                 "timestamp": "2026-11-22T10:00:00",
                 "spot": 10000,
                 "options": [
-                    {"strike": 10600, "option_type": "CE", "oi": 50000, "volume": 0},
-                    {"strike": 10600, "option_type": "PE", "oi": 40000, "volume": 0},
-                    {"strike": 10400, "option_type": "CE", "oi": 1000, "volume": 10},
+                    {"strike": 10600, "option_type": "CE", "oi": 50000, "volume": 1},
+                    {"strike": 10600, "option_type": "PE", "oi": 40000, "volume": 20},
+                    {"strike": 10400, "option_type": "CE", "oi": 1000, "volume": 2},
                     {"strike": 10400, "option_type": "PE", "oi": 1200, "volume": 0},
                 ],
             },
             "NIFTY",
         )
 
-        # The raw OI maximum is 10,600, but that strike is ineligible. The
-        # actionable Call Wall remains 10,400, so the armed watch must stay on.
+        # The raw CE OI maximum is 10,600, but its volume is 1.
+        # The actionable Call Wall remains 10,400, so the watch must stay on.
         assert fired == []
         assert manager.get_watches("NIFTY")["CE"]["armed"] is True
     finally:
