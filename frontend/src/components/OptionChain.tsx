@@ -818,14 +818,14 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
           border-radius: 5px;
         }
         .tt-wall-level--current-ce {
-          background: linear-gradient(145deg, rgba(156, 38, 57, 0.42), rgba(91, 26, 38, 0.34));
-          border-color: rgba(240, 139, 150, 0.68);
-          box-shadow: inset 0 0 0 1px rgba(240, 139, 150, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.045);
+          background: linear-gradient(145deg, rgba(156, 38, 57, 0.68), rgba(91, 26, 38, 0.54));
+          border-color: rgba(255, 133, 151, 0.92);
+          box-shadow: inset 0 0 0 1px rgba(255, 133, 151, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.07);
         }
         .tt-wall-level--current-pe {
-          background: linear-gradient(145deg, rgba(7, 112, 75, 0.50), rgba(5, 70, 52, 0.34));
-          border-color: rgba(84, 214, 161, 0.72);
-          box-shadow: inset 0 0 0 1px rgba(84, 214, 161, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.045);
+          background: linear-gradient(145deg, rgba(7, 112, 75, 0.70), rgba(5, 70, 52, 0.54));
+          border-color: rgba(91, 235, 177, 0.94);
+          box-shadow: inset 0 0 0 1px rgba(91, 235, 177, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.07);
         }
         .tt-wall-level-label {
           color: #a9b7c3;
