@@ -482,16 +482,16 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
       visibleRows = chainData.filter((row) => visibleStrikes.has(row.strike));
     }
 
-    // Legacy inference is replay-only: pre-provenance rows qualify only
-    // when each side also has persisted OI and LTP evidence.
+    // Hide only extreme (>=10% from spot) strikes with zero volume on both sides.
+    // This is display-only and applies equally to live and replay.
     if (hideZeroVolumeStrikes) {
       visibleRows = visibleRows.filter(
-        (row) => !shouldHideZeroVolumeStrike(row.CE, row.PE, !liveMode)
+        (row) => !shouldHideZeroVolumeStrike(row.CE, row.PE, row.strike, spot)
       );
     }
 
     return strikeOrder === 'asc' ? visibleRows : [...visibleRows].reverse();
-  }, [chainData, atmSpot, strikeOrder, currentWalls, hideZeroVolumeStrikes]);
+  }, [chainData, atmSpot, strikeOrder, currentWalls, hideZeroVolumeStrikes, spot]);
 
   // ── Jump to ATM ──
   // Scroll only the option-chain rows. Element.scrollIntoView() can also
