@@ -428,8 +428,8 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   const showWallHover = useCallback((side: 'CE' | 'PE', strike: number, element: HTMLElement) => {
     const rect = element.getBoundingClientRect();
     const edge = 12;
-    const tooltipWidth = Math.min(352, window.innerWidth - edge * 2);
-    const tooltipHeight = 250;
+    const tooltipWidth = Math.min(292, window.innerWidth - edge * 2);
+    const tooltipHeight = 208;
     const gap = 10;
     const preferredLeft = side === 'CE' ? rect.right + gap : rect.left - tooltipWidth - gap;
     const alternateLeft = side === 'CE' ? rect.left - tooltipWidth - gap : rect.right + gap;
@@ -706,7 +706,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
 
         /* Fluent-inspired wall movement surface: neutral frame, one active accent. */
         .tt-wall-tooltip {
-          width: 352px;
+          width: 292px;
           max-width: calc(100vw - 24px);
           overflow: hidden;
           color: #f2f6fa;
@@ -714,32 +714,32 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
           background: linear-gradient(180deg, rgba(28, 39, 50, 0.985), rgba(19, 28, 37, 0.99));
           border: 1px solid rgba(255, 255, 255, 0.14);
           border-radius: 8px;
-          box-shadow: 0 18px 48px rgba(0, 0, 0, 0.48), 0 2px 8px rgba(0, 0, 0, 0.28);
-          backdrop-filter: blur(18px);
+          box-shadow: 0 16px 38px rgba(0, 0, 0, 0.46), 0 2px 8px rgba(0, 0, 0, 0.26);
+          backdrop-filter: blur(16px);
         }
         .tt-wall-topbar {
-          min-height: 48px;
+          min-height: 36px;
           display: flex;
           align-items: center;
           justify-content: space-between;
-          gap: 10px;
-          padding: 0 15px;
+          gap: 8px;
+          padding: 0 11px;
           background: rgba(255, 255, 255, 0.025);
           border-bottom: 1px solid rgba(255, 255, 255, 0.09);
         }
         .tt-wall-title-wrap {
           display: flex;
           align-items: center;
-          gap: 9px;
+          gap: 7px;
           min-width: 0;
         }
         .tt-wall-pill {
           flex: 0 0 auto;
-          padding: 0 7px;
+          padding: 0 6px;
           border: 1px solid transparent;
           border-radius: 4px;
-          font-size: 9px;
-          line-height: 18px;
+          font-size: 8px;
+          line-height: 16px;
           font-weight: 700;
           letter-spacing: 0.09em;
         }
@@ -756,7 +756,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
         .tt-wall-heading {
           overflow: hidden;
           color: #edf4f8;
-          font-size: 12px;
+          font-size: 11px;
           font-weight: 650;
           letter-spacing: 0.015em;
           white-space: nowrap;
@@ -764,69 +764,69 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
         }
         .tt-wall-time {
           flex: 0 0 auto;
-          padding: 5px 7px;
+          padding: 3px 6px;
           color: #aebdca;
           background: rgba(255, 255, 255, 0.045);
           border: 1px solid rgba(255, 255, 255, 0.055);
           border-radius: 4px;
-          font-size: 11px;
+          font-size: 10px;
           letter-spacing: 0.015em;
           font-variant-numeric: tabular-nums;
         }
         .tt-wall-body {
-          padding: 14px 15px 12px;
+          padding: 10px 11px 8px;
         }
         .tt-wall-movement {
           display: grid;
-          grid-template-columns: minmax(0, 1fr) 28px minmax(0, 1fr);
+          grid-template-columns: minmax(0, 1fr) 22px minmax(0, 1fr);
           align-items: center;
-          gap: 7px;
+          gap: 5px;
         }
         .tt-wall-level {
           display: flex;
           min-width: 0;
-          min-height: 76px;
+          min-height: 62px;
           flex-direction: column;
           justify-content: space-between;
-          padding: 11px 11px 12px;
+          padding: 8px 9px 9px;
           background: rgba(255, 255, 255, 0.035);
           border: 1px solid rgba(255, 255, 255, 0.15);
-          border-radius: 6px;
+          border-radius: 5px;
         }
         .tt-wall-level--current-ce {
-          background: linear-gradient(145deg, rgba(190, 67, 85, 0.14), rgba(190, 67, 85, 0.045));
-          border-color: rgba(240, 139, 150, 0.38);
-          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+          background: linear-gradient(145deg, rgba(156, 38, 57, 0.42), rgba(91, 26, 38, 0.34));
+          border-color: rgba(240, 139, 150, 0.68);
+          box-shadow: inset 0 0 0 1px rgba(240, 139, 150, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.045);
         }
         .tt-wall-level--current-pe {
-          background: linear-gradient(145deg, rgba(35, 178, 120, 0.12), rgba(35, 178, 120, 0.045));
-          border-color: rgba(84, 214, 161, 0.38);
-          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+          background: linear-gradient(145deg, rgba(7, 112, 75, 0.50), rgba(5, 70, 52, 0.34));
+          border-color: rgba(84, 214, 161, 0.72);
+          box-shadow: inset 0 0 0 1px rgba(84, 214, 161, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.045);
         }
         .tt-wall-level-label {
           color: #a9b7c3;
-          font-size: 9px;
+          font-size: 8px;
           font-weight: 600;
           letter-spacing: 0.075em;
           text-transform: uppercase;
         }
-        .tt-wall-level--current-ce .tt-wall-level-label { color: #f1aab4; }
-        .tt-wall-level--current-pe .tt-wall-level-label { color: #82d9b3; }
+        .tt-wall-level--current-ce .tt-wall-level-label { color: #ffc0c9; }
+        .tt-wall-level--current-pe .tt-wall-level-label { color: #a4f2cf; }
         .tt-wall-level-value {
           color: #f5f8fa;
-          font-size: 21px;
+          font-size: 18px;
           line-height: 1.1;
           font-weight: 650;
           letter-spacing: -0.025em;
           font-variant-numeric: tabular-nums;
           white-space: nowrap;
         }
-        .tt-wall-level--current-ce .tt-wall-level-value { color: #ffd2d7; }
-        .tt-wall-level--current-pe .tt-wall-level-value { color: #b9f4d9; }
+        .tt-wall-level--current-ce .tt-wall-level-value { color: #ffe0e4; }
+        .tt-wall-level--current-pe .tt-wall-level-value { color: #c5ffe5; }
         .tt-wall-arrow {
           display: grid;
-          width: 26px;
-          height: 26px;
+          width: 22px;
+          height: 22px;
           place-items: center;
           color: #8fa4b5;
           background: rgba(255, 255, 255, 0.035);
@@ -836,21 +836,21 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
         .tt-wall-metrics {
           display: grid;
           grid-template-columns: 1fr 1fr;
-          gap: 12px;
-          padding: 14px 1px 12px;
+          gap: 8px;
+          padding: 10px 1px 9px;
           border-bottom: 1px solid rgba(255, 255, 255, 0.09);
         }
         .tt-wall-metric-label {
-          margin-bottom: 5px;
+          margin-bottom: 4px;
           color: #93a3b0;
-          font-size: 9px;
+          font-size: 8px;
           font-weight: 600;
           letter-spacing: 0.075em;
           text-transform: uppercase;
         }
         .tt-wall-metric-value {
           color: #eaf1f6;
-          font-size: 14px;
+          font-size: 12px;
           line-height: 1.2;
           font-weight: 600;
           letter-spacing: -0.01em;
@@ -862,39 +862,39 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
         .tt-wall-footer {
           display: flex;
           align-items: flex-start;
-          gap: 9px;
-          padding: 11px 15px 13px;
+          gap: 7px;
+          padding: 8px 11px 9px;
           background: rgba(0, 0, 0, 0.12);
         }
         .tt-wall-info {
           display: grid;
-          flex: 0 0 16px;
-          width: 16px;
-          height: 16px;
+          flex: 0 0 14px;
+          width: 14px;
+          height: 14px;
           margin-top: 1px;
           place-items: center;
           color: #60cdff;
           border: 1px solid rgba(96, 205, 255, 0.34);
           border-radius: 50%;
           font-family: Georgia, serif;
-          font-size: 10px;
+          font-size: 9px;
           font-weight: 600;
         }
         .tt-wall-footnote {
           color: #a2b1bd;
-          font-size: 10px;
-          line-height: 1.45;
+          font-size: 9px;
+          line-height: 1.35;
         }
         .tt-wall-empty {
           padding: 4px 0 7px;
           color: #c9d4dd;
-          font-size: 13px;
-          line-height: 1.5;
+          font-size: 12px;
+          line-height: 1.4;
         }
         .tt-wall-empty-value {
           margin-bottom: 5px;
           color: #f5f8fa;
-          font-size: 18px;
+          font-size: 16px;
           font-weight: 650;
           font-variant-numeric: tabular-nums;
         }
@@ -1240,7 +1240,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
           <div
             role="tooltip"
             className="tt-wall-tooltip pointer-events-none fixed z-[100]"
-            style={{ left: wallHover.left, top: wallHover.top, width: Math.min(352, window.innerWidth - 24) }}
+            style={{ left: wallHover.left, top: wallHover.top, width: Math.min(292, window.innerWidth - 24) }}
           >
             <header className="tt-wall-topbar">
               <div className="tt-wall-title-wrap">
