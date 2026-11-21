@@ -10,7 +10,7 @@ export default function MobileDisplayTab({ fullMode, onFullModeChange, hideZeroV
         <h4>Option chain filtering</h4>
         <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 0" }}>
           <span style={{ minWidth: 0 }}>
-            <b style={{ display: "block" }}>Hide zero-volume strikes</b>
+            <b style={{ display: "block" }}>Hide low-volume strikes</b>
             <span className="mc-note">A contract is eligible at volume 2 or higher. Low-volume sides are omitted; a strike stays visible when either CE or PE is eligible. GEX and OI walls always use eligible contracts. Stored snapshots remain unchanged.</span>
           </span>
           <input type="checkbox" checked={hideZeroVolumeStrikes}
