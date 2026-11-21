@@ -1,12 +1,12 @@
 /**
- * Display-only filter for extreme, inactive option strikes.
+ * Display-only filter for inactive option strikes far from spot.
  *
- * A strike is hidden only when it is at least 10% away from spot and both
+ * A strike is hidden only when it is at least 5% away from spot and both
  * its CE and PE contracts have an explicit numeric zero volume. This applies
  * equally to live and replay data; volume_valid/OI/LTP provenance is irrelevant.
  * The underlying options data and all OI calculations remain untouched.
  */
-export const ZERO_VOLUME_OTM_THRESHOLD_PCT = 10;
+export const ZERO_VOLUME_OTM_THRESHOLD_PCT = 5;
 
 export function shouldHideZeroVolumeStrike(ce, pe, strike, spot) {
   if (
