@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { fmtOI, fmtDelta, fmtPx } from "./mobileFormat";
 import { nearestStrike } from "../../strikeUtils";
-import { HIDE_ZERO_VOLUME_EVENT, isConfirmedZeroVolume, loadHideZeroVolumeStrikes } from "../optionChainColumns";
+import { HIDE_ZERO_VOLUME_EVENT, shouldHideZeroVolumeStrike, loadHideZeroVolumeStrikes } from "../optionChainColumns";
 
 interface Opt {
   strike: number; option_type: string; oi: number; oi_change: number;
-  volume: number; volume_valid?: boolean | number | null; ltp: number; iv?: number | null; delta?: number | null;
+  volume: number; volume_valid?: boolean | number | null; source_age_sec?: number | null; ltp: number; iv?: number | null; delta?: number | null;
   gamma?: number | null; theta?: number | null; vega?: number | null; gex?: number | null;
 }
 interface RowData { strike: number; ce?: Opt; pe?: Opt }
@@ -57,7 +57,7 @@ const ChainRow = React.memo(function ChainRow(props: {
 
 const IDLE_RECENTER_MS = 8000;
 
-export default function MobileChain({ data, onSelect, floating = true, recenterTick = 0, focusStrike = null, focusTick = 0 }: {
+export default function MobileChain({ data, onSelect, floating = true, recenterTick = 0, focusStrike = null, focusTick = 0, replayMode = false }: {
   data: any;
   onSelect: (s: number) => void;
   /** false in Replay: no floating pill over the replay bar. */
@@ -67,6 +67,7 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
   /** Request scrolling to a specific strike (levels-rail markers). */
   focusStrike?: number | null;
   focusTick?: number;
+  replayMode?: boolean;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef(0);
@@ -188,9 +189,9 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
 
   const displayRows = useMemo(
     () => hideZeroVolumeStrikes
-      ? rows.filter(r => !(isConfirmedZeroVolume(r.ce) && isConfirmedZeroVolume(r.pe)))
+      ? rows.filter(r => !shouldHideZeroVolumeStrike(r.ce, r.pe, replayMode))
       : rows,
-    [rows, hideZeroVolumeStrikes],
+    [rows, hideZeroVolumeStrikes, replayMode],
   );
 
   if (!rows.length || !displayRows.length) {
