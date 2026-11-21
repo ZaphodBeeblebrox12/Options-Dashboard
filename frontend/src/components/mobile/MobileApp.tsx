@@ -192,18 +192,39 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
     ? replaySnap
     : (hasUsableLiveData ? data : (!marketOpen ? lastKnownSnapshot ?? null : data ?? null)); // replay overrides live; CLOSED may use the persisted last-known snapshot
   // Walls tab uses only contracts with volume >= 2, evaluated per side.
+  const eligibleOptions = useMemo(
+    () => ((baseData as any)?.options ?? []).filter((o: any) => hasEligibleVolumeContract(o)),
+    [baseData],
+  );
+  const eligibleGexSummary = useMemo(() => {
+    let netGex = 0, largestAbsGex = 0, maxGexStrike: number | null = null;
+    let mostNegativeGex = 0, maxNegativeGexStrike: number | null = null;
+    for (const option of eligibleOptions) {
+      const strike = Number(option.strike), gex = Number(option.gex);
+      if (!Number.isFinite(strike) || !Number.isFinite(gex)) continue;
+      netGex += gex;
+      if (Math.abs(gex) > largestAbsGex) {
+        largestAbsGex = Math.abs(gex);
+        maxGexStrike = strike;
+      }
+      if (gex < mostNegativeGex) {
+        mostNegativeGex = gex;
+        maxNegativeGexStrike = strike;
+      }
+    }
+    return { net_gex: netGex, max_gex_strike: maxGexStrike, max_negative_gex_strike: maxNegativeGexStrike };
+  }, [eligibleOptions]);
+
   const wallChips = useMemo(() => {
-    const options: any[] = (baseData as any)?.options ?? [];
     const wallSpot = (baseData as any)?.spot ?? null;
     let cew: number | null = null, pew: number | null = null, ceo = -1, peo = -1;
-    for (const o of options) {
-      if (!hasEligibleVolumeContract(o)) continue;
+    for (const o of eligibleOptions) {
       if (o?.option_type === "CE" && (wallSpot == null || o.strike >= wallSpot) && (o.oi ?? 0) > ceo) { ceo = o.oi; cew = o.strike; }
       if (o?.option_type === "PE" && (wallSpot == null || o.strike <= wallSpot) && (o.oi ?? 0) > peo) { peo = o.oi; pew = o.strike; }
     }
     return { ce_wall: cew, pe_wall: pew };
-  }, [baseData]);
-  const viewData: any = baseData ? { ...baseData, ...wallChips } : null;
+  }, [baseData, eligibleOptions]);
+  const viewData: any = baseData ? { ...baseData, ...wallChips, ...eligibleGexSummary } : null;
 
   useEffect(() => { if (isScanner && tab === "watch") setTab("scan"); }, [isScanner, tab]);
 
@@ -221,14 +242,16 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
     const d = s.data;
     if (!d) return acc;
     if (d.at_wall) return acc + 1;
-    const strikes: number[] = (d.options ?? []).map((o: any) => o.strike);
+    const eligible = (d.options ?? []).filter((o: any) => hasEligibleVolumeContract(o));
+    const strikes: number[] = eligible.map((o: any) => o.strike);
     if (!strikes.length || d.spot == null) return acc;
-    const atm = d.atm ?? strikes.reduce((b, x) => Math.abs(x - d.spot) < Math.abs(b - d.spot) ? x : b, strikes[0]);
+    const atm = d.atm != null && strikes.includes(d.atm)
+      ? d.atm
+      : strikes.reduce((b, x) => Math.abs(x - d.spot) < Math.abs(b - d.spot) ? x : b, strikes[0]);
     let ceW: number | null = d.ce_wall ?? null, peW: number | null = d.pe_wall ?? null;
     if (ceW == null || peW == null) {
       let cm = -1, pm = -1;
-      (d.options ?? []).forEach((o: any) => {
-        if (!hasEligibleVolumeContract(o)) return;
+      eligible.forEach((o: any) => {
         if (o.option_type === "CE" && o.oi > cm) { cm = o.oi; ceW = o.strike; }
         if (o.option_type === "PE" && o.oi > pm) { pm = o.oi; peW = o.strike; }
       });
@@ -277,8 +300,8 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
     const opts: any[] = viewData?.options ?? [];
     setStrikePick({
       strike,
-      ce: opts.find(o => o.strike === strike && o.option_type === "CE"),
-      pe: opts.find(o => o.strike === strike && o.option_type === "PE"),
+      ce: opts.find(o => o.strike === strike && o.option_type === "CE" && hasEligibleVolumeContract(o)),
+      pe: opts.find(o => o.strike === strike && o.option_type === "PE" && hasEligibleVolumeContract(o)),
     });
     setSheet("strike");
   };
