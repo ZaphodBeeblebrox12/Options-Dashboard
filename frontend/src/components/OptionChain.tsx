@@ -29,26 +29,9 @@ interface WallHistoryEvent {
   to_oi: number | null;
 }
 
-interface VolumeHistoryEvent {
-  side: 'CE' | 'PE';
-  timestamp: string;
-  from_strike: number;
-  to_strike: number;
-  from_volume: number;
-  to_volume: number;
-}
-
 interface WallHistoryPayload {
   date: string;
   index_name: string;
-  volume_points: Array<{
-    timestamp: string;
-    ce_volume_strike: number | null;
-    ce_volume: number | null;
-    pe_volume_strike: number | null;
-    pe_volume: number | null;
-  }>;
-  volume_events: VolumeHistoryEvent[];
   points: Array<{
     timestamp: string;
     ce_wall: number | null;
@@ -60,7 +43,6 @@ interface WallHistoryPayload {
 }
 
 interface WallHoverState {
-  metric: 'oi' | 'volume';
   side: 'CE' | 'PE';
   strike: number;
   left: number;
@@ -444,28 +426,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     return { CE: findLatest('CE'), PE: findLatest('PE') };
   }, [visibleWallEvents, currentWalls]);
 
-  const visibleVolumeEvents = useMemo(() => {
-    const events = wallHistory?.volume_events ?? [];
-    const cutoff = timestamp ? timestamp.replace('T', ' ').slice(0, 19) : null;
-    return cutoff
-      ? events.filter((event) => event.timestamp.replace('T', ' ').slice(0, 19) <= cutoff)
-      : events;
-  }, [wallHistory, timestamp]);
-
-  const lastVolumeMove = useMemo(() => {
-    const findLatest = (side: 'CE' | 'PE') => {
-      const currentStrike = highestVolumeStrikes[side];
-      if (currentStrike == null) return null;
-      for (let i = visibleVolumeEvents.length - 1; i >= 0; i -= 1) {
-        const event = visibleVolumeEvents[i];
-        if (event.side === side && Number(event.to_strike) === Number(currentStrike)) return event;
-      }
-      return null;
-    };
-    return { CE: findLatest('CE'), PE: findLatest('PE') };
-  }, [visibleVolumeEvents, highestVolumeStrikes]);
-
-  const showWallHover = useCallback((metric: 'oi' | 'volume', side: 'CE' | 'PE', strike: number, element: HTMLElement) => {
+  const showWallHover = useCallback((side: 'CE' | 'PE', strike: number, element: HTMLElement) => {
     const rect = element.getBoundingClientRect();
     const edge = 12;
     const tooltipWidth = Math.min(292, window.innerWidth - edge * 2);
@@ -481,7 +442,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
       edge,
       Math.min(rect.top + rect.height / 2 - tooltipHeight / 2, window.innerHeight - tooltipHeight - edge),
     );
-    setWallHover({ metric, side, strike, left, top });
+    setWallHover({ side, strike, left, top });
   }, []);
 
   const hideWallHover = useCallback(() => setWallHover(null), []);
@@ -934,29 +895,6 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
           font-size: 9px;
           line-height: 1.35;
         }
-        .tt-volume-movement {
-          display: grid;
-          grid-template-columns: minmax(0, 1fr) 22px minmax(0, 1fr);
-          align-items: center;
-          gap: 5px;
-        }
-        .tt-volume-level {
-          min-height: 70px;
-        }
-        .tt-volume-level .tt-wall-level-value {
-          font-size: 13px;
-          letter-spacing: -0.02em;
-        }
-        .tt-volume-strike {
-          margin-top: 5px;
-          color: #aebdca;
-          font-size: 9px;
-          line-height: 1.2;
-          font-variant-numeric: tabular-nums;
-          white-space: nowrap;
-        }
-        .tt-volume-level--current-ce .tt-volume-strike { color: #ffc0c9; }
-        .tt-volume-level--current-pe .tt-volume-strike { color: #a4f2cf; }
         .tt-wall-empty {
           padding: 4px 0 7px;
           color: #c9d4dd;
@@ -1183,16 +1121,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                       </div>
                     )}
                     {columnVisibility.volume && (
-                      <div
-                        className={`px-1 sm:px-2 py-1 text-right ${highlightHighestVolume && highestVolumeStrikes.CE === row.strike ? 'tt-volume-hit tt-volume-hit--ce' : 'text-terminal-muted'}`}
-                        onMouseEnter={highlightHighestVolume && highestVolumeStrikes.CE === row.strike ? (event) => showWallHover('volume', 'CE', row.strike, event.currentTarget) : undefined}
-                        onMouseLeave={highlightHighestVolume && highestVolumeStrikes.CE === row.strike ? hideWallHover : undefined}
-                        onFocus={highlightHighestVolume && highestVolumeStrikes.CE === row.strike ? (event) => showWallHover('volume', 'CE', row.strike, event.currentTarget) : undefined}
-                        onBlur={highlightHighestVolume && highestVolumeStrikes.CE === row.strike ? hideWallHover : undefined}
-                        tabIndex={highlightHighestVolume && highestVolumeStrikes.CE === row.strike ? 0 : undefined}
-                        title={highlightHighestVolume && highestVolumeStrikes.CE === row.strike ? 'Highest CE volume in the ±5% spot window. Hover or focus to view its last leader change.' : undefined}
-                        aria-label={highlightHighestVolume && highestVolumeStrikes.CE === row.strike ? `Highest Call volume at ${fmt(row.strike)}. Hover or focus to view its last leader change.` : undefined}
-                      >
+                      <div className={`px-1 sm:px-2 py-1 text-right ${highlightHighestVolume && highestVolumeStrikes.CE === row.strike ? 'tt-volume-hit tt-volume-hit--ce' : 'text-terminal-muted'}`}>
                         {fmt(ce?.volume)}
                       </div>
                     )}
@@ -1203,9 +1132,9 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                     {columnVisibility.oi && (
                       <div
                         className={`group/ceoi relative px-1 sm:px-2 py-1 text-right flex items-center justify-end min-w-0 ${getCeOiClass(row.strike)}`}
-                        onMouseEnter={currentWalls.CE === row.strike ? (event) => showWallHover('oi', 'CE', row.strike, event.currentTarget) : undefined}
+                        onMouseEnter={currentWalls.CE === row.strike ? (event) => showWallHover('CE', row.strike, event.currentTarget) : undefined}
                         onMouseLeave={currentWalls.CE === row.strike ? hideWallHover : undefined}
-                        onFocus={currentWalls.CE === row.strike ? (event) => showWallHover('oi', 'CE', row.strike, event.currentTarget) : undefined}
+                        onFocus={currentWalls.CE === row.strike ? (event) => showWallHover('CE', row.strike, event.currentTarget) : undefined}
                         onBlur={currentWalls.CE === row.strike ? hideWallHover : undefined}
                         tabIndex={currentWalls.CE === row.strike ? 0 : undefined}
                         aria-label={currentWalls.CE === row.strike ? `Call wall at ${fmt(row.strike)}. Hover or focus to view its last movement.` : undefined}
@@ -1245,9 +1174,9 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                     {columnVisibility.oi && (
                       <div
                         className={`group/peoi relative px-1 sm:px-2 py-1 text-left flex items-center min-w-0 ${getPeOiClass(row.strike)}`}
-                        onMouseEnter={currentWalls.PE === row.strike ? (event) => showWallHover('oi', 'PE', row.strike, event.currentTarget) : undefined}
+                        onMouseEnter={currentWalls.PE === row.strike ? (event) => showWallHover('PE', row.strike, event.currentTarget) : undefined}
                         onMouseLeave={currentWalls.PE === row.strike ? hideWallHover : undefined}
-                        onFocus={currentWalls.PE === row.strike ? (event) => showWallHover('oi', 'PE', row.strike, event.currentTarget) : undefined}
+                        onFocus={currentWalls.PE === row.strike ? (event) => showWallHover('PE', row.strike, event.currentTarget) : undefined}
                         onBlur={currentWalls.PE === row.strike ? hideWallHover : undefined}
                         tabIndex={currentWalls.PE === row.strike ? 0 : undefined}
                         aria-label={currentWalls.PE === row.strike ? `Put wall at ${fmt(row.strike)}. Hover or focus to view its last movement.` : undefined}
@@ -1277,16 +1206,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                     )}
                     {columnVisibility.ltp && <div className="px-1 sm:px-2 py-1 text-left text-terminal-pe font-semibold">{fmt(pe?.ltp, 2)}</div>}
                     {columnVisibility.volume && (
-                      <div
-                        className={`px-1 sm:px-2 py-1 text-left ${highlightHighestVolume && highestVolumeStrikes.PE === row.strike ? 'tt-volume-hit tt-volume-hit--pe' : 'text-terminal-muted'}`}
-                        onMouseEnter={highlightHighestVolume && highestVolumeStrikes.PE === row.strike ? (event) => showWallHover('volume', 'PE', row.strike, event.currentTarget) : undefined}
-                        onMouseLeave={highlightHighestVolume && highestVolumeStrikes.PE === row.strike ? hideWallHover : undefined}
-                        onFocus={highlightHighestVolume && highestVolumeStrikes.PE === row.strike ? (event) => showWallHover('volume', 'PE', row.strike, event.currentTarget) : undefined}
-                        onBlur={highlightHighestVolume && highestVolumeStrikes.PE === row.strike ? hideWallHover : undefined}
-                        tabIndex={highlightHighestVolume && highestVolumeStrikes.PE === row.strike ? 0 : undefined}
-                        title={highlightHighestVolume && highestVolumeStrikes.PE === row.strike ? 'Highest PE volume in the ±5% spot window. Hover or focus to view its last leader change.' : undefined}
-                        aria-label={highlightHighestVolume && highestVolumeStrikes.PE === row.strike ? `Highest Put volume at ${fmt(row.strike)}. Hover or focus to view its last leader change.` : undefined}
-                      >
+                      <div className={`px-1 sm:px-2 py-1 text-left ${highlightHighestVolume && highestVolumeStrikes.PE === row.strike ? 'tt-volume-hit tt-volume-hit--pe' : 'text-terminal-muted'}`}>
                         {fmt(pe?.volume)}
                       </div>
                     )}
@@ -1335,14 +1255,8 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
       {wallHover && createPortal((() => {
         const sideIsCe = wallHover.side === 'CE';
         const wallAccentClass = sideIsCe ? 'ce' : 'pe';
-        const isVolumeHover = wallHover.metric === 'volume';
         const wallEvent = lastWallMove[wallHover.side];
-        const volumeEvent = lastVolumeMove[wallHover.side];
-        const eventTime = isVolumeHover ? volumeEvent?.timestamp : wallEvent?.timestamp;
-        const hoveredRow = chainData.find((row) => row.strike === wallHover.strike);
-        const hoveredVolume = wallHover.side === 'CE'
-          ? hoveredRow?.CE?.volume ?? null
-          : hoveredRow?.PE?.volume ?? null;
+        const eventTime = wallEvent?.timestamp;
         return (
           <div
             role="tooltip"
@@ -1352,43 +1266,13 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
             <header className="tt-wall-topbar">
               <div className="tt-wall-title-wrap">
                 <span className={`tt-wall-pill tt-wall-pill--${wallAccentClass}`}>
-                  {wallHover.side} {isVolumeHover ? 'VOL' : 'WALL'}
+                  {wallHover.side} WALL
                 </span>
-                <span className="tt-wall-heading">{isVolumeHover ? 'Volume leader · Last change' : 'Last movement'}</span>
+                <span className="tt-wall-heading">Last movement</span>
               </div>
               <time className="tt-wall-time">{eventTime ? eventTime.slice(11, 19) : '—'}</time>
             </header>
-            {isVolumeHover ? (
-              <>
-                <div className="tt-wall-body">
-                  <div className="tt-volume-movement">
-                    <div className="tt-wall-level tt-volume-level">
-                      <span className="tt-wall-level-label">Previous max</span>
-                      <strong className="tt-wall-level-value">{volumeEvent ? fmt(volumeEvent.from_volume) : '—'}</strong>
-                      <span className="tt-volume-strike">{volumeEvent ? `Strike ${fmt(volumeEvent.from_strike)}` : 'No earlier leader'}</span>
-                    </div>
-                    <div className="tt-wall-arrow" aria-hidden="true">
-                      <ArrowDown className="h-3.5 w-3.5 rotate-[-90deg]" />
-                    </div>
-                    <div className={`tt-wall-level tt-volume-level tt-wall-level--current-${wallAccentClass}`}>
-                      <span className="tt-wall-level-label">Current max</span>
-                      <strong className="tt-wall-level-value">{volumeEvent ? fmt(volumeEvent.to_volume) : fmt(hoveredVolume)}</strong>
-                      <span className="tt-volume-strike">Strike {fmt(volumeEvent ? volumeEvent.to_strike : wallHover.strike)}</span>
-                    </div>
-                  </div>
-                </div>
-                <footer className="tt-wall-footer">
-                  <span className="tt-wall-info" aria-hidden="true">i</span>
-                  <span className="tt-wall-footnote">
-                    {volumeEvent
-                      ? 'Time is based on the first saved snapshot showing the new volume leader.'
-                      : wallHistoryError
-                        ? 'Volume history is temporarily unavailable.'
-                        : 'No previous volume-leader change is recorded for this session.'}
-                  </span>
-                </footer>
-              </>
-            ) : wallEvent ? (
+            {wallEvent ? (
               <>
                 <div className="tt-wall-body">
                   <div className="tt-wall-movement">
