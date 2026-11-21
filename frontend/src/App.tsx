@@ -25,7 +25,6 @@ import { hoursForType, isSessionOpen, fmtSessionRange, getMarketDateIST, Instrum
 import { canReturnToLive, resolveLiveStatus, resolveInitialReplayDate } from './replayPolicy.js';
 import { computeOiWalls } from './oiWalls.js';
 import { hasEligibleVolumeContract } from './zeroVolumePolicy.js';
-import { hasEligibleVolumeContract } from './zeroVolumePolicy.js';
 import { useIsMobile } from "./components/mobile/useIsMobile";
 import MobileApp from "./components/mobile/MobileApp";
 
