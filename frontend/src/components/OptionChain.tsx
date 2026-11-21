@@ -427,10 +427,10 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
 
   const showWallHover = useCallback((side: 'CE' | 'PE', strike: number, element: HTMLElement) => {
     const rect = element.getBoundingClientRect();
-    const tooltipWidth = 292;
-    const tooltipHeight = 208;
-    const gap = 10;
     const edge = 12;
+    const tooltipWidth = Math.min(352, window.innerWidth - edge * 2);
+    const tooltipHeight = 250;
+    const gap = 10;
     const preferredLeft = side === 'CE' ? rect.right + gap : rect.left - tooltipWidth - gap;
     const alternateLeft = side === 'CE' ? rect.left - tooltipWidth - gap : rect.right + gap;
     const chosenLeft = preferredLeft >= edge && preferredLeft + tooltipWidth <= window.innerWidth - edge
@@ -702,6 +702,201 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
           background: rgba(43, 145, 100, 0.13);
           color: #a2dfbd;
           box-shadow: inset 2px 0 0 rgba(84, 196, 139, 0.82);
+        }
+
+        /* Fluent-inspired wall movement surface: neutral frame, one active accent. */
+        .tt-wall-tooltip {
+          width: 352px;
+          max-width: calc(100vw - 24px);
+          overflow: hidden;
+          color: #f2f6fa;
+          font-family: "Segoe UI Variable", "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+          background: linear-gradient(180deg, rgba(28, 39, 50, 0.985), rgba(19, 28, 37, 0.99));
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          border-radius: 8px;
+          box-shadow: 0 18px 48px rgba(0, 0, 0, 0.48), 0 2px 8px rgba(0, 0, 0, 0.28);
+          backdrop-filter: blur(18px);
+        }
+        .tt-wall-topbar {
+          min-height: 48px;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          padding: 0 15px;
+          background: rgba(255, 255, 255, 0.025);
+          border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+        }
+        .tt-wall-title-wrap {
+          display: flex;
+          align-items: center;
+          gap: 9px;
+          min-width: 0;
+        }
+        .tt-wall-pill {
+          flex: 0 0 auto;
+          padding: 0 7px;
+          border: 1px solid transparent;
+          border-radius: 4px;
+          font-size: 9px;
+          line-height: 18px;
+          font-weight: 700;
+          letter-spacing: 0.09em;
+        }
+        .tt-wall-pill--ce {
+          color: #ffc0c5;
+          background: rgba(214, 91, 108, 0.13);
+          border-color: rgba(240, 139, 150, 0.2);
+        }
+        .tt-wall-pill--pe {
+          color: #8ce7c0;
+          background: rgba(42, 190, 130, 0.14);
+          border-color: rgba(84, 214, 161, 0.2);
+        }
+        .tt-wall-heading {
+          overflow: hidden;
+          color: #edf4f8;
+          font-size: 12px;
+          font-weight: 650;
+          letter-spacing: 0.015em;
+          white-space: nowrap;
+          text-overflow: ellipsis;
+        }
+        .tt-wall-time {
+          flex: 0 0 auto;
+          padding: 5px 7px;
+          color: #aebdca;
+          background: rgba(255, 255, 255, 0.045);
+          border: 1px solid rgba(255, 255, 255, 0.055);
+          border-radius: 4px;
+          font-size: 11px;
+          letter-spacing: 0.015em;
+          font-variant-numeric: tabular-nums;
+        }
+        .tt-wall-body {
+          padding: 14px 15px 12px;
+        }
+        .tt-wall-movement {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) 28px minmax(0, 1fr);
+          align-items: center;
+          gap: 7px;
+        }
+        .tt-wall-level {
+          display: flex;
+          min-width: 0;
+          min-height: 76px;
+          flex-direction: column;
+          justify-content: space-between;
+          padding: 11px 11px 12px;
+          background: rgba(255, 255, 255, 0.035);
+          border: 1px solid rgba(255, 255, 255, 0.15);
+          border-radius: 6px;
+        }
+        .tt-wall-level--current-ce {
+          background: linear-gradient(145deg, rgba(190, 67, 85, 0.14), rgba(190, 67, 85, 0.045));
+          border-color: rgba(240, 139, 150, 0.38);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+        }
+        .tt-wall-level--current-pe {
+          background: linear-gradient(145deg, rgba(35, 178, 120, 0.12), rgba(35, 178, 120, 0.045));
+          border-color: rgba(84, 214, 161, 0.38);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+        }
+        .tt-wall-level-label {
+          color: #a9b7c3;
+          font-size: 9px;
+          font-weight: 600;
+          letter-spacing: 0.075em;
+          text-transform: uppercase;
+        }
+        .tt-wall-level--current-ce .tt-wall-level-label { color: #f1aab4; }
+        .tt-wall-level--current-pe .tt-wall-level-label { color: #82d9b3; }
+        .tt-wall-level-value {
+          color: #f5f8fa;
+          font-size: 21px;
+          line-height: 1.1;
+          font-weight: 650;
+          letter-spacing: -0.025em;
+          font-variant-numeric: tabular-nums;
+          white-space: nowrap;
+        }
+        .tt-wall-level--current-ce .tt-wall-level-value { color: #ffd2d7; }
+        .tt-wall-level--current-pe .tt-wall-level-value { color: #b9f4d9; }
+        .tt-wall-arrow {
+          display: grid;
+          width: 26px;
+          height: 26px;
+          place-items: center;
+          color: #8fa4b5;
+          background: rgba(255, 255, 255, 0.035);
+          border: 1px solid rgba(255, 255, 255, 0.09);
+          border-radius: 50%;
+        }
+        .tt-wall-metrics {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 12px;
+          padding: 14px 1px 12px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+        }
+        .tt-wall-metric-label {
+          margin-bottom: 5px;
+          color: #93a3b0;
+          font-size: 9px;
+          font-weight: 600;
+          letter-spacing: 0.075em;
+          text-transform: uppercase;
+        }
+        .tt-wall-metric-value {
+          color: #eaf1f6;
+          font-size: 14px;
+          line-height: 1.2;
+          font-weight: 600;
+          letter-spacing: -0.01em;
+          font-variant-numeric: tabular-nums;
+          white-space: nowrap;
+        }
+        .tt-wall-metric--after-ce .tt-wall-metric-value { color: #f3b9c0; }
+        .tt-wall-metric--after-pe .tt-wall-metric-value { color: #a8e8ca; }
+        .tt-wall-footer {
+          display: flex;
+          align-items: flex-start;
+          gap: 9px;
+          padding: 11px 15px 13px;
+          background: rgba(0, 0, 0, 0.12);
+        }
+        .tt-wall-info {
+          display: grid;
+          flex: 0 0 16px;
+          width: 16px;
+          height: 16px;
+          margin-top: 1px;
+          place-items: center;
+          color: #60cdff;
+          border: 1px solid rgba(96, 205, 255, 0.34);
+          border-radius: 50%;
+          font-family: Georgia, serif;
+          font-size: 10px;
+          font-weight: 600;
+        }
+        .tt-wall-footnote {
+          color: #a2b1bd;
+          font-size: 10px;
+          line-height: 1.45;
+        }
+        .tt-wall-empty {
+          padding: 4px 0 7px;
+          color: #c9d4dd;
+          font-size: 13px;
+          line-height: 1.5;
+        }
+        .tt-wall-empty-value {
+          margin-bottom: 5px;
+          color: #f5f8fa;
+          font-size: 18px;
+          font-weight: 650;
+          font-variant-numeric: tabular-nums;
         }
       `}</style>
 
@@ -1040,63 +1235,68 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
       {wallHover && createPortal((() => {
         const event = lastWallMove[wallHover.side];
         const sideIsCe = wallHover.side === 'CE';
+        const wallAccentClass = sideIsCe ? 'ce' : 'pe';
         return (
           <div
             role="tooltip"
-            className={`pointer-events-none fixed z-[100] w-[292px] overflow-hidden rounded-lg border shadow-2xl shadow-black/50 ${sideIsCe ? 'border-red-400/70 bg-[#190D12]' : 'border-emerald-400/70 bg-[#081A15]'}`}
-            style={{ left: wallHover.left, top: wallHover.top }}
+            className="tt-wall-tooltip pointer-events-none fixed z-[100]"
+            style={{ left: wallHover.left, top: wallHover.top, width: Math.min(352, window.innerWidth - 24) }}
           >
-            <div className={`flex items-center justify-between gap-2 border-b px-3 py-2 ${sideIsCe ? 'border-red-400/25 bg-red-500/10' : 'border-emerald-400/25 bg-emerald-500/10'}`}>
-              <span className={`text-[10px] font-mono font-bold tracking-wider ${sideIsCe ? 'text-red-200' : 'text-emerald-200'}`}>
-                {wallHover.side} WALL · LAST MOVEMENT
-              </span>
-              <span className="text-[10px] font-mono tabular-nums text-white">
-                {event ? event.timestamp.slice(11, 19) : '—'}
-              </span>
-            </div>
-            <div className="p-3">
-              {event ? (
-                <>
-                  <div className="grid grid-cols-[1fr_22px_1fr] items-center gap-2">
-                    <div className="min-w-0 rounded-md border border-white/10 bg-white/[0.045] p-2">
-                      <div className="text-[9px] font-mono text-slate-400">PREVIOUS WALL</div>
-                      <div className="mt-1 whitespace-nowrap text-lg font-bold font-mono tabular-nums text-slate-100">
-                        {fmt(event.from_strike)}
-                      </div>
+            <header className="tt-wall-topbar">
+              <div className="tt-wall-title-wrap">
+                <span className={`tt-wall-pill tt-wall-pill--${wallAccentClass}`}>{wallHover.side} WALL</span>
+                <span className="tt-wall-heading">Last movement</span>
+              </div>
+              <time className="tt-wall-time">{event ? event.timestamp.slice(11, 19) : '—'}</time>
+            </header>
+            {event ? (
+              <>
+                <div className="tt-wall-body">
+                  <div className="tt-wall-movement">
+                    <div className="tt-wall-level">
+                      <span className="tt-wall-level-label">Previous wall</span>
+                      <strong className="tt-wall-level-value">{fmt(event.from_strike)}</strong>
                     </div>
-                    <ArrowDown className="h-4 w-4 rotate-[-90deg] text-slate-400" />
-                    <div className={`min-w-0 rounded-md border p-2 ${sideIsCe ? 'border-red-400/35 bg-red-500/10' : 'border-emerald-400/35 bg-emerald-500/10'}`}>
-                      <div className={`text-[9px] font-mono ${sideIsCe ? 'text-red-200/80' : 'text-emerald-200/80'}`}>CURRENT WALL</div>
-                      <div className={`mt-1 whitespace-nowrap text-lg font-bold font-mono tabular-nums ${sideIsCe ? 'text-red-100' : 'text-emerald-100'}`}>
-                        {fmt(event.to_strike)}
-                      </div>
+                    <div className="tt-wall-arrow" aria-hidden="true">
+                      <ArrowDown className="h-3.5 w-3.5 rotate-[-90deg]" />
+                    </div>
+                    <div className={`tt-wall-level tt-wall-level--current-${wallAccentClass}`}>
+                      <span className="tt-wall-level-label">Current wall</span>
+                      <strong className="tt-wall-level-value">{fmt(event.to_strike)}</strong>
                     </div>
                   </div>
-                  <div className="mt-3 grid grid-cols-2 gap-3 border-t border-white/10 pt-2">
+                  <div className="tt-wall-metrics">
                     <div>
-                      <div className="text-[9px] font-mono text-slate-400">OI BEFORE</div>
-                      <div className="mt-0.5 text-xs font-semibold font-mono tabular-nums text-slate-200">{fmt(event.from_oi)}</div>
+                      <div className="tt-wall-metric-label">OI before</div>
+                      <div className="tt-wall-metric-value">{fmt(event.from_oi)}</div>
                     </div>
-                    <div>
-                      <div className="text-[9px] font-mono text-slate-400">OI AFTER</div>
-                      <div className={`mt-0.5 text-xs font-semibold font-mono tabular-nums ${sideIsCe ? 'text-red-100' : 'text-emerald-100'}`}>{fmt(event.to_oi)}</div>
+                    <div className={`tt-wall-metric--after-${wallAccentClass}`}>
+                      <div className="tt-wall-metric-label">OI after</div>
+                      <div className="tt-wall-metric-value">{fmt(event.to_oi)}</div>
                     </div>
                   </div>
-                </>
-              ) : (
-                <div className="py-2">
-                  <div className="text-sm font-semibold font-mono text-white">{fmt(wallHover.strike)}</div>
-                  <div className="mt-1 text-[10px] font-mono leading-relaxed text-slate-300">
+                </div>
+                <footer className="tt-wall-footer">
+                  <span className="tt-wall-info" aria-hidden="true">i</span>
+                  <span className="tt-wall-footnote">Time is based on the first saved snapshot showing the new wall.</span>
+                </footer>
+              </>
+            ) : (
+              <>
+                <div className="tt-wall-body">
+                  <div className="tt-wall-empty">
+                    <div className="tt-wall-empty-value">{fmt(wallHover.strike)}</div>
                     {wallHistoryError
                       ? 'Wall history is temporarily unavailable.'
                       : 'No previous wall movement is recorded for this strike today.'}
                   </div>
                 </div>
-              )}
-              <div className="mt-2 border-t border-white/10 pt-2 text-[9px] font-mono text-slate-500">
-                Time is based on the first saved snapshot showing the new wall.
-              </div>
-            </div>
+                <footer className="tt-wall-footer">
+                  <span className="tt-wall-info" aria-hidden="true">i</span>
+                  <span className="tt-wall-footnote">Time is based on the first saved snapshot showing the new wall.</span>
+                </footer>
+              </>
+            )}
           </div>
         );
       })(), document.body)}
