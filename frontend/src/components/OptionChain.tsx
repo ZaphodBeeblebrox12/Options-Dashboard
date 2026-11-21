@@ -9,6 +9,7 @@ interface OptionData {
   option_type: string;
   oi: number;
   oi_change: number;
+  oi_change_pct?: number | null;
   volume: number;
   ltp: number;
   iv?: number;
@@ -205,7 +206,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   const [buildupInterval, setBuildupInterval] = useState<BuildupInterval>('15m');
   const [buildupPayload, setBuildupPayload] = useState<BuildupPayload | null>(null);
   const [buildupError, setBuildupError] = useState<string | null>(null);
-  const showBuildup = columnVisibility.buildup && columnVisibility.oiChange;
+  const showBuildup = columnVisibility.buildup;
 
   const effectiveHistoryDate = historyDate || timestamp?.slice(0, 10) || '';
 
@@ -532,8 +533,12 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     return map;
   }, [buildupPayload]);
 
+  // Keep a stable share for every visible metric; extra columns widen the
+  // scroll surface rather than squeezing OI and Buildup into narrow slivers.
   const visibleColumnCount = [
     columnVisibility.oiChange,
+    columnVisibility.oiChangePct,
+    columnVisibility.buildup,
     columnVisibility.volume,
     columnVisibility.ltp,
     columnVisibility.iv,
@@ -542,12 +547,17 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     columnVisibility.oi,
   ].filter(Boolean).length;
   const sideGridStyle = { gridTemplateColumns: `repeat(${Math.max(1, visibleColumnCount)}, minmax(0, 1fr))` };
+  const totalMinWidthStyle = { minWidth: `${Math.max(760, 80 + visibleColumnCount * 128)}px` };
 
   const fmt = (n: number | undefined | null, digits = 0) => {
     if (n === undefined || n === null) return '—';
     if (digits === 0) return n.toLocaleString('en-IN');
     return n.toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
   };
+
+  const fmtSignedPct = (n: number | null | undefined) => (
+    n == null || !Number.isFinite(n) ? '—' : `${n > 0 ? '+' : ''}${fmt(n, 2)}%`
+  );
 
   const getStrikeClass = (strike: number) => {
     return strike === atmSpot
@@ -639,7 +649,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     );
   }
 
-  const totalMinWidth = visibleColumnCount >= 7 ? 'min-w-[900px]' : visibleColumnCount >= 5 ? 'min-w-[760px]' : 'min-w-[680px]';
+  const totalMinWidth = totalMinWidthStyle;
 
   return (
     <div className="terminal-panel overflow-hidden" ref={panelRef}>
@@ -1084,13 +1094,15 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
         ref={scrollContainerRef}
         className="max-h-[50vh] sm:max-h-[65vh] terminal-scroll"
       >
-        <div className={totalMinWidth}>
+        <div style={totalMinWidth}>
 
           {/* Sticky Header */}
           <div className="tt-chain-head-row sticky top-0 z-10 grid grid-cols-[1fr_64px_1fr] sm:grid-cols-[1fr_80px_1fr] gap-0 text-[9px] sm:text-[10px] font-mono text-terminal-muted border-b border-terminal-border bg-terminal-bg/95 backdrop-blur-sm">
             {/* CE Header */}
             <div className="tt-chain-head-ce grid" style={sideGridStyle}>
-              {columnVisibility.oiChange && <div className="px-1 sm:px-2 py-1.5 text-center">Chg</div>}
+              {columnVisibility.oiChange && <div className="px-1 sm:px-2 py-1.5 text-center">OI Chg</div>}
+              {columnVisibility.oiChangePct && <div className="px-1 sm:px-2 py-1.5 text-center">Chg %</div>}
+              {columnVisibility.buildup && <div className="px-1 sm:px-2 py-1.5 text-center">Build</div>}
               {columnVisibility.volume && <div className="px-1 sm:px-2 py-1.5 text-center">Vol</div>}
               {columnVisibility.ltp && <div className="px-1 sm:px-2 py-1.5 text-center">LTP</div>}
               {columnVisibility.iv && <div className="px-1 sm:px-2 py-1.5 text-center">IV</div>}
@@ -1105,7 +1117,9 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
               {columnVisibility.oi && <div className="px-1 sm:px-2 py-1.5 text-center">OI</div>}
               {columnVisibility.ltp && <div className="px-1 sm:px-2 py-1.5 text-center">LTP</div>}
               {columnVisibility.volume && <div className="px-1 sm:px-2 py-1.5 text-center">Vol</div>}
-              {columnVisibility.oiChange && <div className="px-1 sm:px-2 py-1.5 text-center">Chg</div>}
+              {columnVisibility.buildup && <div className="px-1 sm:px-2 py-1.5 text-center">Build</div>}
+              {columnVisibility.oiChangePct && <div className="px-1 sm:px-2 py-1.5 text-center">Chg %</div>}
+              {columnVisibility.oiChange && <div className="px-1 sm:px-2 py-1.5 text-center">OI Chg</div>}
               {columnVisibility.gamma && <div className="px-1 sm:px-2 py-1.5 text-center">Γ</div>}
               {columnVisibility.delta && <div className="px-1 sm:px-2 py-1.5 text-center">Δ</div>}
               {columnVisibility.iv && <div className="px-1 sm:px-2 py-1.5 text-center">IV</div>}
@@ -1139,27 +1153,33 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                   {/* CE Side */}
                   <div className={`tt-chain-side tt-chain-side--ce grid gap-0 ${ceItm ? ITM_TINT_CLASS : ''}`} style={sideGridStyle}>
                     {columnVisibility.oiChange && (
-                      <div className={`px-1 sm:px-2 py-1 text-right flex items-center justify-end gap-1 min-w-0 ${(ce?.oi_change ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      <div className={`px-1 sm:px-2 py-1 text-right flex items-center justify-end min-w-0 ${(ce?.oi_change ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                         <span className="truncate">{(ce?.oi_change ?? 0) > 0 ? '+' : ''}{fmt(ce?.oi_change)}</span>
-                        {showBuildup && ceBuildup && BUILDUP_CODES[ceBuildup.classification] && BUILDUP_CODES[ceBuildup.classification] !== '—' && (
+                      </div>
+                    )}
+                    {columnVisibility.oiChangePct && (
+                      <div className={`px-1 sm:px-2 py-1 text-right min-w-0 font-medium ${(ce?.oi_change_pct ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {fmtSignedPct(ce?.oi_change_pct)}
+                      </div>
+                    )}
+                    {columnVisibility.buildup && (
+                      <div className="min-w-0 px-0.5 py-1 flex flex-col items-center justify-center gap-0.5 text-center leading-none">
+                        {showBuildup && ceBuildup ? (
                           <>
                             <span
                               title={buildupTooltip(ceBuildup, buildupPayload?.baseline_timestamp, buildupPayload?.as_of_timestamp)}
-                              className={`inline-flex min-w-[26px] shrink-0 items-center justify-center rounded-md px-1.5 py-0.5 text-[9px] sm:text-[10px] leading-none font-extrabold tracking-wide shadow-sm ${BUILDUP_STYLES[ceBuildup.classification] || 'text-terminal-muted'}`}
+                              className={`inline-flex min-w-[24px] items-center justify-center rounded px-1 py-0.5 text-[9px] leading-none font-extrabold tracking-wide shadow-sm ${BUILDUP_STYLES[ceBuildup.classification] || 'bg-slate-700 text-slate-200'}`}
                             >
-                              {BUILDUP_CODES[ceBuildup.classification]}
+                              {BUILDUP_CODES[ceBuildup.classification] ?? '—'}
                             </span>
-                            {ceBuildup.bias && (
-                              <span
-                                title={`${ceBuildup.bias === 'BULLISH' ? 'Bullish' : 'Bearish'} CE-side interpretation`}
-                                className={`shrink-0 text-[8px] sm:text-[9px] font-extrabold tracking-wide ${ceBuildup.bias === 'BULLISH' ? 'text-emerald-300' : 'text-red-300'}`}
-                              >
-                                <span className="hidden sm:inline lg:hidden">{ceBuildup.bias === 'BULLISH' ? 'BULL' : 'BEAR'}</span>
-                                <span className="hidden lg:inline">{ceBuildup.bias}</span>
-                              </span>
-                            )}
+                            <span
+                              title={ceBuildup.bias ? `${ceBuildup.bias} CE interpretation` : ceBuildup.classification}
+                              className={`text-[7px] sm:text-[8px] font-bold tracking-wide ${ceBuildup.bias === 'BULLISH' ? 'text-emerald-300' : ceBuildup.bias === 'BEARISH' ? 'text-red-300' : 'text-terminal-muted'}`}
+                            >
+                              {ceBuildup.bias ?? (ceBuildup.classification === 'NO CHANGE' ? 'NEUTRAL' : 'MIXED')}
+                            </span>
                           </>
-                        )}
+                        ) : <span className="text-terminal-muted">—</span>}
                       </div>
                     )}
                     {columnVisibility.volume && (
@@ -1270,28 +1290,34 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                         {fmt(pe?.volume)}
                       </div>
                     )}
-                    {columnVisibility.oiChange && (
-                      <div className={`px-1 sm:px-2 py-1 text-left flex items-center gap-1 min-w-0 ${(pe?.oi_change ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        <span className="truncate">{(pe?.oi_change ?? 0) > 0 ? '+' : ''}{fmt(pe?.oi_change)}</span>
-                        {showBuildup && peBuildup && BUILDUP_CODES[peBuildup.classification] && BUILDUP_CODES[peBuildup.classification] !== '—' && (
+                    {columnVisibility.buildup && (
+                      <div className="min-w-0 px-0.5 py-1 flex flex-col items-center justify-center gap-0.5 text-center leading-none">
+                        {showBuildup && peBuildup ? (
                           <>
                             <span
                               title={buildupTooltip(peBuildup, buildupPayload?.baseline_timestamp, buildupPayload?.as_of_timestamp)}
-                              className={`inline-flex min-w-[26px] shrink-0 items-center justify-center rounded-md px-1.5 py-0.5 text-[9px] sm:text-[10px] leading-none font-extrabold tracking-wide shadow-sm ${BUILDUP_STYLES[peBuildup.classification] || 'text-terminal-muted'}`}
+                              className={`inline-flex min-w-[24px] items-center justify-center rounded px-1 py-0.5 text-[9px] leading-none font-extrabold tracking-wide shadow-sm ${BUILDUP_STYLES[peBuildup.classification] || 'bg-slate-700 text-slate-200'}`}
                             >
-                              {BUILDUP_CODES[peBuildup.classification]}
+                              {BUILDUP_CODES[peBuildup.classification] ?? '—'}
                             </span>
-                            {peBuildup.bias && (
-                              <span
-                                title={`${peBuildup.bias === 'BULLISH' ? 'Bullish' : 'Bearish'} PE-side interpretation`}
-                                className={`shrink-0 text-[8px] sm:text-[9px] font-extrabold tracking-wide ${peBuildup.bias === 'BULLISH' ? 'text-emerald-300' : 'text-red-300'}`}
-                              >
-                                <span className="hidden sm:inline lg:hidden">{peBuildup.bias === 'BULLISH' ? 'BULL' : 'BEAR'}</span>
-                                <span className="hidden lg:inline">{peBuildup.bias}</span>
-                              </span>
-                            )}
+                            <span
+                              title={peBuildup.bias ? `${peBuildup.bias} PE interpretation` : peBuildup.classification}
+                              className={`text-[7px] sm:text-[8px] font-bold tracking-wide ${peBuildup.bias === 'BULLISH' ? 'text-emerald-300' : peBuildup.bias === 'BEARISH' ? 'text-red-300' : 'text-terminal-muted'}`}
+                            >
+                              {peBuildup.bias ?? (peBuildup.classification === 'NO CHANGE' ? 'NEUTRAL' : 'MIXED')}
+                            </span>
                           </>
-                        )}
+                        ) : <span className="text-terminal-muted">—</span>}
+                      </div>
+                    )}
+                    {columnVisibility.oiChangePct && (
+                      <div className={`px-1 sm:px-2 py-1 text-left min-w-0 font-medium ${(pe?.oi_change_pct ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {fmtSignedPct(pe?.oi_change_pct)}
+                      </div>
+                    )}
+                    {columnVisibility.oiChange && (
+                      <div className={`px-1 sm:px-2 py-1 text-left min-w-0 ${(pe?.oi_change ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        <span className="truncate">{(pe?.oi_change ?? 0) > 0 ? '+' : ''}{fmt(pe?.oi_change)}</span>
                       </div>
                     )}
                     {columnVisibility.gamma && <div className="px-1 sm:px-2 py-1 text-left text-terminal-muted">{fmt(pe?.gamma, 4)}</div>}

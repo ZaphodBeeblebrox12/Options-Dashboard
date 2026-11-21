@@ -17,7 +17,7 @@ interface DisplayTabProps {
   onHighlightHighestVolumeChange: (enabled: boolean) => void;
 }
 
-const CORE_COLUMNS: OptionChainColumnKey[] = ['oiChange', 'volume', 'ltp', 'oi'];
+const CORE_COLUMNS: OptionChainColumnKey[] = ['oiChange', 'oiChangePct', 'volume', 'ltp', 'oi'];
 const GREEK_COLUMNS: OptionChainColumnKey[] = ['iv', 'delta', 'gamma'];
 
 export const DisplayTab: React.FC<DisplayTabProps> = ({
@@ -40,12 +40,10 @@ export const DisplayTab: React.FC<DisplayTabProps> = ({
     onColumnVisibilityChange(next);
   };
 
-  const renderColumn = (key: OptionChainColumnKey, description?: string) => {
-    const disabled = key === 'buildup' && !columnVisibility.oiChange;
-    return (
+  const renderColumn = (key: OptionChainColumnKey, description?: string) => (
       <label
         key={key}
-        className={`flex items-center justify-between gap-4 py-2.5 ${disabled ? 'opacity-40' : 'cursor-pointer'}`}
+        className="flex cursor-pointer items-center justify-between gap-4 py-2.5"
       >
         <span className="min-w-0">
           <span className="block st-label">{OPTION_CHAIN_COLUMN_LABELS[key]}</span>
@@ -54,13 +52,11 @@ export const DisplayTab: React.FC<DisplayTabProps> = ({
         <input
           type="checkbox"
           checked={columnVisibility[key]}
-          disabled={disabled}
-          onChange={(event) => toggleColumn(key, event.target.checked)}
+          onChange={(event) => toggleColumn(key, event.target.checked)
           className="h-4 w-4 shrink-0 accent-yellow-500"
         />
       </label>
     );
-  };
 
   return (
     <div className="space-y-4">
@@ -123,10 +119,7 @@ export const DisplayTab: React.FC<DisplayTabProps> = ({
 
       <div className="border border-terminal-border rounded-lg p-4">
         <div className="st-card-title mb-1">Analysis</div>
-        {renderColumn('buildup', 'Show the compact buildup code beside OI Change. Hover it for premium, OI, volume and comparison timestamps.')}
-        {!columnVisibility.oiChange && (
-          <p className="st-helper mt-1">Enable OI Change to display its attached buildup label.</p>
-        )}
+        {renderColumn('buildup', 'Show a dedicated classification column with its bullish/bearish interpretation. Hover for premium, OI, volume and comparison timestamps.')}
       </div>
     </div>
   );

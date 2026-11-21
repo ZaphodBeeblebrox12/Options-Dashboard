@@ -1,5 +1,6 @@
 export type OptionChainColumnKey =
   | 'oiChange'
+  | 'oiChangePct'
   | 'volume'
   | 'ltp'
   | 'oi'
@@ -12,6 +13,7 @@ export type OptionChainColumnVisibility = Record<OptionChainColumnKey, boolean>;
 
 export const COMPACT_OPTION_CHAIN_COLUMNS: OptionChainColumnVisibility = {
   oiChange: true,
+  oiChangePct: true,
   volume: true,
   ltp: true,
   oi: true,
@@ -23,6 +25,7 @@ export const COMPACT_OPTION_CHAIN_COLUMNS: OptionChainColumnVisibility = {
 
 export const FULL_OPTION_CHAIN_COLUMNS: OptionChainColumnVisibility = {
   oiChange: true,
+  oiChangePct: true,
   volume: true,
   ltp: true,
   oi: true,
@@ -56,11 +59,12 @@ export function saveOptionChainColumns(columns: OptionChainColumnVisibility): vo
 
 export const OPTION_CHAIN_COLUMN_LABELS: Record<OptionChainColumnKey, string> = {
   oiChange: 'OI Change',
+  oiChangePct: 'OI Change %',
   volume: 'Volume',
   ltp: 'LTP',
   oi: 'Open Interest',
   iv: 'Implied Volatility (IV)',
   delta: 'Delta',
   gamma: 'Gamma',
-  buildup: 'Buildup labels',
+  buildup: 'Buildup + interpretation',
 };
