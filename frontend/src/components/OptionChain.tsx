@@ -2,7 +2,7 @@ import React, { useMemo, useRef, useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom';
 import { AlertTriangle, ArrowDown, ArrowUp, Bell, BellRing, Loader2 } from 'lucide-react';
 import { ScreenshotButton } from './ScreenshotButton';
-import { COMPACT_OPTION_CHAIN_COLUMNS, hasEligibleVolumeContract, shouldHideStrikeForVolume, type OptionChainColumnVisibility } from './optionChainColumns';
+import { COMPACT_OPTION_CHAIN_COLUMNS, hasEligibleVolumeContract, type OptionChainColumnVisibility } from './optionChainColumns';
 
 interface OptionData {
   strike: number;
