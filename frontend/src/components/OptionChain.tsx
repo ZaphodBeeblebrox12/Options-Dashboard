@@ -2,7 +2,7 @@ import React, { useMemo, useRef, useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom';
 import { AlertTriangle, ArrowDown, ArrowUp, Bell, BellRing, Loader2 } from 'lucide-react';
 import { ScreenshotButton } from './ScreenshotButton';
-import { COMPACT_OPTION_CHAIN_COLUMNS, isConfirmedZeroVolume, type OptionChainColumnVisibility } from './optionChainColumns';
+import { COMPACT_OPTION_CHAIN_COLUMNS, shouldHideZeroVolumeStrike, type OptionChainColumnVisibility } from './optionChainColumns';
 
 interface OptionData {
   strike: number;
@@ -482,11 +482,11 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
       visibleRows = chainData.filter((row) => visibleStrikes.has(row.strike));
     }
 
-    // A strike is hidden only when BOTH sides explicitly report valid zero
-    // volume. Missing sides or legacy/unverified volume values stay visible.
+    // Legacy inference is replay-only: pre-provenance rows qualify only
+    // when each side also has persisted OI and LTP evidence.
     if (hideZeroVolumeStrikes) {
       visibleRows = visibleRows.filter(
-        (row) => !(isConfirmedZeroVolume(row.CE) && isConfirmedZeroVolume(row.PE))
+        (row) => !shouldHideZeroVolumeStrike(row.CE, row.PE, !liveMode)
       );
     }
 
