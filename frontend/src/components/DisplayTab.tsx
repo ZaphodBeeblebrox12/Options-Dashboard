@@ -125,13 +125,13 @@ export const DisplayTab: React.FC<DisplayTabProps> = ({
         <div className="st-card-title mb-1">Chain filtering</div>
         <div className="flex items-center justify-between gap-4 py-2.5">
           <span className="min-w-0">
-            <span className="block st-label">Hide zero-volume strikes</span>
+            <span className="block st-label">Hide low-volume strikes</span>
             <span className="block st-helper mt-0.5">A contract is eligible at volume 2 or higher. Low-volume sides are omitted; a strike stays visible when either CE or PE is eligible. GEX and OI walls always use eligible contracts. Stored snapshots remain unchanged.</span>
           </span>
           <SettingsSwitch
             checked={hideZeroVolumeStrikes}
             onChange={onHideZeroVolumeStrikesChange}
-            label="Hide zero-volume strikes"
+            label="Hide low-volume strikes"
             tone="cyan"
           />
         </div>
