@@ -696,7 +696,7 @@ async def get_current_state(index: str = Query(default="NIFTY", description="Ins
 
         options = conn.execute(
             """SELECT strike, option_type, oi, oi_change, oi_change_pct, volume,
-                      volume_valid, source_updated_at, source_age_sec, ltp,
+                      volume_valid, source_age_sec, ltp,
                       iv, delta, gamma, theta, vega, gex
                FROM option_snapshots WHERE snapshot_id = ?
                ORDER BY strike, option_type""",
@@ -1127,7 +1127,7 @@ async def get_snapshot_by_timestamp(
 
         options = conn.execute(
             """SELECT strike, option_type, oi, oi_change, oi_change_pct, volume,
-                      volume_valid, source_updated_at, source_age_sec, ltp,
+                      volume_valid, source_age_sec, ltp,
                       iv, delta, gamma, theta, vega, gex
                FROM option_snapshots WHERE snapshot_id = ?
                ORDER BY strike, option_type""",
@@ -1202,8 +1202,8 @@ async def get_strike_history(
             marks = ",".join("?" * len(ids))
             rows = conn.execute(
                 f"SELECT o.snapshot_id, o.option_type, o.oi, o.oi_change, "
-                f"o.oi_change_pct, o.volume, o.volume_valid, o.source_updated_at, "
-                f"o.source_age_sec, o.ltp, o.iv, o.delta, o.gamma, "
+                f"o.oi_change_pct, o.volume, o.volume_valid, o.source_age_sec, "
+                f"o.ltp, o.iv, o.delta, o.gamma, "
                 f"o.theta, o.vega, o.gex "
                 f"FROM option_snapshots o "
                 f"WHERE o.strike = ? AND o.snapshot_id IN ({marks}) "
@@ -1217,7 +1217,6 @@ async def get_strike_history(
                     "oi": r["oi"], "oi_change": r["oi_change"],
                     "oi_change_pct": r["oi_change_pct"], "volume": r["volume"],
                     "volume_valid": bool(r["volume_valid"]),
-                    "source_updated_at": r["source_updated_at"],
                     "source_age_sec": r["source_age_sec"],
                     "ltp": r["ltp"], "iv": r["iv"], "delta": r["delta"],
                     "gamma": r["gamma"], "theta": r["theta"], "vega": r["vega"],
