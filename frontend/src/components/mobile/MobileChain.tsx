@@ -107,14 +107,21 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
     return nearestStrike(spot, rows.map(r => r.strike));
   }, [data?.atm, rows, spot]);
 
+  // Wall selection always ignores far-OTM strikes with zero volume on both
+  // sides, even when the user chooses to show those raw rows in the chain.
+  const wallCandidateRows = useMemo(
+    () => rows.filter(r => !shouldHideZeroVolumeStrike(r.ce, r.pe, r.strike, spot)),
+    [rows, spot],
+  );
+
   const walls = useMemo(() => {
     let ceW: number | null = null, peW: number | null = null, ceM = -1, peM = -1;
-    for (const r of rows) {
+    for (const r of wallCandidateRows) {
       if (r.ce && r.ce.oi > ceM) { ceM = r.ce.oi; ceW = r.strike; }
       if (r.pe && r.pe.oi > peM) { peM = r.pe.oi; peW = r.strike; }
     }
     return { ceWall: ceW, peWall: peW };
-  }, [rows]);
+  }, [wallCandidateRows]);
 
   // GEX scale for the embedded shading (per side, shared across rows).
   const gMax = useMemo(() => rows.reduce((m, r) =>
