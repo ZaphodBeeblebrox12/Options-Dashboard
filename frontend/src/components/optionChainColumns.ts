@@ -59,7 +59,7 @@ export function saveHideZeroVolumeStrikes(enabled: boolean): void {
   }
 }
 
-export { isConfirmedZeroVolume, shouldHideZeroVolumeStrike } from '../zeroVolumePolicy.js';
+export { shouldHideZeroVolumeStrike } from '../zeroVolumePolicy.js';
 
 export { HIDE_ZERO_VOLUME_EVENT };
 
