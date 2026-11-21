@@ -425,6 +425,7 @@ class InstrumentStreamer:
         from datetime import datetime as _dt
         from calculations import (calculate_gex, calculate_max_pain,
                                   calculate_true_gamma_flip_vectorized)
+        from volume_policy import has_eligible_volume
         feed = self._tier4_feed()
         feed_data = feed.get(self.symbol) or {}
         fstat = feed.feed_status(self.symbol) or {}
@@ -459,19 +460,20 @@ class InstrumentStreamer:
                 g = (feed_data.get(int(strike)) or {}).get(opt_type) or {}
                 iv, delta, gamma, theta, vega = (g.get("iv"), g.get("delta"),
                                                  g.get("gamma"), g.get("theta"), g.get("vega"))
-                if iv is not None:
+                volume_eligible = has_eligible_volume(opt.get("volume"))
+                if iv is not None and volume_eligible:
                     iv_map[(strike, opt_type)] = iv
-                else:
+                elif volume_eligible:
                     missing += 1
                 gex = 0.0
-                if gamma is not None:
+                if volume_eligible and gamma is not None:
                     gex = calculate_gex(gamma, opt.get("oi", 0), opt_type, self.contract_multiplier)
                     net_gex += gex
                     if abs(gex) > abs(max_gex):
                         max_gex, max_gex_strike = gex, strike
                 opt.update({"iv": iv, "delta": delta, "gamma": gamma,
                             "theta": theta, "vega": vega, "gex": gex,
-                            "quote_valid": iv is not None and gamma is not None})
+                            "quote_valid": volume_eligible and iv is not None and gamma is not None})
         analytics = {"net_gex": round(net_gex, 2), "max_gex_strike": max_gex_strike,
                      "max_pain": calculate_max_pain(data, self.contract_multiplier),
                      "gamma_flip": (calculate_true_gamma_flip_vectorized(
@@ -822,6 +824,7 @@ class InstrumentStreamer:
         """
         from datetime import datetime as _dt
         from calculations import solve_iv, calculate_greeks, calculate_gex
+        from volume_policy import has_eligible_volume
 
         try:
             if not (self.strikes and self.expiry_datetime):
@@ -870,8 +873,12 @@ class InstrumentStreamer:
                 T = max(((self.expiry_datetime - now).total_seconds()
                          / (365.25 * 24 * 3600)), 0.0001)
                 total = 0.0
+                eligible_count = 0
                 for opt_type in ("CE", "PE"):
                     opt = (data.get(strike) or {}).get(opt_type) or {}
+                    if not has_eligible_volume(opt.get("volume")):
+                        continue
+                    eligible_count += 1
                     lu, ltp = opt.get("last_update"), opt.get("ltp", 0)
                     if not lu or ltp is None or ltp <= 0:
                         return None
@@ -893,7 +900,7 @@ class InstrumentStreamer:
                         return None
                     total += calculate_gex(greeks["gamma"], opt.get("oi", 0),
                                            opt_type, self.contract_multiplier)
-                return total
+                return total if eligible_count else None
 
             g_wall, g_lo, g_hi = _net_gex(atm), _net_gex(lo), _net_gex(hi)
             if g_wall is None or g_lo is None or g_hi is None:
@@ -981,11 +988,16 @@ class InstrumentStreamer:
                 self._false_trigger_atm[atm] = datetime.now()
                 return
 
-            # Full-chain walls from FRESH data only — the stage-1 strike must be
-            # the chain-wide max-OI wall, not merely the local window max.
+            # Full-chain walls from fresh, volume-eligible contracts only.
+            # CE and PE eligibility is evaluated independently.
+            from volume_policy import has_eligible_volume
+            data = self.data_store.get_data()
             ce_wall = pe_wall = None
             ce_oi = pe_oi = -1
             for (strike, ot), oi in fresh.items():
+                opt = (data.get(strike) or {}).get(ot) or {}
+                if not has_eligible_volume(opt.get("volume")):
+                    continue
                 if ot == "CE" and oi > ce_oi:
                     ce_oi, ce_wall = oi, strike
                 if ot == "PE" and oi > pe_oi:
@@ -994,9 +1006,9 @@ class InstrumentStreamer:
             if atm in (ce_wall, pe_wall):
                 logger.info(f"[{self.symbol}] STAGE-2 CONFIRMED: {atm:,} is a chain-wide "
                             f"max-OI wall (CE wall {ce_wall}, PE wall {pe_wall}) — running GEX")
-                # Analytics over the fresh chain only — no stale strikes
+                # Analytics over the fresh chain only — no stale strikes.
+                # calculate_analytics also applies the same volume threshold.
                 fresh_data = {}
-                data = self.data_store.get_data()
                 for (strike, ot), _ in fresh.items():
                     src_opt = data.get(strike, {}).get(ot) or {}
                     fresh_data.setdefault(strike, {"CE": {}, "PE": {}})[ot] = dict(src_opt)
