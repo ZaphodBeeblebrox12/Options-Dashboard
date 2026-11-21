@@ -461,7 +461,7 @@ if ANGEL_ONE_AVAILABLE:
                     instrument_name=self.index_name, tier=Tier.TIER_1,
                     group_id=gid, mode=1, metadata={"type": "index_spot"},
                 ))
-                manager.bind_handler(self.index_info["token"], self._handle_spot_tick)
+                manager.bind_handler(self.index_info["token"], self._handle_spot_tick, exchange_type=idx_exch, mode=1)
                 logger.info(f"[{self.index_name}] Index token {self.index_info['token']} on {'BSE' if idx_exch == 3 else 'NSE'}")
 
             if self.futures_info and self.futures_info.get("token"):
@@ -474,7 +474,7 @@ if ANGEL_ONE_AVAILABLE:
                     instrument_name=self.index_name, tier=Tier.TIER_1,
                     group_id=gid, mode=3, metadata={"type": "futures"},
                 ))
-                manager.bind_handler(self.futures_info["token"], self._handle_futures_tick)
+                manager.bind_handler(self.futures_info["token"], self._handle_futures_tick, exchange_type=fut_exch, mode=3)
                 logger.info(f"[{self.index_name}] Futures token {self.futures_info['token']} on {'BFO' if fut_exch == 4 else 'NFO'}")
 
             if self.options_df is not None and len(self.options_df) > 0:
@@ -485,7 +485,7 @@ if ANGEL_ONE_AVAILABLE:
                         instrument_name=self.index_name, tier=Tier.TIER_1,
                         group_id=gid, mode=3, metadata={"type": "option"},
                     ))
-                    manager.bind_handler(str(token), self._handle_option_tick)
+                    manager.bind_handler(str(token), self._handle_option_tick, exchange_type=opt_exch, mode=3)
                 logger.info(f"[{self.index_name}] Registered {len(self.options_df)} option tokens on {'BFO' if opt_exch == 4 else 'NFO'}")
 
             ok = manager.register_group(TokenGroup(
