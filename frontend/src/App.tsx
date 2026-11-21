@@ -24,6 +24,7 @@ import { Monitor, AlertTriangle, Info, WifiOff, Bell, Settings, X, ChevronDown }
 import { hoursForType, isSessionOpen, fmtSessionRange, getMarketDateIST, InstrumentKind, SessionHours } from './session';
 import { canReturnToLive, resolveLiveStatus, resolveInitialReplayDate } from './replayPolicy.js';
 import { computeOiWalls } from './oiWalls.js';
+import { hasEligibleVolumeContract } from './zeroVolumePolicy.js';
 import { useIsMobile } from "./components/mobile/useIsMobile";
 import MobileApp from "./components/mobile/MobileApp";
 
@@ -430,19 +431,25 @@ function App() {
     return result;
   }, [options]);
 
-  // Use the same OI-only wall selector as the option chain and backend wall
-  // watches. Spot is deliberately not an input: price crossing a wall must
-  // never make the GEX overlay jump to another strike.
-  const { ceWall, peWall } = React.useMemo(
-    () => computeOiWalls(normalizedOptions),
+  // Contracts below the minimum volume are excluded independently by side
+  // from OI-wall selection and all GEX aggregation.
+  const eligibleOptions = React.useMemo(
+    () => (normalizedOptions as any[]).filter(hasEligibleVolumeContract),
     [normalizedOptions]
   );
 
-  // Live GEX bars must be derived from the same live payload as the option
-  // chain; historical replay continues to use the selected DB snapshot.
+  // Spot is deliberately not an input: price crossing a wall must never make
+  // the GEX overlay jump to another strike.
+  const { ceWall, peWall } = React.useMemo(
+    () => computeOiWalls(eligibleOptions),
+    [eligibleOptions]
+  );
+
+  // Live GEX bars use eligible contracts only; replay applies this same filter
+  // to the selected historical snapshot's per-contract GEX values.
   const derivedGexByStrike = React.useMemo(() => {
     const byStrike: Record<number, { strike: number; ce_gex: number; pe_gex: number; net_gex: number }> = {};
-    for (const option of normalizedOptions as any[]) {
+    for (const option of eligibleOptions) {
       const strike = Number(option.strike);
       if (!Number.isFinite(strike)) continue;
       const point = byStrike[strike] ?? { strike, ce_gex: 0, pe_gex: 0, net_gex: 0 };
@@ -454,7 +461,7 @@ function App() {
       byStrike[strike] = point;
     }
     return Object.values(byStrike).sort((a, b) => a.strike - b.strike);
-  }, [normalizedOptions]);
+  }, [eligibleOptions]);
   const displayedGexByStrike = derivedGexByStrike;
 
   const handlePlay = useCallback(() => {
