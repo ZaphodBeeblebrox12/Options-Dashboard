@@ -193,12 +193,14 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
     [rows, hideZeroVolumeStrikes],
   );
 
-  if (!rows.length) {
+  if (!rows.length || !displayRows.length) {
     return (
       <div className="mc-empty">
-        {data?.market_open === false
-          ? <>Session closed for {data?.index_name ?? "this instrument"}.<br />Live chain resumes in the next session.</>
-          : <>Waiting for option ticks on {data?.index_name ?? "…"}<br /><span style={{ fontSize: 11 }}>{data?.window_state ?? ""}</span></>}
+        {!rows.length
+          ? data?.market_open === false
+            ? <>Session closed for {data?.index_name ?? "this instrument"}.<br />Live chain resumes in the next session.</>
+            : <>Waiting for option ticks on {data?.index_name ?? "…"}<br /><span style={{ fontSize: 11 }}>{data?.window_state ?? ""}</span></>
+          : <>All strikes are hidden because both sides have confirmed zero volume.<br /><span style={{ fontSize: 11 }}>Change this in Settings → Display.</span></>}
       </div>
     );
   }
