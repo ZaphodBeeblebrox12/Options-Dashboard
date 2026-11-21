@@ -1,12 +1,13 @@
+import { hasEligibleVolumeContract } from './zeroVolumePolicy.js';
+
 /**
- * Select the strongest Call and Put OI concentrations from the loaded
- * expiry chain. A wall is an OI level, not a strike selected by its current
- * relationship to spot. Spot is intentionally absent from this API so
- * crossing a wall cannot make the overlay move.
+ * Select the strongest Call and Put OI concentrations from eligible contracts
+ * in the loaded expiry chain. CE and PE volume eligibility is independent.
+ * Spot is intentionally absent: crossing a wall cannot make the overlay jump.
  *
  * Ties are resolved to the lower strike for deterministic results.
  *
- * @param {Array<{strike:number, option_type:string, oi?:number|null}>|null|undefined} options
+ * @param {Array<{strike:number, option_type:string, oi?:number|null, volume?:number|null}>|null|undefined} options
  * @returns {{ceWall:number|null, peWall:number|null}}
  */
 export function computeOiWalls(options) {
@@ -16,7 +17,7 @@ export function computeOiWalls(options) {
   let peOi = Number.NEGATIVE_INFINITY;
 
   for (const option of Array.isArray(options) ? options : []) {
-    if (!option || typeof option !== 'object') continue;
+    if (!option || typeof option !== 'object' || !hasEligibleVolumeContract(option)) continue;
 
     const strike = Number(option.strike);
     const oi = Number(option.oi ?? 0);
