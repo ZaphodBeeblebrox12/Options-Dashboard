@@ -52,7 +52,7 @@ export const DisplayTab: React.FC<DisplayTabProps> = ({
         <input
           type="checkbox"
           checked={columnVisibility[key]}
-          onChange={(event) => toggleColumn(key, event.target.checked)
+          onChange={(event) => toggleColumn(key, event.target.checked)}
           className="h-4 w-4 shrink-0 accent-yellow-500"
         />
       </label>
