@@ -463,8 +463,22 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
         visibleRows = chainData.slice(start, end);
       }
     }
+
+    // Keep the true whole-chain OI walls visible even when they sit outside
+    // the 21-strike ATM window. The wall movement card and watch button are
+    // attached to these exact backend wall levels, so hiding the row hides
+    // both controls from the user.
+    const requiredWallStrikes = new Set<number>();
+    if (currentWalls.CE != null) requiredWallStrikes.add(currentWalls.CE);
+    if (currentWalls.PE != null) requiredWallStrikes.add(currentWalls.PE);
+    if (requiredWallStrikes.size > 0) {
+      const visibleStrikes = new Set(visibleRows.map((row) => row.strike));
+      for (const strike of requiredWallStrikes) visibleStrikes.add(strike);
+      visibleRows = chainData.filter((row) => visibleStrikes.has(row.strike));
+    }
+
     return strikeOrder === 'asc' ? visibleRows : [...visibleRows].reverse();
-  }, [chainData, atmSpot, strikeOrder]);
+  }, [chainData, atmSpot, strikeOrder, currentWalls]);
 
   // ── Jump to ATM ──
   // Scroll only the option-chain rows. Element.scrollIntoView() can also
