@@ -32,10 +32,21 @@ def test_init_db_creates_expected_tables_and_columns(tmp_path, monkeypatch):
         assert {"volume_valid", "source_updated_at", "source_age_sec"} <= option_columns
 
         # New schema defaults legacy/unknown volume provenance to invalid.
+        conn.execute(
+            "INSERT INTO snapshots (timestamp, index_name) VALUES (?, ?)",
+            ("2026-11-20 09:15:00", "SENSEX"),
+        )
+        snapshot_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO option_snapshots (snapshot_id, index_name, strike, option_type) "
+            "VALUES (?, ?, ?, ?)",
+            (snapshot_id, "SENSEX", 88300, "PE"),
+        )
         row = conn.execute(
-            "SELECT volume_valid FROM option_snapshots LIMIT 1"
+            "SELECT volume_valid FROM option_snapshots WHERE snapshot_id = ?",
+            (snapshot_id,),
         ).fetchone()
-        assert row is None
+        assert row[0] == 0
     finally:
         conn.close()
 
