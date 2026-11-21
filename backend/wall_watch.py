@@ -29,6 +29,16 @@ def _number(value, fallback=None):
         return fallback
 
 
+def _is_exact_zero_volume(value: Any) -> bool:
+    """Treat only a numeric zero as zero volume; missing/string values are unknown."""
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and float(value) == 0.0
+    )
+
+
 def normalize_wall_options(options: Any) -> List[dict]:
     """Normalize either live-chain shape (array or strike-keyed object)."""
     rows: List[dict] = []
@@ -45,6 +55,7 @@ def normalize_wall_options(options: Any) -> List[dict]:
             "strike": strike,
             "option_type": side,
             "oi": oi if oi is not None else 0.0,
+            "volume": contract.get("volume"),
             "gex": _number(contract.get("gex"), 0.0),
         })
 
@@ -70,18 +81,32 @@ def normalize_wall_options(options: Any) -> List[dict]:
 
 
 def calculate_wall_strikes(options: Any, spot: Optional[float] = None) -> Dict[str, Tuple[Optional[float], bool]]:
-    """Return the strongest CE and PE OI concentrations in the loaded expiry chain.
+    """Return the strongest CE and PE OI concentrations among eligible strikes.
 
-    Spot is accepted for call-site compatibility but intentionally does not
-    participate in wall selection. A price crossing above a Call Wall or
-    below a Put Wall is not an OI-wall migration and must not trigger a
-    departure alert. Only a change in the side's OI distribution can move it.
+    A strike at least 5% from spot is excluded only when both its CE and PE
+    contracts have exact numeric zero volume. The raw snapshot is never
+    modified. Missing/invalid spot or volume leaves the strike eligible.
 
-    The boolean reports whether contracts for that side were present at all.
+    The boolean reports whether eligible contracts for that side were present.
     Equal-OI ties resolve to the lower strike for deterministic results.
     """
     rows = normalize_wall_options(options)
-    results: Dict[str, Tuple[Optional[float], bool]] = {}
+    numeric_spot = _number(spot)
+    if numeric_spot is not None and numeric_spot > 0:
+        volumes_by_strike: Dict[float, Dict[str, Any]] = {}
+        for row in rows:
+            volumes_by_strike.setdefault(row["strike"], {})[row["option_type"]] = row.get("volume")
+        excluded_strikes = {
+            strike
+            for strike, volumes in volumes_by_strike.items()
+            if abs(strike - numeric_spot) * 100.0 / numeric_spot >= 5.0
+            and _is_exact_zero_volume(volumes.get("CE"))
+            and _is_exact_zero_volume(volumes.get("PE"))
+        }
+        if excluded_strikes:
+            rows = [row for row in rows if row["strike"] not in excluded_strikes]
+
+    results: Dict[str, Tuple[Optional[float], bool]] = {
     for side in SIDES:
         side_rows = [row for row in rows if row["option_type"] == side]
         if not side_rows:
