@@ -1312,7 +1312,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
         const isVolumeHover = wallHover.metric === 'volume';
         const wallEvent = lastWallMove[wallHover.side];
         const volumeEvent = lastVolumeMove[wallHover.side];
-        const event = isVolumeHover ? volumeEvent : wallEvent;
+        const eventTime = isVolumeHover ? volumeEvent?.timestamp : wallEvent?.timestamp;
         const hoveredRow = chainData.find((row) => row.strike === wallHover.strike);
         const hoveredVolume = wallHover.side === 'CE'
           ? hoveredRow?.CE?.volume ?? null
@@ -1330,7 +1330,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                 </span>
                 <span className="tt-wall-heading">{isVolumeHover ? 'Volume leader · Last change' : 'Last movement'}</span>
               </div>
-              <time className="tt-wall-time">{event ? event.timestamp.slice(11, 19) : '—'}</time>
+              <time className="tt-wall-time">{eventTime ? eventTime.slice(11, 19) : '—'}</time>
             </header>
             {isVolumeHover ? (
               <>
@@ -1362,30 +1362,30 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                   </span>
                 </footer>
               </>
-            ) : event ? (
+            ) : wallEvent ? (
               <>
                 <div className="tt-wall-body">
                   <div className="tt-wall-movement">
                     <div className="tt-wall-level">
                       <span className="tt-wall-level-label">Previous wall</span>
-                      <strong className="tt-wall-level-value">{fmt(event.from_strike)}</strong>
+                      <strong className="tt-wall-level-value">{fmt(wallEvent.from_strike)}</strong>
                     </div>
                     <div className="tt-wall-arrow" aria-hidden="true">
                       <ArrowDown className="h-3.5 w-3.5 rotate-[-90deg]" />
                     </div>
                     <div className={`tt-wall-level tt-wall-level--current-${wallAccentClass}`}>
                       <span className="tt-wall-level-label">Current wall</span>
-                      <strong className="tt-wall-level-value">{fmt(event.to_strike)}</strong>
+                      <strong className="tt-wall-level-value">{fmt(wallEvent.to_strike)}</strong>
                     </div>
                   </div>
                   <div className="tt-wall-metrics">
                     <div>
                       <div className="tt-wall-metric-label">OI before</div>
-                      <div className="tt-wall-metric-value">{fmt(event.from_oi)}</div>
+                      <div className="tt-wall-metric-value">{fmt(wallEvent.from_oi)}</div>
                     </div>
                     <div className={`tt-wall-metric--after-${wallAccentClass}`}>
                       <div className="tt-wall-metric-label">OI after</div>
-                      <div className="tt-wall-metric-value">{fmt(event.to_oi)}</div>
+                      <div className="tt-wall-metric-value">{fmt(wallEvent.to_oi)}</div>
                     </div>
                   </div>
                 </div>
