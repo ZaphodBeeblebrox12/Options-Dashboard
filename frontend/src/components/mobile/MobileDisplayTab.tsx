@@ -1,10 +1,22 @@
 
 /** Display — mobile native. Compact/Full as a proper segmented control. */
-export default function MobileDisplayTab({ fullMode, onFullModeChange }: {
+export default function MobileDisplayTab({ fullMode, onFullModeChange, hideZeroVolumeStrikes, onHideZeroVolumeStrikesChange }: {
   fullMode: boolean; onFullModeChange: (v: boolean) => void;
+  hideZeroVolumeStrikes: boolean; onHideZeroVolumeStrikesChange: (v: boolean) => void;
 }) {
   return (
     <div className="mc-disp">
+      <div className="mc-card">
+        <h4>Option chain filtering</h4>
+        <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 0" }}>
+          <span style={{ minWidth: 0 }}>
+            <b style={{ display: "block" }}>Hide zero-volume strikes</b>
+            <span className="mc-note">Only when both CE and PE explicitly report zero volume. Missing or unverified values remain visible.</span>
+          </span>
+          <input type="checkbox" checked={hideZeroVolumeStrikes}
+            onChange={(event) => onHideZeroVolumeStrikesChange(event.target.checked)} />
+        </label>
+      </div>
       <div className="mc-card">
         <h4>Option chain density</h4>
         <div className="mc-disp-seg">
