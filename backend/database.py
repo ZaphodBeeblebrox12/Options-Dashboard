@@ -51,10 +51,6 @@ def _migrate_db(conn):
 
     # Per-contract source freshness. Existing rows remain NULL/invalid because
     # their original feed-receipt time cannot be reconstructed retrospectively.
-    if not _column_exists(conn, "option_snapshots", "source_updated_at"):
-        print("[DB] Migrating: adding source_updated_at to option_snapshots...")
-        conn.execute("ALTER TABLE option_snapshots ADD COLUMN source_updated_at TEXT")
-        conn.commit()
     if not _column_exists(conn, "option_snapshots", "source_age_sec"):
         print("[DB] Migrating: adding source_age_sec to option_snapshots...")
         conn.execute("ALTER TABLE option_snapshots ADD COLUMN source_age_sec REAL")
@@ -147,7 +143,6 @@ def init_db():
             oi_change_pct REAL DEFAULT 0,
             volume INTEGER DEFAULT 0,
             volume_valid INTEGER NOT NULL DEFAULT 0,
-            source_updated_at TEXT,
             source_age_sec REAL,
             ltp REAL DEFAULT 0,
             iv REAL,
