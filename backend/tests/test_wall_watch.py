@@ -225,3 +225,30 @@ def test_armed_symbol_index_only_includes_active_manual_watches(monkeypatch):
         assert manager.get_armed_symbols() == ["SENSEX"]
     finally:
         conn.close()
+
+
+
+def test_manual_watch_does_not_move_to_far_otm_zero_volume_strike(monkeypatch):
+    manager, conn = _wall_watch_manager_with_test_db(monkeypatch)
+    try:
+        manager.arm("NIFTY", "CE", 10400)
+        fired = manager.evaluate_snapshot(
+            {
+                "timestamp": "2026-11-22T10:00:00",
+                "spot": 10000,
+                "options": [
+                    {"strike": 10600, "option_type": "CE", "oi": 50000, "volume": 0},
+                    {"strike": 10600, "option_type": "PE", "oi": 40000, "volume": 0},
+                    {"strike": 10400, "option_type": "CE", "oi": 1000, "volume": 10},
+                    {"strike": 10400, "option_type": "PE", "oi": 1200, "volume": 0},
+                ],
+            },
+            "NIFTY",
+        )
+
+        # The raw OI maximum is 10,600, but that strike is ineligible. The
+        # actionable Call Wall remains 10,400, so the armed watch must stay on.
+        assert fired == []
+        assert manager.get_watches("NIFTY")["CE"]["armed"] is True
+    finally:
+        conn.close()
