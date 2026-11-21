@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { fmtOI, fmtDelta, fmtPx } from "./mobileFormat";
 import { nearestStrike } from "../../strikeUtils";
+import { HIDE_ZERO_VOLUME_EVENT, isConfirmedZeroVolume, loadHideZeroVolumeStrikes } from "../optionChainColumns";
 
 interface Opt {
   strike: number; option_type: string; oi: number; oi_change: number;
-  volume: number; ltp: number; iv?: number | null; delta?: number | null;
+  volume: number; volume_valid?: boolean | number | null; ltp: number; iv?: number | null; delta?: number | null;
   gamma?: number | null; theta?: number | null; vega?: number | null; gex?: number | null;
 }
 interface RowData { strike: number; ce?: Opt; pe?: Opt }
@@ -74,6 +75,16 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
   const lastATM = useRef<number | null>(null);
   const [pillOn, setPillOn] = useState(false);
   const [strikeOrder, setStrikeOrder] = useState<'asc' | 'desc'>('asc');
+  const [hideZeroVolumeStrikes, setHideZeroVolumeStrikes] = useState(loadHideZeroVolumeStrikes);
+
+  useEffect(() => {
+    const handleFilterChange = (event: Event) => {
+      const enabled = (event as CustomEvent<boolean>).detail;
+      setHideZeroVolumeStrikes(typeof enabled === "boolean" ? enabled : loadHideZeroVolumeStrikes());
+    };
+    window.addEventListener(HIDE_ZERO_VOLUME_EVENT, handleFilterChange);
+    return () => window.removeEventListener(HIDE_ZERO_VOLUME_EVENT, handleFilterChange);
+  }, []);
 
   const rows: RowData[] = useMemo(() => {
     const opts: Opt[] = data?.options ?? [];
@@ -175,12 +186,21 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
     return () => { el.removeEventListener("scroll", onScroll); if (rafRef.current) cancelAnimationFrame(rafRef.current); };
   }, [centerKey, rows.length, atmStrike]);
 
-  if (!rows.length) {
+  const displayRows = useMemo(
+    () => hideZeroVolumeStrikes
+      ? rows.filter(r => !(isConfirmedZeroVolume(r.ce) && isConfirmedZeroVolume(r.pe)))
+      : rows,
+    [rows, hideZeroVolumeStrikes],
+  );
+
+  if (!rows.length || !displayRows.length) {
     return (
       <div className="mc-empty">
-        {data?.market_open === false
-          ? <>Session closed for {data?.index_name ?? "this instrument"}.<br />Live chain resumes in the next session.</>
-          : <>Waiting for option ticks on {data?.index_name ?? "…"}<br /><span style={{ fontSize: 11 }}>{data?.window_state ?? ""}</span></>}
+        {!rows.length
+          ? data?.market_open === false
+            ? <>Session closed for {data?.index_name ?? "this instrument"}.<br />Live chain resumes in the next session.</>
+            : <>Waiting for option ticks on {data?.index_name ?? "…"}<br /><span style={{ fontSize: 11 }}>{data?.window_state ?? ""}</span></>
+          : <>All strikes are hidden because both sides have confirmed zero volume.<br /><span style={{ fontSize: 11 }}>Change this in Settings → Display.</span></>}
       </div>
     );
   }
@@ -200,7 +220,7 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
           >Strike {strikeOrder === "asc" ? "↑" : "↓"}</button>
           <div className="h-oi">OI</div><div>LTP</div><div>Chg</div>
         </div>
-        {(strikeOrder === "asc" ? rows : [...rows].reverse()).map(r => (
+        {(strikeOrder === "asc" ? displayRows : [...displayRows].reverse()).map(r => (
           <ChainRow key={r.strike} row={r}
             isATM={r.strike === atmStrike}
             isCEWall={r.strike === walls.ceWall}

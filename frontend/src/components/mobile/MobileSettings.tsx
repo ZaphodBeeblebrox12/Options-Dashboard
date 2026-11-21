@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { loadHideZeroVolumeStrikes, saveHideZeroVolumeStrikes } from "../optionChainColumns";
 import MobileDisplayTab from "./MobileDisplayTab";
 import MobileAnalyticsTab from "./MobileAnalyticsTab";
 import MobileAlertsSettingsTab from "./MobileAlertsSettingsTab";
@@ -11,8 +12,17 @@ import MobileSoundsTab from "./MobileSoundsTab";
 export default function MobileSettings() {
   const [tab, setTab] = useState("display");
   const [fullMode, setFullMode] = useState(false);
+  const [hideZeroVolumeStrikes, setHideZeroVolumeStrikes] = useState(loadHideZeroVolumeStrikes);
+  const updateHideZeroVolumeStrikes = (enabled: boolean) => {
+    setHideZeroVolumeStrikes(enabled);
+    saveHideZeroVolumeStrikes(enabled);
+  };
   const tabs = [
-    { id: "display", label: "Display", el: <MobileDisplayTab fullMode={fullMode} onFullModeChange={setFullMode} /> },
+    { id: "display", label: "Display", el: <MobileDisplayTab
+      fullMode={fullMode} onFullModeChange={setFullMode}
+      hideZeroVolumeStrikes={hideZeroVolumeStrikes}
+      onHideZeroVolumeStrikesChange={updateHideZeroVolumeStrikes}
+    /> },
     { id: "analytics", label: "Analytics", el: <MobileAnalyticsTab /> },
     { id: "alerts", label: "Alerts", el: <MobileAlertsSettingsTab /> },
     { id: "instruments", label: "Instruments", el: <MobileInstrumentsTab /> },

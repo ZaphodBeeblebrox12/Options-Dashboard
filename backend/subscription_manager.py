@@ -95,7 +95,9 @@ class SubscriptionManager:
         self.groups: Dict[str, TokenGroup] = {}
         self.token_map: Dict[Tuple[int, str, int], TokenRequirement] = {}
         self._token_slot: Dict[Tuple[int, str, int], _ConnectionSlot] = {}
-        self.handlers: Dict[str, Callable] = {}        # token str -> tick handler
+        # Use the same full identity as TokenRequirement.key(). Token numbers
+        # are scoped by exchange and subscription mode.
+        self.handlers: Dict[Tuple[int, str, int], Callable] = {}
         self.slots: List[_ConnectionSlot] = []
         self._slots_by_id: Dict[int, _ConnectionSlot] = {}
 
@@ -146,9 +148,11 @@ class SubscriptionManager:
     # ─────────────────────────────────────────────────────────
     # Public API — groups & handlers
     # ─────────────────────────────────────────────────────────
-    def bind_handler(self, token: str, handler: Callable):
+    def bind_handler(self, token: str, handler: Callable, *, exchange_type: int, mode: int):
+        """Bind a handler to the complete SmartAPI tick identity."""
+        key = (int(exchange_type), str(token), int(mode))
         with self.lock:
-            self.handlers[token] = handler
+            self.handlers[key] = handler
 
     def register_group(self, group: TokenGroup) -> bool:
         """Register a group and subscribe it. Tier 1 may spill across slots.
@@ -460,8 +464,22 @@ class SubscriptionManager:
             if not isinstance(message, dict):
                 return
             token = str(message.get("token", ""))
+            exchange_type = message.get("exchange_type")
+            mode = message.get("subscription_mode")
+            if not token or exchange_type is None or mode is None:
+                logger.warning(
+                    "[SubMgr] Ignoring tick without full routing identity "
+                    "(exchange_type=%r, token=%r, subscription_mode=%r)",
+                    exchange_type, token, mode,
+                )
+                return
+            try:
+                key = (int(exchange_type), token, int(mode))
+            except (TypeError, ValueError):
+                logger.warning("[SubMgr] Ignoring tick with invalid routing identity: %r", message)
+                return
             with self.lock:
-                handler = self.handlers.get(token)
+                handler = self.handlers.get(key)
             if handler:
                 handler(message)
         except Exception as e:

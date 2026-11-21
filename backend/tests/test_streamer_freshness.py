@@ -10,6 +10,11 @@ def test_option_chain_age_is_unavailable_until_an_upstream_tick():
 
     store.update(strike=25000, option_type="CE", ltp=125.5, oi=120000, volume=80000)
 
+    contract = store.get_data()[25000]["CE"]
+    assert contract["volume"] == 80000
+    assert contract["volume_valid"] is True
+    assert contract["last_update"]
+
     age = store.age_sec()
     assert age is not None
     assert 0 <= age < 5

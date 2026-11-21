@@ -15,6 +15,8 @@ interface DisplayTabProps {
   onColumnVisibilityChange: (next: OptionChainColumnVisibility) => void;
   highlightHighestVolume: boolean;
   onHighlightHighestVolumeChange: (enabled: boolean) => void;
+  hideZeroVolumeStrikes: boolean;
+  onHideZeroVolumeStrikesChange: (enabled: boolean) => void;
 }
 
 const CORE_COLUMNS: OptionChainColumnKey[] = ['oiChange', 'oiChangePct', 'volume', 'ltp', 'oi'];
@@ -27,6 +29,8 @@ export const DisplayTab: React.FC<DisplayTabProps> = ({
   onColumnVisibilityChange,
   highlightHighestVolume,
   onHighlightHighestVolumeChange,
+  hideZeroVolumeStrikes,
+  onHideZeroVolumeStrikesChange,
 }) => {
   const matchesPreset = (preset: OptionChainColumnVisibility) =>
     (Object.keys(preset) as OptionChainColumnKey[]).every((key) => columnVisibility[key] === preset[key]);
@@ -112,6 +116,22 @@ export const DisplayTab: React.FC<DisplayTabProps> = ({
             checked={highlightHighestVolume}
             onChange={onHighlightHighestVolumeChange}
             label="Highlight highest volume"
+            tone="cyan"
+          />
+        </div>
+      </div>
+
+      <div className="border border-terminal-border rounded-lg p-4">
+        <div className="st-card-title mb-1">Chain filtering</div>
+        <div className="flex items-center justify-between gap-4 py-2.5">
+          <span className="min-w-0">
+            <span className="block st-label">Hide zero-volume strikes</span>
+            <span className="block st-helper mt-0.5">Hide a strike only when both CE and PE report exactly zero volume. Missing or unverified volume stays visible. This changes display only; stored and analytical data are untouched.</span>
+          </span>
+          <SettingsSwitch
+            checked={hideZeroVolumeStrikes}
+            onChange={onHideZeroVolumeStrikesChange}
+            label="Hide zero-volume strikes"
             tone="cyan"
           />
         </div>

@@ -36,6 +36,39 @@ export const FULL_OPTION_CHAIN_COLUMNS: OptionChainColumnVisibility = {
 };
 
 const STORAGE_KEY = 'option_chain_columns_v1';
+const HIDE_ZERO_VOLUME_STRIKES_KEY = 'option_chain_hide_zero_volume_strikes_v1';
+const HIDE_ZERO_VOLUME_EVENT = 'option-chain-hide-zero-volume-changed';
+
+export function loadHideZeroVolumeStrikes(): boolean {
+  try {
+    const saved = localStorage.getItem(HIDE_ZERO_VOLUME_STRIKES_KEY);
+    return saved === null ? true : saved === 'true';
+  } catch {
+    return true;
+  }
+}
+
+export function saveHideZeroVolumeStrikes(enabled: boolean): void {
+  try {
+    localStorage.setItem(HIDE_ZERO_VOLUME_STRIKES_KEY, String(enabled));
+  } catch {
+    // Storage restrictions must not break the option chain.
+  }
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(HIDE_ZERO_VOLUME_EVENT, { detail: enabled }));
+  }
+}
+
+export function isConfirmedZeroVolume(side?: {
+  volume?: number | null;
+  volume_valid?: boolean | number | null;
+} | null): boolean {
+  return !!side &&
+    (side.volume_valid === true || side.volume_valid === 1) &&
+    side.volume === 0;
+}
+
+export { HIDE_ZERO_VOLUME_EVENT };
 
 export function loadOptionChainColumns(fullMode: boolean): OptionChainColumnVisibility {
   const fallback = fullMode ? FULL_OPTION_CHAIN_COLUMNS : COMPACT_OPTION_CHAIN_COLUMNS;

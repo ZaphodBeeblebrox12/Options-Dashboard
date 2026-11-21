@@ -10,7 +10,10 @@ import { GexChart } from './components/GexChart';
 import { StrikeChart } from './components/StrikeChart';
 import { NetGexChart } from './components/NetGexChart';
 import { SettingsModal } from './components/SettingsModal';
-import { loadOptionChainColumns, saveOptionChainColumns, COMPACT_OPTION_CHAIN_COLUMNS, FULL_OPTION_CHAIN_COLUMNS } from './components/optionChainColumns';
+import {
+  loadOptionChainColumns, saveOptionChainColumns, COMPACT_OPTION_CHAIN_COLUMNS, FULL_OPTION_CHAIN_COLUMNS,
+  loadHideZeroVolumeStrikes, saveHideZeroVolumeStrikes,
+} from './components/optionChainColumns';
 import type { OptionChainColumnVisibility } from './components/optionChainColumns';
 import { AlertHistoryPanel } from './components/AlertHistory';
 import { AlertToastContainer } from './components/AlertToast';
@@ -95,6 +98,7 @@ function App() {
   const [fullMode, setFullMode] = useState(persisted.fullMode ?? false);
   const [columnVisibility, setColumnVisibility] = useState<OptionChainColumnVisibility>(() => loadOptionChainColumns(persisted.fullMode ?? false));
   const [highlightHighestVolume, setHighlightHighestVolume] = useState<boolean>(() => loadHighestVolumeHighlight());
+  const [hideZeroVolumeStrikes, setHideZeroVolumeStrikes] = useState<boolean>(() => loadHideZeroVolumeStrikes());
   const [selectedStrike, setSelectedStrike] = useState<number | null>(persisted.selectedStrike ?? null);
   const [liveMode, setLiveMode] = useState(initialLiveMode);
   const [marketOpenMap, setMarketOpenMap] = useState<Record<string, boolean>>({});
@@ -208,6 +212,7 @@ function App() {
 
   useEffect(() => { saveOptionChainColumns(columnVisibility); }, [columnVisibility]);
   useEffect(() => { saveHighestVolumeHighlight(highlightHighestVolume); }, [highlightHighestVolume]);
+  useEffect(() => { saveHideZeroVolumeStrikes(hideZeroVolumeStrikes); }, [hideZeroVolumeStrikes]);
 
   const saveableStateRef = useRef<PersistedState>({
     selectedIndex, selectedDate, currentTimestamp: null,
@@ -419,8 +424,8 @@ function App() {
     if (Array.isArray(options)) return options;
     const result: any[] = [];
     Object.entries(options).forEach(([strike, data]: [string, any]) => {
-      if (data.CE) result.push({ strike: Number(strike), option_type: 'CE', oi: data.CE.oi ?? 0, oi_change: 0, oi_change_pct: data.CE.oi_change_pct ?? null, volume: data.CE.volume ?? 0, ltp: data.CE.ltp ?? 0, iv: data.CE.iv, delta: data.CE.delta, gamma: data.CE.gamma, theta: data.CE.theta, vega: data.CE.vega, gex: data.CE.gex });
-      if (data.PE) result.push({ strike: Number(strike), option_type: 'PE', oi: data.PE.oi ?? 0, oi_change: 0, oi_change_pct: data.PE.oi_change_pct ?? null, volume: data.PE.volume ?? 0, ltp: data.PE.ltp ?? 0, iv: data.PE.iv, delta: data.PE.delta, gamma: data.PE.gamma, theta: data.PE.theta, vega: data.PE.vega, gex: data.PE.gex });
+      if (data.CE) result.push({ strike: Number(strike), option_type: 'CE', oi: data.CE.oi ?? 0, oi_change: 0, oi_change_pct: data.CE.oi_change_pct ?? null, volume: data.CE.volume ?? 0, volume_valid: data.CE.volume_valid ?? false, source_updated_at: data.CE.source_updated_at ?? null, source_age_sec: data.CE.source_age_sec ?? null, ltp: data.CE.ltp ?? 0, iv: data.CE.iv, delta: data.CE.delta, gamma: data.CE.gamma, theta: data.CE.theta, vega: data.CE.vega, gex: data.CE.gex });
+      if (data.PE) result.push({ strike: Number(strike), option_type: 'PE', oi: data.PE.oi ?? 0, oi_change: 0, oi_change_pct: data.PE.oi_change_pct ?? null, volume: data.PE.volume ?? 0, volume_valid: data.PE.volume_valid ?? false, source_updated_at: data.PE.source_updated_at ?? null, source_age_sec: data.PE.source_age_sec ?? null, ltp: data.PE.ltp ?? 0, iv: data.PE.iv, delta: data.PE.delta, gamma: data.PE.gamma, theta: data.PE.theta, vega: data.PE.vega, gex: data.PE.gex });
     });
     return result;
   }, [options]);
@@ -762,6 +767,7 @@ function App() {
         <OptionChain
           options={normalizedOptions} spot={spot} maxPain={maxPain} gammaFlip={gammaFlip}
           columnVisibility={columnVisibility} highlightHighestVolume={highlightHighestVolume}
+          hideZeroVolumeStrikes={hideZeroVolumeStrikes}
           selectedStrike={selectedStrike} onSelectStrike={handleSelectStrike}
           buildupDate={selectedDate} buildupTimestamp={!liveMode ? (currentTimestamp || undefined) : undefined}
           indexName={selectedIndex} timestamp={timestamp} historyDate={selectedDate} liveMode={liveMode} canArm={canArmWallWatch}
@@ -807,6 +813,8 @@ function App() {
           onColumnVisibilityChange={handleColumnVisibilityChange}
           highlightHighestVolume={highlightHighestVolume}
           onHighlightHighestVolumeChange={setHighlightHighestVolume}
+          hideZeroVolumeStrikes={hideZeroVolumeStrikes}
+          onHideZeroVolumeStrikesChange={setHideZeroVolumeStrikes}
           onTestToast={handleTestToast}
         />
       )}

@@ -11,6 +11,9 @@ class OptionData(BaseModel):
     oi_change: int
     oi_change_pct: Optional[float] = None   # v2.1: percentage change from day baseline
     volume: int
+    volume_valid: bool = False
+    source_updated_at: Optional[str] = None
+    source_age_sec: Optional[float] = None
     ltp: float
     iv: Optional[float] = None
     delta: Optional[float] = None

@@ -178,6 +178,7 @@ class LiveDataStore:
                 "ltp": ltp,
                 "oi": oi,
                 "volume": volume,
+                "volume_valid": True,
                 "last_update": datetime.now().isoformat()
             }
             key = (strike, option_type)
@@ -442,11 +443,42 @@ if ANGEL_ONE_AVAILABLE:
         def _build_token_map(self):
             from stock_streamer import option_type
             self.token_map = {}
+            seen_contracts = {}
+            duplicate_tokens = []
+            duplicate_contracts = []
+
             for _, row in self.options_df.iterrows():
-                self.token_map[str(row["token"])] = {
-                    "strike": int(row["strike"]),
-                    "type": option_type(str(row["symbol"])),
+                token = str(row["token"])
+                strike = int(row["strike"])
+                opt_type = option_type(str(row["symbol"]))
+                contract_key = (strike, opt_type)
+
+                if token in self.token_map:
+                    duplicate_tokens.append(token)
+                if contract_key in seen_contracts:
+                    duplicate_contracts.append({
+                        "strike": strike,
+                        "option_type": opt_type,
+                        "tokens": [seen_contracts[contract_key], token],
+                    })
+
+                seen_contracts[contract_key] = token
+                self.token_map[token] = {
+                    "strike": strike,
+                    "type": opt_type,
                 }
+
+            logger.info(
+                "[%s] Contract map audit: rows=%d unique_tokens=%d "
+                "unique_strike_sides=%d duplicate_tokens=%d duplicate_strike_sides=%d",
+                self.index_name, len(self.options_df), len(self.token_map),
+                len(seen_contracts), len(duplicate_tokens), len(duplicate_contracts),
+            )
+            if duplicate_tokens or duplicate_contracts:
+                logger.error(
+                    "[%s] Scrip-master contract-map duplicates detected: tokens=%s contracts=%s",
+                    self.index_name, duplicate_tokens[:20], duplicate_contracts[:20],
+                )
 
         def register_with_manager(self, manager: SubscriptionManager):
             """Register all tokens as a Tier-1 atomic group. No WS ownership here."""
@@ -461,7 +493,7 @@ if ANGEL_ONE_AVAILABLE:
                     instrument_name=self.index_name, tier=Tier.TIER_1,
                     group_id=gid, mode=1, metadata={"type": "index_spot"},
                 ))
-                manager.bind_handler(self.index_info["token"], self._handle_spot_tick)
+                manager.bind_handler(self.index_info["token"], self._handle_spot_tick, exchange_type=idx_exch, mode=1)
                 logger.info(f"[{self.index_name}] Index token {self.index_info['token']} on {'BSE' if idx_exch == 3 else 'NSE'}")
 
             if self.futures_info and self.futures_info.get("token"):
@@ -474,7 +506,7 @@ if ANGEL_ONE_AVAILABLE:
                     instrument_name=self.index_name, tier=Tier.TIER_1,
                     group_id=gid, mode=3, metadata={"type": "futures"},
                 ))
-                manager.bind_handler(self.futures_info["token"], self._handle_futures_tick)
+                manager.bind_handler(self.futures_info["token"], self._handle_futures_tick, exchange_type=fut_exch, mode=3)
                 logger.info(f"[{self.index_name}] Futures token {self.futures_info['token']} on {'BFO' if fut_exch == 4 else 'NFO'}")
 
             if self.options_df is not None and len(self.options_df) > 0:
@@ -485,7 +517,7 @@ if ANGEL_ONE_AVAILABLE:
                         instrument_name=self.index_name, tier=Tier.TIER_1,
                         group_id=gid, mode=3, metadata={"type": "option"},
                     ))
-                    manager.bind_handler(str(token), self._handle_option_tick)
+                    manager.bind_handler(str(token), self._handle_option_tick, exchange_type=opt_exch, mode=3)
                 logger.info(f"[{self.index_name}] Registered {len(self.options_df)} option tokens on {'BFO' if opt_exch == 4 else 'NFO'}")
 
             ok = manager.register_group(TokenGroup(
@@ -524,9 +556,19 @@ if ANGEL_ONE_AVAILABLE:
                 info = self.token_map.get(token)
                 if not info:
                     return
-                ltp = float(message.get("last_traded_price", 0) or 0) / 100.0
-                oi = int(message.get("open_interest", 0) or 0)
-                volume = int(message.get("volume_trade_for_the_day", 0) or 0)
+                raw_ltp = message.get("last_traded_price")
+                raw_oi = message.get("open_interest")
+                raw_volume = message.get("volume_trade_for_the_day")
+                if any(value in (None, "") for value in (raw_ltp, raw_oi, raw_volume)):
+                    logger.warning(
+                        "[%s] Ignoring incomplete option tick token=%s "
+                        "(ltp=%r oi=%r volume=%r); retaining last complete contract state",
+                        self.index_name, token, raw_ltp, raw_oi, raw_volume,
+                    )
+                    return
+                ltp = float(raw_ltp) / 100.0
+                oi = int(raw_oi)
+                volume = int(raw_volume)
                 self.data_store.update(info["strike"], info["type"], ltp, oi, volume)
             except Exception as e:
                 logger.error(f"[{self.index_name}] Option tick error: {e}")
@@ -623,10 +665,27 @@ if ANGEL_ONE_AVAILABLE:
                         analytics_opt = analytics["strikes_data"].get(strike, {}).get(opt_type, {})
                         current_oi = opt.get("oi", 0)
                         oi_change, oi_change_pct = self.data_store.compute_oi_change(strike, opt_type, current_oi)
+                        source_updated_at = opt.get("last_update")
+                        source_age_sec = None
+                        if source_updated_at:
+                            try:
+                                source_age_sec = round(
+                                    max(0.0, (datetime.now() - datetime.fromisoformat(source_updated_at)).total_seconds()),
+                                    1,
+                                )
+                            except (TypeError, ValueError):
+                                logger.warning(
+                                    "[%s] Invalid per-contract source timestamp for %s %s: %r",
+                                    self.index_name, strike, opt_type, source_updated_at,
+                                )
                         enriched_options.append({
                             "strike": strike, "option_type": opt_type,
                             "oi": current_oi, "oi_change": oi_change, "oi_change_pct": oi_change_pct,
-                            "volume": opt.get("volume", 0), "ltp": opt.get("ltp", 0),
+                            "volume": opt.get("volume", 0),
+                            "volume_valid": bool(opt.get("volume_valid", False)),
+                            "ltp": opt.get("ltp", 0),
+                            "source_updated_at": source_updated_at,
+                            "source_age_sec": source_age_sec,
                             "iv": analytics_opt.get("iv"), "delta": analytics_opt.get("delta"),
                             "gamma": analytics_opt.get("gamma"), "theta": analytics_opt.get("theta"),
                             "vega": analytics_opt.get("vega"), "gex": analytics_opt.get("gex"),

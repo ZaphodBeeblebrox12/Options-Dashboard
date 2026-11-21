@@ -49,6 +49,17 @@ def _migrate_db(conn):
         conn.execute("ALTER TABLE snapshots ADD COLUMN futures_oi INTEGER")
         conn.commit()
 
+    # Per-contract source freshness. Existing rows remain NULL/invalid because
+    # their original feed-receipt time cannot be reconstructed retrospectively.
+    if not _column_exists(conn, "option_snapshots", "source_age_sec"):
+        print("[DB] Migrating: adding source_age_sec to option_snapshots...")
+        conn.execute("ALTER TABLE option_snapshots ADD COLUMN source_age_sec REAL")
+        conn.commit()
+    if not _column_exists(conn, "option_snapshots", "volume_valid"):
+        print("[DB] Migrating: adding volume_valid to option_snapshots...")
+        conn.execute("ALTER TABLE option_snapshots ADD COLUMN volume_valid INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
+
     # Check if old unique index exists (without index_name) and drop it
     cursor = conn.execute("SELECT name, sql FROM sqlite_master WHERE type='index' AND name='idx_snapshots_timestamp'")
     row = cursor.fetchone()
@@ -131,6 +142,8 @@ def init_db():
             oi_change INTEGER DEFAULT 0,
             oi_change_pct REAL DEFAULT 0,
             volume INTEGER DEFAULT 0,
+            volume_valid INTEGER NOT NULL DEFAULT 0,
+            source_age_sec REAL,
             ltp REAL DEFAULT 0,
             iv REAL,
             delta REAL,

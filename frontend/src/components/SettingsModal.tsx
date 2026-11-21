@@ -20,6 +20,8 @@ interface SettingsModalProps {
   onColumnVisibilityChange: (next: OptionChainColumnVisibility) => void;
   highlightHighestVolume: boolean;
   onHighlightHighestVolumeChange: (enabled: boolean) => void;
+  hideZeroVolumeStrikes: boolean;
+  onHideZeroVolumeStrikesChange: (enabled: boolean) => void;
 }
 
 const CONFIGURE_TABS: { id: Tab; label: string; icon: string }[] = [
@@ -32,7 +34,7 @@ const MONITOR_TABS: { id: Tab; label: string; icon: string }[] = [
   { id: 'connections', label: 'Connections', icon: '🔌' },
 ];
 
-export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, fullMode, onFullModeChange, onTestToast, columnVisibility, onColumnVisibilityChange, highlightHighestVolume, onHighlightHighestVolumeChange }) => {
+export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, fullMode, onFullModeChange, onTestToast, columnVisibility, onColumnVisibilityChange, highlightHighestVolume, onHighlightHighestVolumeChange, hideZeroVolumeStrikes, onHideZeroVolumeStrikesChange }) => {
   const [tab, setTab] = useState<Tab>('stocks');
   const [armed, setArmed] = useState(true);
   const [scope, setScope] = useState<'viewed' | 'all'>('viewed');
@@ -176,6 +178,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose, fullMode,
           onColumnVisibilityChange={onColumnVisibilityChange}
           highlightHighestVolume={highlightHighestVolume}
           onHighlightHighestVolumeChange={onHighlightHighestVolumeChange}
+          hideZeroVolumeStrikes={hideZeroVolumeStrikes}
+          onHideZeroVolumeStrikesChange={onHideZeroVolumeStrikesChange}
         />;
       case 'connections':
         return <ConnectionsTab />;

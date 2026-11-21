@@ -2,7 +2,7 @@ import React, { useMemo, useRef, useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom';
 import { AlertTriangle, ArrowDown, ArrowUp, Bell, BellRing, Loader2 } from 'lucide-react';
 import { ScreenshotButton } from './ScreenshotButton';
-import { COMPACT_OPTION_CHAIN_COLUMNS, type OptionChainColumnVisibility } from './optionChainColumns';
+import { COMPACT_OPTION_CHAIN_COLUMNS, isConfirmedZeroVolume, type OptionChainColumnVisibility } from './optionChainColumns';
 
 interface OptionData {
   strike: number;
@@ -11,6 +11,9 @@ interface OptionData {
   oi_change: number;
   oi_change_pct?: number | null;
   volume: number;
+  volume_valid?: boolean | number | null;
+  source_updated_at?: string | null;
+  source_age_sec?: number | null;
   ltp: number;
   iv?: number;
   delta?: number;
@@ -126,6 +129,7 @@ interface OptionChainProps {
   gammaFlip: number | null;
   columnVisibility?: OptionChainColumnVisibility;
   highlightHighestVolume?: boolean;
+  hideZeroVolumeStrikes?: boolean;
   buildupDate?: string;
   buildupTimestamp?: string;
   selectedStrike: number | null;
@@ -160,6 +164,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   gammaFlip,
   columnVisibility = COMPACT_OPTION_CHAIN_COLUMNS,
   highlightHighestVolume = true,
+  hideZeroVolumeStrikes = true,
   buildupDate = '',
   buildupTimestamp,
   selectedStrike,
@@ -477,8 +482,16 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
       visibleRows = chainData.filter((row) => visibleStrikes.has(row.strike));
     }
 
+    // A strike is hidden only when BOTH sides explicitly report valid zero
+    // volume. Missing sides or legacy/unverified volume values stay visible.
+    if (hideZeroVolumeStrikes) {
+      visibleRows = visibleRows.filter(
+        (row) => !(isConfirmedZeroVolume(row.CE) && isConfirmedZeroVolume(row.PE))
+      );
+    }
+
     return strikeOrder === 'asc' ? visibleRows : [...visibleRows].reverse();
-  }, [chainData, atmSpot, strikeOrder, currentWalls]);
+  }, [chainData, atmSpot, strikeOrder, currentWalls, hideZeroVolumeStrikes]);
 
   // ── Jump to ATM ──
   // Scroll only the option-chain rows. Element.scrollIntoView() can also
@@ -1080,7 +1093,11 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
 
           {/* Option rows share the header's scroll container and width. */}
           <div>
-            {displayRows.map((row) => {
+            {displayRows.length === 0 ? (
+              <div className="px-4 py-8 text-center text-xs font-mono text-terminal-muted">
+                No displayed strikes have confirmed trading volume. You can show them again in Settings → Display.
+              </div>
+            ) : displayRows.map((row) => {
               const ce = row.CE;
               const pe = row.PE;
               const isSelected = row.strike === selectedStrike;
