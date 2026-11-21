@@ -11,7 +11,7 @@ export default function MobileDisplayTab({ fullMode, onFullModeChange, hideZeroV
         <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 0" }}>
           <span style={{ minWidth: 0 }}>
             <b style={{ display: "block" }}>Hide zero-volume strikes</b>
-            <span className="mc-note">Only when both CE and PE explicitly report zero volume. Missing or unverified values remain visible.</span>
+            <span className="mc-note">Both sides must qualify as zero. Older replay rows also need positive OI and LTP; unverified live values remain visible.</span>
           </span>
           <input type="checkbox" checked={hideZeroVolumeStrikes}
             onChange={(event) => onHideZeroVolumeStrikesChange(event.target.checked)} />
