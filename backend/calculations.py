@@ -702,7 +702,7 @@ def calculate_analytics(strikes_data: Dict, spot: float, futures: Optional[float
         iv = None
         greeks = None
         gex = 0.0
-        if not has_eligible_volume(opt_data.get("volume")):
+        if not has_eligible_volume(opt_data.get("volume"), opt_data.get("volume_valid")):
             _finish(opt_data, None, None, 0.0)
             return
         if ltp > 0 and spot > 0:
@@ -752,7 +752,7 @@ def calculate_analytics(strikes_data: Dict, spot: float, futures: Optional[float
         iv = None
         greeks = None
         gex = 0.0
-        if not has_eligible_volume(opt_data.get("volume")):
+        if not has_eligible_volume(opt_data.get("volume"), opt_data.get("volume_valid")):
             _finish(opt_data, None, None, 0.0)
             return
         if ltp > 0 and spot > 0:
