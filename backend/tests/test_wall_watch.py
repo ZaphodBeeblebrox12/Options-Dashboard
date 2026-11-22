@@ -3,15 +3,15 @@ from wall_watch import calculate_wall_strikes, normalize_wall_options
 
 def test_walls_use_highest_oi_per_side_across_loaded_expiry_chain():
     options = [
-        {"strike": 24500, "option_type": "CE", "oi": 1200, "volume": 2},
-        {"strike": 24900, "option_type": "CE", "oi": 900, "volume": 2},
-        {"strike": 25000, "option_type": "CE", "oi": 400, "volume": 2},
-        {"strike": 25100, "option_type": "CE", "oi": 700, "volume": 2},
-        {"strike": 25200, "option_type": "CE", "oi": 600, "volume": 2},
-        {"strike": 24800, "option_type": "PE", "oi": 500, "volume": 2},
-        {"strike": 25000, "option_type": "PE", "oi": 800, "volume": 2},
-        {"strike": 25050, "option_type": "PE", "oi": 900, "volume": 2},
-        {"strike": 25500, "option_type": "PE", "oi": 1100, "volume": 2},
+        {"strike": 24500, "option_type": "CE", "oi": 1200, "volume": 2, "volume_valid": True},
+        {"strike": 24900, "option_type": "CE", "oi": 900, "volume": 2, "volume_valid": True},
+        {"strike": 25000, "option_type": "CE", "oi": 400, "volume": 2, "volume_valid": True},
+        {"strike": 25100, "option_type": "CE", "oi": 700, "volume": 2, "volume_valid": True},
+        {"strike": 25200, "option_type": "CE", "oi": 600, "volume": 2, "volume_valid": True},
+        {"strike": 24800, "option_type": "PE", "oi": 500, "volume": 2, "volume_valid": True},
+        {"strike": 25000, "option_type": "PE", "oi": 800, "volume": 2, "volume_valid": True},
+        {"strike": 25050, "option_type": "PE", "oi": 900, "volume": 2, "volume_valid": True},
+        {"strike": 25500, "option_type": "PE", "oi": 1100, "volume": 2, "volume_valid": True},
     ]
     walls = calculate_wall_strikes(options, 25000)
     assert walls["CE"] == (24500, True)
@@ -20,9 +20,9 @@ def test_walls_use_highest_oi_per_side_across_loaded_expiry_chain():
 
 def test_crossing_call_wall_does_not_move_it_when_oi_is_unchanged():
     options = [
-        {"strike": 24900, "option_type": "CE", "oi": 900, "volume": 2},
-        {"strike": 25000, "option_type": "CE", "oi": 400, "volume": 2},
-        {"strike": 25100, "option_type": "CE", "oi": 700, "volume": 2},
+        {"strike": 24900, "option_type": "CE", "oi": 900, "volume": 2, "volume_valid": True},
+        {"strike": 25000, "option_type": "CE", "oi": 400, "volume": 2, "volume_valid": True},
+        {"strike": 25100, "option_type": "CE", "oi": 700, "volume": 2, "volume_valid": True},
     ]
 
     # Spot starts below the wall, moves above it, then returns below it.
@@ -35,9 +35,9 @@ def test_crossing_call_wall_does_not_move_it_when_oi_is_unchanged():
 
 def test_crossing_put_wall_does_not_move_it_when_oi_is_unchanged():
     options = [
-        {"strike": 24900, "option_type": "PE", "oi": 500, "volume": 2},
-        {"strike": 25000, "option_type": "PE", "oi": 800, "volume": 2},
-        {"strike": 25100, "option_type": "PE", "oi": 700, "volume": 2},
+        {"strike": 24900, "option_type": "PE", "oi": 500, "volume": 2, "volume_valid": True},
+        {"strike": 25000, "option_type": "PE", "oi": 800, "volume": 2, "volume_valid": True},
+        {"strike": 25100, "option_type": "PE", "oi": 700, "volume": 2, "volume_valid": True},
     ]
 
     # Spot moves from above the Put Wall to below it and then back.
@@ -49,21 +49,21 @@ def test_crossing_put_wall_does_not_move_it_when_oi_is_unchanged():
 
 def test_changed_oi_can_move_a_wall():
     before = [
-        {"strike": 24900, "option_type": "CE", "oi": 900, "volume": 2},
-        {"strike": 25000, "option_type": "CE", "oi": 400, "volume": 2},
-        {"strike": 25100, "option_type": "CE", "oi": 700, "volume": 2},
+        {"strike": 24900, "option_type": "CE", "oi": 900, "volume": 2, "volume_valid": True},
+        {"strike": 25000, "option_type": "CE", "oi": 400, "volume": 2, "volume_valid": True},
+        {"strike": 25100, "option_type": "CE", "oi": 700, "volume": 2, "volume_valid": True},
     ]
     after = [
-        {"strike": 24900, "option_type": "CE", "oi": 600, "volume": 2},
-        {"strike": 25000, "option_type": "CE", "oi": 400, "volume": 2},
-        {"strike": 25100, "option_type": "CE", "oi": 1000, "volume": 2},
+        {"strike": 24900, "option_type": "CE", "oi": 600, "volume": 2, "volume_valid": True},
+        {"strike": 25000, "option_type": "CE", "oi": 400, "volume": 2, "volume_valid": True},
+        {"strike": 25100, "option_type": "CE", "oi": 1000, "volume": 2, "volume_valid": True},
     ]
     assert calculate_wall_strikes(before, 25050)["CE"] == (24900, True)
     assert calculate_wall_strikes(after, 27000)["CE"] == (25100, True)
 
 
 def test_missing_side_is_incomplete_data_and_does_not_create_a_wall():
-    options = [{"strike": 25000, "option_type": "CE", "oi": 100, "volume": 2}]
+    options = [{"strike": 25000, "option_type": "CE", "oi": 100, "volume": 2, "volume_valid": True}]
     walls = calculate_wall_strikes(options, 25050)
     assert walls["CE"] == (25000, True)
     assert walls["PE"] == (None, False)
@@ -71,8 +71,8 @@ def test_missing_side_is_incomplete_data_and_does_not_create_a_wall():
 
 def test_accepts_strike_keyed_live_chain_shape():
     options = {
-        "25000": {"CE": {"oi": 100, "volume": 2}, "PE": {"oi": 250, "volume": 2}},
-        "25100": {"CE": {"oi": 500, "volume": 2}, "PE": {"oi": 50, "volume": 2}},
+        "25000": {"CE": {"oi": 100, "volume": 2, "volume_valid": True}, "PE": {"oi": 250, "volume": 2, "volume_valid": True}},
+        "25100": {"CE": {"oi": 500, "volume": 2, "volume_valid": True}, "PE": {"oi": 50, "volume": 2, "volume_valid": True}},
     }
     rows = normalize_wall_options(options)
     assert len(rows) == 4
@@ -83,18 +83,18 @@ def test_accepts_strike_keyed_live_chain_shape():
 
 def test_equal_oi_ties_choose_lowest_strike_deterministically():
     options = [
-        {"strike": 25100, "option_type": "CE", "oi": 500, "volume": 2},
-        {"strike": 25200, "option_type": "CE", "oi": 500, "volume": 2},
+        {"strike": 25100, "option_type": "CE", "oi": 500, "volume": 2, "volume_valid": True},
+        {"strike": 25200, "option_type": "CE", "oi": 500, "volume": 2, "volume_valid": True},
     ]
     assert calculate_wall_strikes(options, 25000)["CE"] == (25100, True)
 
 
 def test_volume_below_two_is_excluded_per_contract_side():
     options = [
-        {"strike": 26000, "option_type": "CE", "oi": 90000, "volume": 1},
-        {"strike": 26000, "option_type": "PE", "oi": 80000, "volume": 20},
-        {"strike": 25500, "option_type": "CE", "oi": 1000, "volume": 2},
-        {"strike": 25500, "option_type": "PE", "oi": 1200, "volume": 0},
+        {"strike": 26000, "option_type": "CE", "oi": 90000, "volume": 1, "volume_valid": True},
+        {"strike": 26000, "option_type": "PE", "oi": 80000, "volume": 20, "volume_valid": True},
+        {"strike": 25500, "option_type": "CE", "oi": 1000, "volume": 2, "volume_valid": True},
+        {"strike": 25500, "option_type": "PE", "oi": 1200, "volume": 0, "volume_valid": True},
     ]
     assert calculate_wall_strikes(options, 25000) == {
         "CE": (25500, True),
@@ -104,14 +104,34 @@ def test_volume_below_two_is_excluded_per_contract_side():
 
 def test_volume_two_is_eligible_and_missing_volume_is_not():
     options = [
-        {"strike": 25000, "option_type": "CE", "oi": 900, "volume": 2},
+        {"strike": 25000, "option_type": "CE", "oi": 900, "volume": 2, "volume_valid": True},
         {"strike": 25100, "option_type": "CE", "oi": 5000},
-        {"strike": 25000, "option_type": "PE", "oi": 700, "volume": 1},
+        {"strike": 25000, "option_type": "PE", "oi": 700, "volume": 1, "volume_valid": True},
     ]
     assert calculate_wall_strikes(options, None) == {
         "CE": (25000, True),
         "PE": (None, False),
     }
+
+
+def test_unverified_volume_is_excluded_even_when_stored_value_is_high():
+    options = [
+        {"strike": 26000, "option_type": "CE", "oi": 90000, "volume": 500, "volume_valid": 0},
+        {"strike": 26000, "option_type": "PE", "oi": 80000, "volume": 2, "volume_valid": 1},
+        {"strike": 25500, "option_type": "CE", "oi": 1000, "volume": 2, "volume_valid": 1},
+    ]
+    assert calculate_wall_strikes(options, 25000) == {
+        "CE": (25500, True),
+        "PE": (26000, True),
+    }
+
+
+def test_missing_volume_valid_flag_is_not_treated_as_verified():
+    options = [
+        {"strike": 26000, "option_type": "CE", "oi": 90000, "volume": 500},
+        {"strike": 25500, "option_type": "CE", "oi": 1000, "volume": 2, "volume_valid": True},
+    ]
+    assert calculate_wall_strikes(options, None)["CE"] == (25500, True)
 
 
 
@@ -184,8 +204,8 @@ def test_manual_watch_fires_even_when_automatic_alert_switch_and_rule_are_off(mo
                 "timestamp": "2026-10-30T10:00:00",
                 "spot": 25050,
                 "options": [
-                    {"strike": 25000, "option_type": "CE", "oi": 900, "volume": 2},
-                    {"strike": 25100, "option_type": "CE", "oi": 1200, "volume": 2},
+                    {"strike": 25000, "option_type": "CE", "oi": 900, "volume": 2, "volume_valid": True},
+                    {"strike": 25100, "option_type": "CE", "oi": 1200, "volume": 2, "volume_valid": True},
                 ],
             },
             "NIFTY",
@@ -226,10 +246,10 @@ def test_manual_watch_does_not_move_to_sub_two_volume_contract(monkeypatch):
                 "timestamp": "2026-11-22T10:00:00",
                 "spot": 10000,
                 "options": [
-                    {"strike": 10600, "option_type": "CE", "oi": 50000, "volume": 1},
-                    {"strike": 10600, "option_type": "PE", "oi": 40000, "volume": 20},
-                    {"strike": 10400, "option_type": "CE", "oi": 1000, "volume": 2},
-                    {"strike": 10400, "option_type": "PE", "oi": 1200, "volume": 0},
+                    {"strike": 10600, "option_type": "CE", "oi": 50000, "volume": 1, "volume_valid": True},
+                    {"strike": 10600, "option_type": "PE", "oi": 40000, "volume": 20, "volume_valid": True},
+                    {"strike": 10400, "option_type": "CE", "oi": 1000, "volume": 2, "volume_valid": True},
+                    {"strike": 10400, "option_type": "PE", "oi": 1200, "volume": 0, "volume_valid": True},
                 ],
             },
             "NIFTY",
