@@ -3,6 +3,7 @@ export interface OiWallInput {
   option_type: string;
   oi?: number | null;
   volume?: number | null;
+  volume_valid?: boolean | number | null;
 }
 
 export interface OiWalls {
@@ -12,4 +13,5 @@ export interface OiWalls {
 
 export function computeOiWalls(
   options: readonly OiWallInput[] | null | undefined,
+  mode?: 'live' | 'replay',
 ): OiWalls;
