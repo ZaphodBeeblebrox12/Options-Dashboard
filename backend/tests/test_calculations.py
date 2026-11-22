@@ -94,3 +94,54 @@ def test_gamma_flip_returns_the_strike_after_cumulative_gex_crosses_zero():
 
     assert calculate_gamma_flip(strikes, spot=108) == 110
     assert calculate_gamma_flip({}, spot=108) is None
+
+
+
+def test_analytics_excludes_sub_two_volume_contracts_from_gex_and_gamma_flip(monkeypatch):
+    import calculations
+
+    captured = {}
+
+    monkeypatch.setattr(
+        calculations,
+        "solve_iv",
+        lambda *args, **kwargs: (0.2, False),
+    )
+    monkeypatch.setattr(
+        calculations,
+        "calculate_greeks",
+        lambda *args, **kwargs: {
+            "delta": 0.5, "gamma": 0.01, "theta": -1.0, "vega": 1.0,
+        },
+    )
+
+    def capture_gamma_flip(strikes_data, spot, cached_ivs, years, multiplier):
+        captured["eligible_ivs"] = dict(cached_ivs)
+        return None
+
+    monkeypatch.setattr(
+        calculations,
+        "calculate_true_gamma_flip_vectorized",
+        capture_gamma_flip,
+    )
+
+    strikes = {
+        25000: {
+            "CE": {"ltp": 250, "oi": 1000, "volume": 1, "volume_valid": True},
+            "PE": {"ltp": 250, "oi": 1000, "volume": 2, "volume_valid": True},
+        }
+    }
+    result = calculations.calculate_analytics(
+        strikes,
+        spot=25000,
+        expiry_datetime=__import__("datetime").datetime.now()
+            + __import__("datetime").timedelta(days=30),
+        contract_multiplier=50,
+    )
+
+    # Only PE contributes: gamma * OI * multiplier * negative PE sign.
+    assert result["net_gex"] == -500.0
+    assert result["strikes_data"][25000]["CE"]["gex"] == 0.0
+    assert result["strikes_data"][25000]["CE"]["iv"] is None
+    assert result["strikes_data"][25000]["PE"]["gex"] == -500.0
+    assert set(captured["eligible_ivs"]) == {(25000, "PE")}

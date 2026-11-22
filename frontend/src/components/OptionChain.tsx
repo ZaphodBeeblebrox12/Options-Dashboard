@@ -2,7 +2,8 @@ import React, { useMemo, useRef, useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom';
 import { AlertTriangle, ArrowDown, ArrowUp, Bell, BellRing, Loader2 } from 'lucide-react';
 import { ScreenshotButton } from './ScreenshotButton';
-import { COMPACT_OPTION_CHAIN_COLUMNS, isConfirmedZeroVolume, type OptionChainColumnVisibility } from './optionChainColumns';
+import { COMPACT_OPTION_CHAIN_COLUMNS, hasEligibleVolumeContract, hasStoredEligibleVolumeContract, type OptionChainColumnVisibility } from './optionChainColumns';
+import { shouldHideStrikeForVolume } from '../zeroVolumePolicy.js';
 
 interface OptionData {
   strike: number;
@@ -297,11 +298,16 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     return () => window.clearInterval(timer);
   }, [refreshWallWatches]);
 
-  const toggleWallWatch = useCallback(async (side: 'CE' | 'PE', event: React.MouseEvent) => {
+  const toggleWallWatch = useCallback(async (side: 'CE' | 'PE', strike: number, event: React.MouseEvent) => {
     // Keep the strike-row selection click separate from the watch action.
     event.preventDefault();
     event.stopPropagation();
-    const action = wallWatches[side]?.armed ? 'disarm' : 'arm';
+    // A side may still have a watch armed at an older wall. Only disarm when
+    // the bell pressed belongs to that exact watched strike; otherwise re-arm
+    // at the current wall selected by the backend.
+    const watch = wallWatches[side];
+    const isThisStrikeWatched = Boolean(watch?.armed && Number(watch.watched_strike) === strike);
+    const action = isThisStrikeWatched ? 'disarm' : 'arm';
     setWatchBusy(side);
     setWatchError(null);
 
@@ -344,35 +350,52 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
       .sort((a, b) => a.strike - b.strike);
   }, [options]);
 
-  // ── Calculate ATM ──
+  // Live analytics require verified feed provenance. Historical replay uses
+  // its persisted numeric volume because volume_valid did not exist yet.
+  // Both modes keep the same minimum-volume threshold of two per side.
+  const isVolumeEligible = liveMode
+    ? hasEligibleVolumeContract
+    : hasStoredEligibleVolumeContract;
+  const volumeEligibleRows = useMemo(
+    () => chainData.filter(
+      (row) => isVolumeEligible(row.CE) || isVolumeEligible(row.PE)
+    ),
+    [chainData, liveMode],
+  );
+
+  // ── Calculate ATM from contracts with meaningful traded volume ──
   const atmSpot = useMemo(() => {
     if (!spot || chainData.length === 0) return null;
-    return chainData.reduce((closest, row) =>
+    // Prefer actionable contracts, but retain an ATM anchor for replay dates
+    // whose legacy volume provenance is unknown.
+    const candidates = volumeEligibleRows.length > 0 ? volumeEligibleRows : chainData;
+    return candidates.reduce((closest, row) =>
       Math.abs(row.strike - spot) < Math.abs(closest.strike - spot) ? row : closest
     ).strike;
-  }, [spot, chainData]);
+  }, [spot, chainData, volumeEligibleRows]);
 
   // ── FIX: rank only strikes within ±OI_RANK_WINDOW_PCT of spot ──
   const rankableRows = useMemo(() => {
-    if (!spot) return chainData;
+    if (!spot) return volumeEligibleRows;
     const lo = spot * (1 - OI_RANK_WINDOW_PCT / 100);
     const hi = spot * (1 + OI_RANK_WINDOW_PCT / 100);
-    const windowed = chainData.filter((r) => r.strike >= lo && r.strike <= hi);
-    // Safety: if the window somehow contains nothing, fall back to all rows
-    // so the badges never vanish entirely.
-    return windowed.length > 0 ? windowed : chainData;
-  }, [chainData, spot]);
+    const windowed = volumeEligibleRows.filter((r) => r.strike >= lo && r.strike <= hi);
+    // Safety: if the spot window contains nothing, rank the eligible chain.
+    return windowed.length > 0 ? windowed : volumeEligibleRows;
+  }, [volumeEligibleRows, spot]);
 
   // ── CE/PE OI ranking — TOP 3 (within the spot window) ──
   const ceOiRanks = useMemo(() => {
-    const sorted = [...rankableRows].sort((a, b) => (b.CE?.oi ?? 0) - (a.CE?.oi ?? 0));
+    const sorted = rankableRows.filter(row => isVolumeEligible(row.CE))
+      .sort((a, b) => (b.CE?.oi ?? 0) - (a.CE?.oi ?? 0));
     const ranks: Record<number, number> = {};
     sorted.slice(0, 3).forEach((row, i) => { ranks[row.strike] = i + 1; });
     return ranks;
   }, [rankableRows]);
 
   const peOiRanks = useMemo(() => {
-    const sorted = [...rankableRows].sort((a, b) => (b.PE?.oi ?? 0) - (a.PE?.oi ?? 0));
+    const sorted = rankableRows.filter(row => isVolumeEligible(row.PE))
+      .sort((a, b) => (b.PE?.oi ?? 0) - (a.PE?.oi ?? 0));
     const ranks: Record<number, number> = {};
     sorted.slice(0, 3).forEach((row, i) => { ranks[row.strike] = i + 1; });
     return ranks;
@@ -383,8 +406,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   const highestVolumeStrikes = useMemo(() => {
     const find = (side: 'CE' | 'PE') => {
       const candidates = rankableRows.filter((row) => {
-        const volume = row[side]?.volume;
-        return volume != null && Number.isFinite(volume) && volume > 0;
+        return isVolumeEligible(row[side]);
       });
       candidates.sort((a, b) =>
         ((b[side]?.volume ?? 0) - (a[side]?.volume ?? 0)) || a.strike - b.strike
@@ -394,12 +416,13 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     return { CE: find('CE'), PE: find('PE') };
   }, [rankableRows]);
 
-  // Walls are the strongest OI concentrations in the loaded expiry chain.
-  // Spot crossing a wall, or moving far away from it, must never reclassify
-  // the wall. Only a change in relative CE/PE OI can move these levels.
+  // Walls are the strongest OI concentrations among contracts with volume >= 2.
+  // Eligibility is independent: a quiet CE does not disqualify an active PE.
   const currentWalls = useMemo(() => {
     const find = (side: 'CE' | 'PE') => {
-      const sideRows = chainData.filter(row => side === 'CE' ? !!row.CE : !!row.PE);
+      const sideRows = volumeEligibleRows.filter(row =>
+        isVolumeEligible(side === 'CE' ? row.CE : row.PE)
+      );
       sideRows.sort((a, b) =>
         ((side === 'CE' ? b.CE?.oi ?? 0 : b.PE?.oi ?? 0) -
           (side === 'CE' ? a.CE?.oi ?? 0 : a.PE?.oi ?? 0)) ||
@@ -408,7 +431,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
       return sideRows[0]?.strike ?? null;
     };
     return { CE: find('CE'), PE: find('PE') };
-  }, [chainData]);
+  }, [volumeEligibleRows, liveMode]);
 
   const visibleWallEvents = useMemo(() => {
     const events = wallHistory?.events ?? [];
@@ -457,7 +480,9 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   // ── Center view around ATM ──
   const displayRows = useMemo(() => {
     const center = atmSpot;
-    let visibleRows = chainData;
+    let visibleRows = hideZeroVolumeStrikes
+      ? chainData.filter((row) => !shouldHideStrikeForVolume(row.CE, row.PE))
+      : chainData;
     if (center && chainData.length > 21) {
       const centerIdx = chainData.findIndex((r) => r.strike === center);
       if (centerIdx < 0) {
@@ -479,19 +504,17 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     if (requiredWallStrikes.size > 0) {
       const visibleStrikes = new Set(visibleRows.map((row) => row.strike));
       for (const strike of requiredWallStrikes) visibleStrikes.add(strike);
-      visibleRows = chainData.filter((row) => visibleStrikes.has(row.strike));
+      visibleRows = (hideZeroVolumeStrikes
+        ? chainData.filter((row) => !shouldHideStrikeForVolume(row.CE, row.PE))
+        : chainData).filter((row) => visibleStrikes.has(row.strike));
     }
 
-    // A strike is hidden only when BOTH sides explicitly report valid zero
-    // volume. Missing sides or legacy/unverified volume values stay visible.
-    if (hideZeroVolumeStrikes) {
-      visibleRows = visibleRows.filter(
-        (row) => !(isConfirmedZeroVolume(row.CE) && isConfirmedZeroVolume(row.PE))
-      );
-    }
+    // Display raw historical contract values even when volume provenance is
+    // unavailable. Eligibility gates analytics, not whether saved replay data
+    // is allowed to appear in the chain. Only confirmed zero-volume pairs hide.
 
     return strikeOrder === 'asc' ? visibleRows : [...visibleRows].reverse();
-  }, [chainData, atmSpot, strikeOrder, currentWalls, hideZeroVolumeStrikes]);
+  }, [chainData, volumeEligibleRows, atmSpot, strikeOrder, currentWalls, hideZeroVolumeStrikes]);
 
   // ── Jump to ATM ──
   // Scroll only the option-chain rows. Element.scrollIntoView() can also
@@ -1095,17 +1118,25 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
           <div>
             {displayRows.length === 0 ? (
               <div className="px-4 py-8 text-center text-xs font-mono text-terminal-muted">
-                No displayed strikes have confirmed trading volume. You can show them again in Settings → Display.
+                No option contracts are available at this snapshot.
               </div>
             ) : displayRows.map((row) => {
               const ce = row.CE;
               const pe = row.PE;
+              const ceWatchArmed = Boolean(wallWatches.CE?.armed && Number(wallWatches.CE.watched_strike) === row.strike);
+              const peWatchArmed = Boolean(wallWatches.PE?.armed && Number(wallWatches.PE.watched_strike) === row.strike);
               const isSelected = row.strike === selectedStrike;
               const ceRank = ceOiRanks[row.strike];
               const peRank = peOiRanks[row.strike];
               const buildup = buildupByStrike.get(row.strike);
-              const ceBuildup = buildup?.CE ?? null;
-              const peBuildup = buildup?.PE ?? null;
+              // Replay has legacy snapshots whose volume_valid flag defaults
+              // to false after migration. Use their saved volume value in replay;
+              // live classifications still require verified feed provenance.
+              const isBuildupEligible = liveMode
+                ? hasEligibleVolumeContract
+                : hasStoredEligibleVolumeContract;
+              const ceBuildup = isBuildupEligible(ce) ? buildup?.CE ?? null : null;
+              const peBuildup = isBuildupEligible(pe) ? buildup?.PE ?? null : null;
               // FIX (ITM tint): CE is ITM below spot, PE is ITM above spot.
               const ceItm = spot != null && row.strike < spot;
               const peItm = spot != null && row.strike > spot;
@@ -1174,18 +1205,18 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                         {currentWalls.CE === row.strike && (
                           <button
                             type="button"
-                            onClick={(event) => void toggleWallWatch('CE', event)}
-                            disabled={watchBusy === 'CE' || (!wallWatches.CE?.armed && !canArm)}
-                            title={wallWatches.CE?.armed
+                            onClick={(event) => void toggleWallWatch('CE', row.strike, event)}
+                            disabled={watchBusy === 'CE' || (!ceWatchArmed && !canArm)}
+                            title={ceWatchArmed
                               ? `Disarm Call Wall watch at ${fmt(wallWatches.CE.watched_strike)}`
                               : canArm ? `Arm Call Wall watch at ${fmt(row.strike)}` : 'Wall watch requires a connected, non-stale live feed'}
-                            aria-label={wallWatches.CE?.armed ? 'Disarm Call Wall alert' : 'Arm Call Wall alert'}
+                            aria-label={ceWatchArmed ? 'Disarm Call Wall alert' : 'Arm Call Wall alert'}
                             aria-busy={watchBusy === 'CE'}
-                            className={`relative z-10 ml-0.5 inline-flex h-5 w-5 shrink-0 pointer-events-auto items-center justify-center rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${wallWatches.CE?.armed ? 'text-amber-200 bg-amber-500/20 hover:bg-amber-500/30' : 'text-terminal-muted hover:text-amber-300 hover:bg-amber-500/10'} disabled:cursor-not-allowed disabled:opacity-40`}
+                            className={`relative z-10 ml-0.5 inline-flex h-5 w-5 shrink-0 pointer-events-auto items-center justify-center rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${ceWatchArmed ? 'text-amber-200 bg-amber-500/20 hover:bg-amber-500/30' : 'text-terminal-muted hover:text-amber-300 hover:bg-amber-500/10'} disabled:cursor-not-allowed disabled:opacity-40`}
                           >
                             {watchBusy === 'CE'
                               ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              : wallWatches.CE?.armed
+                              : ceWatchArmed
                                 ? <BellRing className="h-3.5 w-3.5" />
                                 : <Bell className="h-3.5 w-3.5" />}
                           </button>
@@ -1216,18 +1247,18 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
                         {currentWalls.PE === row.strike && (
                           <button
                             type="button"
-                            onClick={(event) => void toggleWallWatch('PE', event)}
-                            disabled={watchBusy === 'PE' || (!wallWatches.PE?.armed && !canArm)}
-                            title={wallWatches.PE?.armed
+                            onClick={(event) => void toggleWallWatch('PE', row.strike, event)}
+                            disabled={watchBusy === 'PE' || (!peWatchArmed && !canArm)}
+                            title={peWatchArmed
                               ? `Disarm Put Wall watch at ${fmt(wallWatches.PE.watched_strike)}`
                               : canArm ? `Arm Put Wall watch at ${fmt(row.strike)}` : 'Wall watch requires a connected, non-stale live feed'}
-                            aria-label={wallWatches.PE?.armed ? 'Disarm Put Wall alert' : 'Arm Put Wall alert'}
+                            aria-label={peWatchArmed ? 'Disarm Put Wall alert' : 'Arm Put Wall alert'}
                             aria-busy={watchBusy === 'PE'}
-                            className={`relative z-10 ml-0.5 inline-flex h-5 w-5 shrink-0 pointer-events-auto items-center justify-center rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${wallWatches.PE?.armed ? 'text-amber-200 bg-amber-500/20 hover:bg-amber-500/30' : 'text-terminal-muted hover:text-amber-300 hover:bg-amber-500/10'} disabled:cursor-not-allowed disabled:opacity-40`}
+                            className={`relative z-10 ml-0.5 inline-flex h-5 w-5 shrink-0 pointer-events-auto items-center justify-center rounded transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${peWatchArmed ? 'text-amber-200 bg-amber-500/20 hover:bg-amber-500/30' : 'text-terminal-muted hover:text-amber-300 hover:bg-amber-500/10'} disabled:cursor-not-allowed disabled:opacity-40`}
                           >
                             {watchBusy === 'PE'
                               ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              : wallWatches.PE?.armed
+                              : peWatchArmed
                                 ? <BellRing className="h-3.5 w-3.5" />
                                 : <Bell className="h-3.5 w-3.5" />}
                           </button>

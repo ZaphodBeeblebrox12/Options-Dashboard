@@ -4,6 +4,7 @@ import { AlertToastContainer } from "../AlertToast";
 import type { AlertFiring } from "../../hooks/useAlerts";
 import { fetchInstruments } from "../../instrumentsCache";
 import MobileChain from "./MobileChain";
+import { hasEligibleVolumeContract, hasStoredEligibleVolumeContract } from "../optionChainColumns";
 import MobileScanner from "./MobileScanner";
 import MobileMap from "./MobileMap";
 import MobileAlerts from "./MobileAlerts";
@@ -190,17 +191,44 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
   const baseData = replay
     ? replaySnap
     : (hasUsableLiveData ? data : (!marketOpen ? lastKnownSnapshot ?? null : data ?? null)); // replay overrides live; CLOSED may use the persisted last-known snapshot
-  // wall chips for the Walls tab: max-OI strikes from the visible chain
+  // Replay snapshots predate volume_valid provenance. Use saved volume in
+  // replay, but retain verified-feed checks for live/current data.
+  const isBaseVolumeEligible = replay
+    ? hasStoredEligibleVolumeContract
+    : hasEligibleVolumeContract;
+  const eligibleOptions = useMemo(
+    () => ((baseData as any)?.options ?? []).filter((o: any) => isBaseVolumeEligible(o)),
+    [baseData, replay],
+  );
+  const eligibleGexSummary = useMemo(() => {
+    let netGex = 0, largestAbsGex = 0, maxGexStrike: number | null = null;
+    let mostNegativeGex = 0, maxNegativeGexStrike: number | null = null;
+    for (const option of eligibleOptions) {
+      const strike = Number(option.strike), gex = Number(option.gex);
+      if (!Number.isFinite(strike) || !Number.isFinite(gex)) continue;
+      netGex += gex;
+      if (Math.abs(gex) > largestAbsGex) {
+        largestAbsGex = Math.abs(gex);
+        maxGexStrike = strike;
+      }
+      if (gex < mostNegativeGex) {
+        mostNegativeGex = gex;
+        maxNegativeGexStrike = strike;
+      }
+    }
+    return { net_gex: netGex, max_gex_strike: maxGexStrike, max_negative_gex_strike: maxNegativeGexStrike };
+  }, [eligibleOptions]);
+
   const wallChips = useMemo(() => {
+    const wallSpot = (baseData as any)?.spot ?? null;
     let cew: number | null = null, pew: number | null = null, ceo = -1, peo = -1;
-    const wallSpot = (baseData as any)?.spot;
-    for (const o of ((baseData as any)?.options ?? []) as any[]) {
+    for (const o of eligibleOptions) {
       if (o?.option_type === "CE" && (wallSpot == null || o.strike >= wallSpot) && (o.oi ?? 0) > ceo) { ceo = o.oi; cew = o.strike; }
       if (o?.option_type === "PE" && (wallSpot == null || o.strike <= wallSpot) && (o.oi ?? 0) > peo) { peo = o.oi; pew = o.strike; }
     }
     return { ce_wall: cew, pe_wall: pew };
-  }, [baseData]);
-  const viewData: any = baseData ? { ...baseData, ...wallChips } : null;
+  }, [baseData, eligibleOptions]);
+  const viewData: any = baseData ? { ...baseData, ...wallChips, ...eligibleGexSummary, replayMode: !!replay } : null;
 
   useEffect(() => { if (isScanner && tab === "watch") setTab("scan"); }, [isScanner, tab]);
 
@@ -218,13 +246,16 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
     const d = s.data;
     if (!d) return acc;
     if (d.at_wall) return acc + 1;
-    const strikes: number[] = (d.options ?? []).map((o: any) => o.strike);
+    const eligible = (d.options ?? []).filter((o: any) => hasEligibleVolumeContract(o));
+    const strikes: number[] = eligible.map((o: any) => o.strike);
     if (!strikes.length || d.spot == null) return acc;
-    const atm = d.atm ?? strikes.reduce((b, x) => Math.abs(x - d.spot) < Math.abs(b - d.spot) ? x : b, strikes[0]);
+    const atm = d.atm != null && strikes.includes(d.atm)
+      ? d.atm
+      : strikes.reduce((b, x) => Math.abs(x - d.spot) < Math.abs(b - d.spot) ? x : b, strikes[0]);
     let ceW: number | null = d.ce_wall ?? null, peW: number | null = d.pe_wall ?? null;
     if (ceW == null || peW == null) {
       let cm = -1, pm = -1;
-      (d.options ?? []).forEach((o: any) => {
+      eligible.forEach((o: any) => {
         if (o.option_type === "CE" && o.oi > cm) { cm = o.oi; ceW = o.strike; }
         if (o.option_type === "PE" && o.oi > pm) { pm = o.oi; peW = o.strike; }
       });
@@ -236,11 +267,11 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
     return acc + (step > 0 && dist <= step * 1.5 ? 1 : 0);
   }, 0), [scanners]);
 
-  // Market levels: walls (argmax OI, same definition as the alert engine)
-  // with their OI amounts, for the levels rail.
+  // Market levels use eligible contracts independently on CE and PE.
   const walls = useMemo(() => {
     let ceW: number | null = null, peW: number | null = null, ceOI: number | null = null, peOI: number | null = null, cm = -1, pm = -1;
     (viewData?.options ?? []).forEach((o: any) => {
+      if (!isBaseVolumeEligible(o)) return;
       if (o.option_type === "CE" && (viewData?.spot == null || o.strike >= viewData.spot) && o.oi > cm) { cm = o.oi; ceW = o.strike; ceOI = o.oi; }
       if (o.option_type === "PE" && (viewData?.spot == null || o.strike <= viewData.spot) && o.oi > pm) { pm = o.oi; peW = o.strike; peOI = o.oi; }
     });
@@ -255,11 +286,11 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
   // Single source of truth: backend payload `atm`; shared fallback util only
   // when the payload lacks it (replay snapshots).
   const atmStrike = useMemo(() => {
-    if (viewData?.atm != null) return viewData.atm;
-    const strikes: number[] = (viewData?.options ?? []).map((o: any) => o.strike);
+    const strikes: number[] = eligibleOptions.map((o: any) => o.strike);
+    if (viewData?.atm != null && strikes.includes(viewData.atm)) return viewData.atm;
     if (!strikes.length || viewData?.spot == null) return null;
     return nearestStrike(viewData.spot, strikes);
-  }, [viewData]);
+  }, [viewData?.atm, viewData?.spot, eligibleOptions]);
 
   const pick = (name: string) => {
     const inst = instList.find(i => i.name === name);
@@ -273,8 +304,8 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
     const opts: any[] = viewData?.options ?? [];
     setStrikePick({
       strike,
-      ce: opts.find(o => o.strike === strike && o.option_type === "CE"),
-      pe: opts.find(o => o.strike === strike && o.option_type === "PE"),
+      ce: opts.find(o => o.strike === strike && o.option_type === "CE" && isBaseVolumeEligible(o)),
+      pe: opts.find(o => o.strike === strike && o.option_type === "PE" && isBaseVolumeEligible(o)),
     });
     setSheet("strike");
   };
@@ -359,7 +390,7 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
         {tab === "watch" && (
           isScanner
             ? <MobileScanner scanners={scanners} promoted={activePromoted} now={now} onPromoteEnd={(n) => setPromoted(p => { const c = { ...p }; delete c[n]; return c; })} />
-            : <MobileChain data={viewData} onSelect={openStrike} floating={!replay} recenterTick={recenterTick} focusStrike={focusStrike} focusTick={focusTickN} />
+            : <MobileChain data={viewData} onSelect={openStrike} floating={!replay} replayMode={!!replay} recenterTick={recenterTick} focusStrike={focusStrike} focusTick={focusTickN} />
         )}
         {tab === "scan" && (
           <MobileScanner scanners={scanners} promoted={activePromoted} now={now}
@@ -373,8 +404,8 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
                      sessionRange={kind === "commodity" ? "09:00–23:30 IST" : "09:15–15:30 IST"}
                      tier={(viewData as any)?.tier ?? 1}
                      atm={atmStrike}
-                     ceWall={(viewData as any)?.ce_wall ?? null}
-                     peWall={(viewData as any)?.pe_wall ?? null}
+                     ceWall={walls.ceWall}
+                     peWall={walls.peWall}
                      negGex={(viewData as any)?.max_negative_gex_strike ?? (viewData as any)?.max_gex_strike ?? null}
                      replayDate={replay?.date ?? null}
                      onSymbolTap={() => setSheet("inst")} />

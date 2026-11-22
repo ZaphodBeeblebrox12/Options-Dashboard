@@ -16,6 +16,7 @@ from alert_db import get_alert_db, save_alert_history
 from alert_engine import alert_engine
 from alert_models import AlertRuleType, AlertTriggerPayload, NotificationChannel
 from telegram_notifier import resolve_telegram_destination
+from volume_policy import has_eligible_volume
 
 logger = logging.getLogger(__name__)
 SIDES = ("CE", "PE")
@@ -27,6 +28,7 @@ def _number(value, fallback=None):
         return value if math.isfinite(value) else fallback
     except (TypeError, ValueError):
         return fallback
+
 
 
 def normalize_wall_options(options: Any) -> List[dict]:
@@ -45,6 +47,8 @@ def normalize_wall_options(options: Any) -> List[dict]:
             "strike": strike,
             "option_type": side,
             "oi": oi if oi is not None else 0.0,
+            "volume": contract.get("volume"),
+            "volume_valid": contract.get("volume_valid"),
             "gex": _number(contract.get("gex"), 0.0),
         })
 
@@ -70,17 +74,19 @@ def normalize_wall_options(options: Any) -> List[dict]:
 
 
 def calculate_wall_strikes(options: Any, spot: Optional[float] = None) -> Dict[str, Tuple[Optional[float], bool]]:
-    """Return the strongest CE and PE OI concentrations in the loaded expiry chain.
+    """Return the strongest CE and PE OI concentrations among volume-eligible contracts.
 
-    Spot is accepted for call-site compatibility but intentionally does not
-    participate in wall selection. A price crossing above a Call Wall or
-    below a Put Wall is not an OI-wall migration and must not trigger a
-    departure alert. Only a change in the side's OI distribution can move it.
+    Volume eligibility is independent for each side: each contract must have
+    volume_valid=true and at least two traded contracts. Migrated rows with
+    unverifiable volume provenance are ineligible. The raw snapshot is untouched.
 
-    The boolean reports whether contracts for that side were present at all.
+    The boolean reports whether eligible contracts for that side were present.
     Equal-OI ties resolve to the lower strike for deterministic results.
     """
-    rows = normalize_wall_options(options)
+    rows = [
+        row for row in normalize_wall_options(options)
+        if has_eligible_volume(row.get("volume"), row.get("volume_valid"))
+    ]
     results: Dict[str, Tuple[Optional[float], bool]] = {}
     for side in SIDES:
         side_rows = [row for row in rows if row["option_type"] == side]

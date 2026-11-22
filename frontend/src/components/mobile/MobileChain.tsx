@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { fmtOI, fmtDelta, fmtPx } from "./mobileFormat";
 import { nearestStrike } from "../../strikeUtils";
-import { HIDE_ZERO_VOLUME_EVENT, isConfirmedZeroVolume, loadHideZeroVolumeStrikes } from "../optionChainColumns";
+import { HIDE_ZERO_VOLUME_EVENT, hasEligibleVolumeContract, hasStoredEligibleVolumeContract, loadHideZeroVolumeStrikes } from "../optionChainColumns";
+import { shouldHideStrikeForVolume } from "../../zeroVolumePolicy.js";
 
 interface Opt {
   strike: number; option_type: string; oi: number; oi_change: number;
-  volume: number; volume_valid?: boolean | number | null; ltp: number; iv?: number | null; delta?: number | null;
+  volume?: number | null; volume_valid?: boolean | number | null; source_age_sec?: number | null; ltp: number; iv?: number | null; delta?: number | null;
   gamma?: number | null; theta?: number | null; vega?: number | null; gex?: number | null;
 }
 interface RowData { strike: number; ce?: Opt; pe?: Opt }
@@ -57,7 +58,7 @@ const ChainRow = React.memo(function ChainRow(props: {
 
 const IDLE_RECENTER_MS = 8000;
 
-export default function MobileChain({ data, onSelect, floating = true, recenterTick = 0, focusStrike = null, focusTick = 0 }: {
+export default function MobileChain({ data, onSelect, floating = true, recenterTick = 0, focusStrike = null, focusTick = 0, replayMode = false, }: {
   data: any;
   onSelect: (s: number) => void;
   /** false in Replay: no floating pill over the replay bar. */
@@ -67,7 +68,11 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
   /** Request scrolling to a specific strike (levels-rail markers). */
   focusStrike?: number | null;
   focusTick?: number;
+  replayMode?: boolean;
 }) {
+  const isVolumeEligible = replayMode
+    ? hasStoredEligibleVolumeContract
+    : hasEligibleVolumeContract;
   const listRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef(0);
   const centeredFor = useRef<string>("");
@@ -98,26 +103,37 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
   }, [data?.options]);
 
   const spot: number | null = data?.spot ?? null;
-  // Single source of truth: backend payload `atm` when present (same
-  // nearest-strike definition as the backend); shared fallback otherwise.
+  // A strike is active when either contract has volume >= 2. Each option side
+  // is then handled independently for OI walls and GEX.
+  const volumeEligibleRows = useMemo(
+    () => rows.filter(r => isVolumeEligible(r.ce) || isVolumeEligible(r.pe)),
+    [rows, replayMode],
+  );
+
+  // Single source of truth: backend ATM when it remains in the eligible chain.
   const atmStrike = useMemo(() => {
     if (data?.atm != null && rows.some(r => r.strike === data.atm)) return data.atm;
     if (spot == null || !rows.length) return null;
-    return nearestStrike(spot, rows.map(r => r.strike));
-  }, [data?.atm, rows, spot]);
+    const candidates = volumeEligibleRows.length ? volumeEligibleRows : rows;
+    return nearestStrike(spot, candidates.map(r => r.strike));
+  }, [data?.atm, rows, volumeEligibleRows, spot]);
 
   const walls = useMemo(() => {
     let ceW: number | null = null, peW: number | null = null, ceM = -1, peM = -1;
-    for (const r of rows) {
-      if (r.ce && r.ce.oi > ceM) { ceM = r.ce.oi; ceW = r.strike; }
-      if (r.pe && r.pe.oi > peM) { peM = r.pe.oi; peW = r.strike; }
+    for (const r of volumeEligibleRows) {
+      if (isVolumeEligible(r.ce) && r.ce!.oi > ceM) { ceM = r.ce!.oi; ceW = r.strike; }
+      if (isVolumeEligible(r.pe) && r.pe!.oi > peM) { peM = r.pe!.oi; peW = r.strike; }
     }
     return { ceWall: ceW, peWall: peW };
-  }, [rows]);
+  }, [volumeEligibleRows]);
 
-  // GEX scale for the embedded shading (per side, shared across rows).
-  const gMax = useMemo(() => rows.reduce((m, r) =>
-    Math.max(m, Math.abs(r.ce?.gex ?? 0), Math.abs(r.pe?.gex ?? 0)), 0), [rows]);
+  // GEX scale for the embedded shading includes eligible contract contributions only.
+  const gMax = useMemo(() => volumeEligibleRows.reduce((m, r) =>
+    Math.max(
+      m,
+      isVolumeEligible(r.ce) ? Math.abs(r.ce!.gex ?? 0) : 0,
+      isVolumeEligible(r.pe) ? Math.abs(r.pe!.gex ?? 0) : 0,
+    ), 0), [volumeEligibleRows]);
 
   // Robust native positioning: scrollIntoView resolves the correct scroll
   // container itself, immune to CSS changes and offsetParent drift.
@@ -186,12 +202,14 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
     return () => { el.removeEventListener("scroll", onScroll); if (rafRef.current) cancelAnimationFrame(rafRef.current); };
   }, [centerKey, rows.length, atmStrike]);
 
-  const displayRows = useMemo(
-    () => hideZeroVolumeStrikes
-      ? rows.filter(r => !(isConfirmedZeroVolume(r.ce) && isConfirmedZeroVolume(r.pe)))
-      : rows,
-    [rows, hideZeroVolumeStrikes],
-  );
+  const displayRows = useMemo(() => {
+    const sourceRows = hideZeroVolumeStrikes
+      ? rows.filter(r => !shouldHideStrikeForVolume(r.ce, r.pe))
+      : rows;
+    // Keep historical contract values visible; the stricter verified-volume
+    // rule applies to walls/GEX, not replay-chain rendering.
+    return sourceRows;
+  }, [rows, volumeEligibleRows, hideZeroVolumeStrikes]);
 
   if (!rows.length || !displayRows.length) {
     return (
@@ -200,7 +218,7 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
           ? data?.market_open === false
             ? <>Session closed for {data?.index_name ?? "this instrument"}.<br />Live chain resumes in the next session.</>
             : <>Waiting for option ticks on {data?.index_name ?? "…"}<br /><span style={{ fontSize: 11 }}>{data?.window_state ?? ""}</span></>
-          : <>All strikes are hidden because both sides have confirmed zero volume.<br /><span style={{ fontSize: 11 }}>Change this in Settings → Display.</span></>}
+          : <>All strikes at this snapshot have confirmed zero volume.</>}
       </div>
     );
   }

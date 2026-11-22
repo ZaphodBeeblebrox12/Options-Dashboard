@@ -125,13 +125,13 @@ export const DisplayTab: React.FC<DisplayTabProps> = ({
         <div className="st-card-title mb-1">Chain filtering</div>
         <div className="flex items-center justify-between gap-4 py-2.5">
           <span className="min-w-0">
-            <span className="block st-label">Hide zero-volume strikes</span>
-            <span className="block st-helper mt-0.5">Hide a strike only when both CE and PE report exactly zero volume. Missing or unverified volume stays visible. This changes display only; stored and analytical data are untouched.</span>
+            <span className="block st-label">Hide low-volume strikes</span>
+            <span className="block st-helper mt-0.5">A contract needs a verified volume tick and volume of 2 or higher. Low-volume sides are omitted; a strike stays visible when either CE or PE is eligible. GEX and OI walls always use eligible contracts. Stored snapshots remain unchanged.</span>
           </span>
           <SettingsSwitch
             checked={hideZeroVolumeStrikes}
             onChange={onHideZeroVolumeStrikesChange}
-            label="Hide zero-volume strikes"
+            label="Hide low-volume strikes"
             tone="cyan"
           />
         </div>

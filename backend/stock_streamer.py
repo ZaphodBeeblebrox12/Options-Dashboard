@@ -425,6 +425,7 @@ class InstrumentStreamer:
         from datetime import datetime as _dt
         from calculations import (calculate_gex, calculate_max_pain,
                                   calculate_true_gamma_flip_vectorized)
+        from volume_policy import has_eligible_volume
         feed = self._tier4_feed()
         feed_data = feed.get(self.symbol) or {}
         fstat = feed.feed_status(self.symbol) or {}
@@ -459,19 +460,20 @@ class InstrumentStreamer:
                 g = (feed_data.get(int(strike)) or {}).get(opt_type) or {}
                 iv, delta, gamma, theta, vega = (g.get("iv"), g.get("delta"),
                                                  g.get("gamma"), g.get("theta"), g.get("vega"))
-                if iv is not None:
+                volume_eligible = has_eligible_volume(opt.get("volume"), opt.get("volume_valid"))
+                if iv is not None and volume_eligible:
                     iv_map[(strike, opt_type)] = iv
-                else:
+                elif volume_eligible:
                     missing += 1
                 gex = 0.0
-                if gamma is not None:
+                if volume_eligible and gamma is not None:
                     gex = calculate_gex(gamma, opt.get("oi", 0), opt_type, self.contract_multiplier)
                     net_gex += gex
                     if abs(gex) > abs(max_gex):
                         max_gex, max_gex_strike = gex, strike
                 opt.update({"iv": iv, "delta": delta, "gamma": gamma,
                             "theta": theta, "vega": vega, "gex": gex,
-                            "quote_valid": iv is not None and gamma is not None})
+                            "quote_valid": volume_eligible and iv is not None and gamma is not None})
         analytics = {"net_gex": round(net_gex, 2), "max_gex_strike": max_gex_strike,
                      "max_pain": calculate_max_pain(data, self.contract_multiplier),
                      "gamma_flip": (calculate_true_gamma_flip_vectorized(
@@ -519,7 +521,7 @@ class InstrumentStreamer:
                 enriched.append({
                     "strike": strike, "option_type": opt_type,
                     "oi": opt.get("oi", 0), "oi_change": oi_change, "oi_change_pct": oi_change_pct,
-                    "volume": opt.get("volume", 0), "ltp": opt.get("ltp", 0),
+                    "volume": opt.get("volume", 0), "volume_valid": bool(opt.get("volume_valid", False)), "source_updated_at": opt.get("last_update"), "ltp": opt.get("ltp", 0),
                     "iv": opt.get("iv"), "delta": opt.get("delta"), "gamma": opt.get("gamma"),
                     "theta": opt.get("theta"), "vega": opt.get("vega"), "gex": opt.get("gex"),
                 })
@@ -822,6 +824,7 @@ class InstrumentStreamer:
         """
         from datetime import datetime as _dt
         from calculations import solve_iv, calculate_greeks, calculate_gex
+        from volume_policy import has_eligible_volume
 
         try:
             if not (self.strikes and self.expiry_datetime):
@@ -870,8 +873,12 @@ class InstrumentStreamer:
                 T = max(((self.expiry_datetime - now).total_seconds()
                          / (365.25 * 24 * 3600)), 0.0001)
                 total = 0.0
+                eligible_count = 0
                 for opt_type in ("CE", "PE"):
                     opt = (data.get(strike) or {}).get(opt_type) or {}
+                    if not has_eligible_volume(opt.get("volume"), opt.get("volume_valid")):
+                        continue
+                    eligible_count += 1
                     lu, ltp = opt.get("last_update"), opt.get("ltp", 0)
                     if not lu or ltp is None or ltp <= 0:
                         return None
@@ -893,7 +900,7 @@ class InstrumentStreamer:
                         return None
                     total += calculate_gex(greeks["gamma"], opt.get("oi", 0),
                                            opt_type, self.contract_multiplier)
-                return total
+                return total if eligible_count else None
 
             g_wall, g_lo, g_hi = _net_gex(atm), _net_gex(lo), _net_gex(hi)
             if g_wall is None or g_lo is None or g_hi is None:
@@ -981,11 +988,16 @@ class InstrumentStreamer:
                 self._false_trigger_atm[atm] = datetime.now()
                 return
 
-            # Full-chain walls from FRESH data only — the stage-1 strike must be
-            # the chain-wide max-OI wall, not merely the local window max.
+            # Full-chain walls from fresh, volume-eligible contracts only.
+            # CE and PE eligibility is evaluated independently.
+            from volume_policy import has_eligible_volume
+            data = self.data_store.get_data()
             ce_wall = pe_wall = None
             ce_oi = pe_oi = -1
             for (strike, ot), oi in fresh.items():
+                opt = (data.get(strike) or {}).get(ot) or {}
+                if not has_eligible_volume(opt.get("volume"), opt.get("volume_valid")):
+                    continue
                 if ot == "CE" and oi > ce_oi:
                     ce_oi, ce_wall = oi, strike
                 if ot == "PE" and oi > pe_oi:
@@ -994,9 +1006,9 @@ class InstrumentStreamer:
             if atm in (ce_wall, pe_wall):
                 logger.info(f"[{self.symbol}] STAGE-2 CONFIRMED: {atm:,} is a chain-wide "
                             f"max-OI wall (CE wall {ce_wall}, PE wall {pe_wall}) — running GEX")
-                # Analytics over the fresh chain only — no stale strikes
+                # Analytics over the fresh chain only — no stale strikes.
+                # calculate_analytics also applies the same volume threshold.
                 fresh_data = {}
-                data = self.data_store.get_data()
                 for (strike, ot), _ in fresh.items():
                     src_opt = data.get(strike, {}).get(ot) or {}
                     fresh_data.setdefault(strike, {"CE": {}, "PE": {}})[ot] = dict(src_opt)
@@ -1064,7 +1076,7 @@ class InstrumentStreamer:
                 enriched.append({
                     "strike": strike, "option_type": opt_type,
                     "oi": current_oi, "oi_change": oi_change, "oi_change_pct": oi_change_pct,
-                    "volume": opt.get("volume", 0), "ltp": opt.get("ltp", 0),
+                    "volume": opt.get("volume", 0), "volume_valid": bool(opt.get("volume_valid", False)), "source_updated_at": opt.get("last_update"), "ltp": opt.get("ltp", 0),
                     "iv": a_opt.get("iv"), "delta": a_opt.get("delta"),
                     "gamma": a_opt.get("gamma"), "theta": a_opt.get("theta"),
                     "vega": a_opt.get("vega"), "gex": a_opt.get("gex"),
@@ -1162,9 +1174,19 @@ class InstrumentStreamer:
             meta = self.option_meta.get(str(message.get("token", "")))
             if not meta:
                 return
-            ltp = float(message.get("last_traded_price", 0) or 0) / 100.0
-            oi = int(message.get("open_interest", 0) or 0)
-            vol = int(message.get("volume_trade_for_the_day", 0) or 0)
+            raw_ltp = message.get("last_traded_price")
+            raw_oi = message.get("open_interest")
+            raw_volume = message.get("volume_trade_for_the_day")
+            if any(value in (None, "") for value in (raw_ltp, raw_oi, raw_volume)):
+                logger.warning(
+                    "[%s] Ignoring incomplete option tick token=%s "
+                    "(ltp=%r oi=%r volume=%r); retaining last complete contract state",
+                    self.symbol, message.get("token"), raw_ltp, raw_oi, raw_volume,
+                )
+                return
+            ltp = float(raw_ltp) / 100.0
+            oi = int(raw_oi)
+            vol = int(raw_volume)
             self.data_store.update(meta["strike"], meta["type"], ltp, oi, vol)
         except Exception as e:
             logger.error(f"[{self.symbol}] Option tick error: {e}")
@@ -1195,7 +1217,7 @@ class InstrumentStreamer:
                 enriched.append({
                     "strike": strike, "option_type": opt_type,
                     "oi": current_oi, "oi_change": oi_change, "oi_change_pct": oi_change_pct,
-                    "volume": opt.get("volume", 0), "ltp": opt.get("ltp", 0),
+                    "volume": opt.get("volume", 0), "volume_valid": bool(opt.get("volume_valid", False)), "source_updated_at": opt.get("last_update"), "ltp": opt.get("ltp", 0),
                     "iv": None, "delta": None, "gamma": None,
                     "theta": None, "vega": None, "gex": None,
                 })
@@ -1301,7 +1323,7 @@ class InstrumentStreamer:
                     enriched.append({
                         "strike": strike, "option_type": opt_type,
                         "oi": current_oi, "oi_change": oi_change, "oi_change_pct": oi_change_pct,
-                        "volume": opt.get("volume", 0), "ltp": opt.get("ltp", 0),
+                        "volume": opt.get("volume", 0), "volume_valid": bool(opt.get("volume_valid", False)), "source_updated_at": opt.get("last_update"), "ltp": opt.get("ltp", 0),
                         "iv": a_opt.get("iv"), "delta": a_opt.get("delta"),
                         "gamma": a_opt.get("gamma"), "theta": a_opt.get("theta"),
                         "vega": a_opt.get("vega"), "gex": a_opt.get("gex"),

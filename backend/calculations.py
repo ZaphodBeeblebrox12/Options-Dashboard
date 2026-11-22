@@ -9,6 +9,8 @@ from scipy.optimize import brentq
 from scipy.special import ndtr
 import numpy as np
 
+from volume_policy import has_eligible_volume
+
 
 def _norm_pdf(x):
     """Standard normal PDF — ~50x faster than the scipy.stats equivalent."""
@@ -700,6 +702,9 @@ def calculate_analytics(strikes_data: Dict, spot: float, futures: Optional[float
         iv = None
         greeks = None
         gex = 0.0
+        if not has_eligible_volume(opt_data.get("volume"), opt_data.get("volume_valid")):
+            _finish(opt_data, None, None, 0.0)
+            return
         if ltp > 0 and spot > 0:
             key = (expiry_key, strike, opt_type)
             seed = None
@@ -747,6 +752,9 @@ def calculate_analytics(strikes_data: Dict, spot: float, futures: Optional[float
         iv = None
         greeks = None
         gex = 0.0
+        if not has_eligible_volume(opt_data.get("volume"), opt_data.get("volume_valid")):
+            _finish(opt_data, None, None, 0.0)
+            return
         if ltp > 0 and spot > 0:
             key = (expiry_key, strike, opt_type)
             entry = iv_store.lookup(key)

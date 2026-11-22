@@ -59,14 +59,7 @@ export function saveHideZeroVolumeStrikes(enabled: boolean): void {
   }
 }
 
-export function isConfirmedZeroVolume(side?: {
-  volume?: number | null;
-  volume_valid?: boolean | number | null;
-} | null): boolean {
-  return !!side &&
-    (side.volume_valid === true || side.volume_valid === 1) &&
-    side.volume === 0;
-}
+export { MIN_ELIGIBLE_VOLUME, hasEligibleVolumeContract, hasStoredEligibleVolumeContract, shouldHideStrikeForVolume } from '../zeroVolumePolicy.js';
 
 export { HIDE_ZERO_VOLUME_EVENT };
 
