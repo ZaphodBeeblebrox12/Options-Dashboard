@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   hasEligibleVolumeContract,
+  hasStoredEligibleVolumeContract,
   isConfirmedZeroVolume,
   shouldHideStrikeForVolume,
   MIN_ELIGIBLE_VOLUME,
@@ -17,6 +18,14 @@ test('analytical eligibility requires a verified tick and volume >= 2', () => {
   assert.equal(hasEligibleVolumeContract(volume(3)), true);
   assert.equal(hasEligibleVolumeContract(volume(50, false)), false);
   assert.equal(hasEligibleVolumeContract({ volume: 50 }), false);
+});
+
+test('stored replay volume ignores legacy provenance but keeps the >=2 cutoff', () => {
+  assert.equal(hasStoredEligibleVolumeContract(volume(0, false)), false);
+  assert.equal(hasStoredEligibleVolumeContract(volume(1, false)), false);
+  assert.equal(hasStoredEligibleVolumeContract(volume(2, false)), true);
+  assert.equal(hasStoredEligibleVolumeContract(volume(50000, false)), true);
+  assert.equal(hasStoredEligibleVolumeContract({ volume: '50000', volume_valid: false }), false);
 });
 
 test('only verified zero-volume contracts count as confirmed zero', () => {
