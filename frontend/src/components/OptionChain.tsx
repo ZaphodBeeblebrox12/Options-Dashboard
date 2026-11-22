@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { AlertTriangle, ArrowDown, ArrowUp, Bell, BellRing, Loader2 } from 'lucide-react';
 import { ScreenshotButton } from './ScreenshotButton';
 import { COMPACT_OPTION_CHAIN_COLUMNS, hasEligibleVolumeContract, type OptionChainColumnVisibility } from './optionChainColumns';
+import { shouldHideStrikeForVolume } from '../zeroVolumePolicy.js';
 
 interface OptionData {
   strike: number;
@@ -360,11 +361,14 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
 
   // ── Calculate ATM from contracts with meaningful traded volume ──
   const atmSpot = useMemo(() => {
-    if (!spot || volumeEligibleRows.length === 0) return null;
-    return volumeEligibleRows.reduce((closest, row) =>
+    if (!spot || chainData.length === 0) return null;
+    // Prefer actionable contracts, but retain an ATM anchor for replay dates
+    // whose legacy volume provenance is unknown.
+    const candidates = volumeEligibleRows.length > 0 ? volumeEligibleRows : chainData;
+    return candidates.reduce((closest, row) =>
       Math.abs(row.strike - spot) < Math.abs(closest.strike - spot) ? row : closest
     ).strike;
-  }, [spot, volumeEligibleRows]);
+  }, [spot, chainData, volumeEligibleRows]);
 
   // ── FIX: rank only strikes within ±OI_RANK_WINDOW_PCT of spot ──
   const rankableRows = useMemo(() => {
@@ -472,7 +476,9 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   // ── Center view around ATM ──
   const displayRows = useMemo(() => {
     const center = atmSpot;
-    let visibleRows = hideZeroVolumeStrikes ? volumeEligibleRows : chainData;
+    let visibleRows = hideZeroVolumeStrikes
+      ? chainData.filter((row) => !shouldHideStrikeForVolume(row.CE, row.PE))
+      : chainData;
     if (center && chainData.length > 21) {
       const centerIdx = chainData.findIndex((r) => r.strike === center);
       if (centerIdx < 0) {
@@ -494,18 +500,14 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
     if (requiredWallStrikes.size > 0) {
       const visibleStrikes = new Set(visibleRows.map((row) => row.strike));
       for (const strike of requiredWallStrikes) visibleStrikes.add(strike);
-      visibleRows = (hideZeroVolumeStrikes ? volumeEligibleRows : chainData)
-        .filter((row) => visibleStrikes.has(row.strike));
+      visibleRows = (hideZeroVolumeStrikes
+        ? chainData.filter((row) => !shouldHideStrikeForVolume(row.CE, row.PE))
+        : chainData).filter((row) => visibleStrikes.has(row.strike));
     }
 
-    // Never display low-volume values on an individual side. The row stays
-    // when its opposite side has eligible volume; otherwise the default
-    // setting removes the empty strike altogether.
-    visibleRows = visibleRows.map((row) => ({
-      ...row,
-      CE: hasEligibleVolumeContract(row.CE) ? row.CE : undefined,
-      PE: hasEligibleVolumeContract(row.PE) ? row.PE : undefined,
-    }));
+    // Display raw historical contract values even when volume provenance is
+    // unavailable. Eligibility gates analytics, not whether saved replay data
+    // is allowed to appear in the chain. Only confirmed zero-volume pairs hide.
 
     return strikeOrder === 'asc' ? visibleRows : [...visibleRows].reverse();
   }, [chainData, volumeEligibleRows, atmSpot, strikeOrder, currentWalls, hideZeroVolumeStrikes]);
@@ -1112,7 +1114,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
           <div>
             {displayRows.length === 0 ? (
               <div className="px-4 py-8 text-center text-xs font-mono text-terminal-muted">
-                No contracts meet the minimum volume of 2. Adjust Settings → Display to show inactive strike rows.
+                No option contracts are available at this snapshot.
               </div>
             ) : displayRows.map((row) => {
               const ce = row.CE;
