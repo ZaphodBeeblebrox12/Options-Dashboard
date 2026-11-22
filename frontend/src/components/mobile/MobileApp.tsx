@@ -4,7 +4,7 @@ import { AlertToastContainer } from "../AlertToast";
 import type { AlertFiring } from "../../hooks/useAlerts";
 import { fetchInstruments } from "../../instrumentsCache";
 import MobileChain from "./MobileChain";
-import { hasEligibleVolumeContract } from "../optionChainColumns";
+import { hasEligibleVolumeContract, hasStoredEligibleVolumeContract } from "../optionChainColumns";
 import MobileScanner from "./MobileScanner";
 import MobileMap from "./MobileMap";
 import MobileAlerts from "./MobileAlerts";
@@ -191,10 +191,14 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
   const baseData = replay
     ? replaySnap
     : (hasUsableLiveData ? data : (!marketOpen ? lastKnownSnapshot ?? null : data ?? null)); // replay overrides live; CLOSED may use the persisted last-known snapshot
-  // Walls tab uses only contracts with volume >= 2, evaluated per side.
+  // Replay snapshots predate volume_valid provenance. Use saved volume in
+  // replay, but retain verified-feed checks for live/current data.
+  const isBaseVolumeEligible = replay
+    ? hasStoredEligibleVolumeContract
+    : hasEligibleVolumeContract;
   const eligibleOptions = useMemo(
-    () => ((baseData as any)?.options ?? []).filter((o: any) => hasEligibleVolumeContract(o)),
-    [baseData],
+    () => ((baseData as any)?.options ?? []).filter((o: any) => isBaseVolumeEligible(o)),
+    [baseData, replay],
   );
   const eligibleGexSummary = useMemo(() => {
     let netGex = 0, largestAbsGex = 0, maxGexStrike: number | null = null;
@@ -224,7 +228,7 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
     }
     return { ce_wall: cew, pe_wall: pew };
   }, [baseData, eligibleOptions]);
-  const viewData: any = baseData ? { ...baseData, ...wallChips, ...eligibleGexSummary } : null;
+  const viewData: any = baseData ? { ...baseData, ...wallChips, ...eligibleGexSummary, replayMode: !!replay } : null;
 
   useEffect(() => { if (isScanner && tab === "watch") setTab("scan"); }, [isScanner, tab]);
 
@@ -267,7 +271,7 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
   const walls = useMemo(() => {
     let ceW: number | null = null, peW: number | null = null, ceOI: number | null = null, peOI: number | null = null, cm = -1, pm = -1;
     (viewData?.options ?? []).forEach((o: any) => {
-      if (!hasEligibleVolumeContract(o)) return;
+      if (!isBaseVolumeEligible(o)) return;
       if (o.option_type === "CE" && (viewData?.spot == null || o.strike >= viewData.spot) && o.oi > cm) { cm = o.oi; ceW = o.strike; ceOI = o.oi; }
       if (o.option_type === "PE" && (viewData?.spot == null || o.strike <= viewData.spot) && o.oi > pm) { pm = o.oi; peW = o.strike; peOI = o.oi; }
     });
@@ -300,8 +304,8 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
     const opts: any[] = viewData?.options ?? [];
     setStrikePick({
       strike,
-      ce: opts.find(o => o.strike === strike && o.option_type === "CE" && hasEligibleVolumeContract(o)),
-      pe: opts.find(o => o.strike === strike && o.option_type === "PE" && hasEligibleVolumeContract(o)),
+      ce: opts.find(o => o.strike === strike && o.option_type === "CE" && isBaseVolumeEligible(o)),
+      pe: opts.find(o => o.strike === strike && o.option_type === "PE" && isBaseVolumeEligible(o)),
     });
     setSheet("strike");
   };
