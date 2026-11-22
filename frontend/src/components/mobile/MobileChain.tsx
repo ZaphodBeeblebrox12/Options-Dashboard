@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { fmtOI, fmtDelta, fmtPx } from "./mobileFormat";
 import { nearestStrike } from "../../strikeUtils";
-import { HIDE_ZERO_VOLUME_EVENT, hasEligibleVolumeContract, loadHideZeroVolumeStrikes } from "../optionChainColumns";
+import { HIDE_ZERO_VOLUME_EVENT, hasEligibleVolumeContract, hasStoredEligibleVolumeContract, loadHideZeroVolumeStrikes } from "../optionChainColumns";
 import { shouldHideStrikeForVolume } from "../../zeroVolumePolicy.js";
 
 interface Opt {
@@ -58,7 +58,7 @@ const ChainRow = React.memo(function ChainRow(props: {
 
 const IDLE_RECENTER_MS = 8000;
 
-export default function MobileChain({ data, onSelect, floating = true, recenterTick = 0, focusStrike = null, focusTick = 0, }: {
+export default function MobileChain({ data, onSelect, floating = true, recenterTick = 0, focusStrike = null, focusTick = 0, replayMode = false, }: {
   data: any;
   onSelect: (s: number) => void;
   /** false in Replay: no floating pill over the replay bar. */
@@ -70,6 +70,9 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
   focusTick?: number;
   replayMode?: boolean;
 }) {
+  const isVolumeEligible = replayMode
+    ? hasStoredEligibleVolumeContract
+    : hasEligibleVolumeContract;
   const listRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef(0);
   const centeredFor = useRef<string>("");
@@ -103,8 +106,8 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
   // A strike is active when either contract has volume >= 2. Each option side
   // is then handled independently for OI walls and GEX.
   const volumeEligibleRows = useMemo(
-    () => rows.filter(r => hasEligibleVolumeContract(r.ce) || hasEligibleVolumeContract(r.pe)),
-    [rows],
+    () => rows.filter(r => isVolumeEligible(r.ce) || isVolumeEligible(r.pe)),
+    [rows, replayMode],
   );
 
   // Single source of truth: backend ATM when it remains in the eligible chain.
@@ -118,8 +121,8 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
   const walls = useMemo(() => {
     let ceW: number | null = null, peW: number | null = null, ceM = -1, peM = -1;
     for (const r of volumeEligibleRows) {
-      if (hasEligibleVolumeContract(r.ce) && r.ce!.oi > ceM) { ceM = r.ce!.oi; ceW = r.strike; }
-      if (hasEligibleVolumeContract(r.pe) && r.pe!.oi > peM) { peM = r.pe!.oi; peW = r.strike; }
+      if (isVolumeEligible(r.ce) && r.ce!.oi > ceM) { ceM = r.ce!.oi; ceW = r.strike; }
+      if (isVolumeEligible(r.pe) && r.pe!.oi > peM) { peM = r.pe!.oi; peW = r.strike; }
     }
     return { ceWall: ceW, peWall: peW };
   }, [volumeEligibleRows]);
@@ -128,8 +131,8 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
   const gMax = useMemo(() => volumeEligibleRows.reduce((m, r) =>
     Math.max(
       m,
-      hasEligibleVolumeContract(r.ce) ? Math.abs(r.ce!.gex ?? 0) : 0,
-      hasEligibleVolumeContract(r.pe) ? Math.abs(r.pe!.gex ?? 0) : 0,
+      isVolumeEligible(r.ce) ? Math.abs(r.ce!.gex ?? 0) : 0,
+      isVolumeEligible(r.pe) ? Math.abs(r.pe!.gex ?? 0) : 0,
     ), 0), [volumeEligibleRows]);
 
   // Robust native positioning: scrollIntoView resolves the correct scroll
