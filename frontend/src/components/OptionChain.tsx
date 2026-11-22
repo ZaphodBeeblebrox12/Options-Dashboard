@@ -350,13 +350,17 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
       .sort((a, b) => a.strike - b.strike);
   }, [options]);
 
-  // A strike participates in chain analysis when at least one side has
-  // volume >= 2. CE and PE are tested independently.
+  // Live analytics require verified feed provenance. Historical replay uses
+  // its persisted numeric volume because volume_valid did not exist yet.
+  // Both modes keep the same minimum-volume threshold of two per side.
+  const isVolumeEligible = liveMode
+    ? hasEligibleVolumeContract
+    : hasStoredEligibleVolumeContract;
   const volumeEligibleRows = useMemo(
     () => chainData.filter(
-      (row) => hasEligibleVolumeContract(row.CE) || hasEligibleVolumeContract(row.PE)
+      (row) => isVolumeEligible(row.CE) || isVolumeEligible(row.PE)
     ),
-    [chainData],
+    [chainData, liveMode],
   );
 
   // ── Calculate ATM from contracts with meaningful traded volume ──
@@ -382,7 +386,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
 
   // ── CE/PE OI ranking — TOP 3 (within the spot window) ──
   const ceOiRanks = useMemo(() => {
-    const sorted = rankableRows.filter(row => hasEligibleVolumeContract(row.CE))
+    const sorted = rankableRows.filter(row => isVolumeEligible(row.CE))
       .sort((a, b) => (b.CE?.oi ?? 0) - (a.CE?.oi ?? 0));
     const ranks: Record<number, number> = {};
     sorted.slice(0, 3).forEach((row, i) => { ranks[row.strike] = i + 1; });
@@ -390,7 +394,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   }, [rankableRows]);
 
   const peOiRanks = useMemo(() => {
-    const sorted = rankableRows.filter(row => hasEligibleVolumeContract(row.PE))
+    const sorted = rankableRows.filter(row => isVolumeEligible(row.PE))
       .sort((a, b) => (b.PE?.oi ?? 0) - (a.PE?.oi ?? 0));
     const ranks: Record<number, number> = {};
     sorted.slice(0, 3).forEach((row, i) => { ranks[row.strike] = i + 1; });
@@ -402,7 +406,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   const highestVolumeStrikes = useMemo(() => {
     const find = (side: 'CE' | 'PE') => {
       const candidates = rankableRows.filter((row) => {
-        return hasEligibleVolumeContract(row[side]);
+        return isVolumeEligible(row[side]);
       });
       candidates.sort((a, b) =>
         ((b[side]?.volume ?? 0) - (a[side]?.volume ?? 0)) || a.strike - b.strike
@@ -417,7 +421,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
   const currentWalls = useMemo(() => {
     const find = (side: 'CE' | 'PE') => {
       const sideRows = volumeEligibleRows.filter(row =>
-        hasEligibleVolumeContract(side === 'CE' ? row.CE : row.PE)
+        isVolumeEligible(side === 'CE' ? row.CE : row.PE)
       );
       sideRows.sort((a, b) =>
         ((side === 'CE' ? b.CE?.oi ?? 0 : b.PE?.oi ?? 0) -
@@ -427,7 +431,7 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
       return sideRows[0]?.strike ?? null;
     };
     return { CE: find('CE'), PE: find('PE') };
-  }, [volumeEligibleRows]);
+  }, [volumeEligibleRows, liveMode]);
 
   const visibleWallEvents = useMemo(() => {
     const events = wallHistory?.events ?? [];
