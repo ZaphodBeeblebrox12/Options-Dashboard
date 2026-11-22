@@ -1611,8 +1611,9 @@ def _load_options_buildup_payload(index_name: str, date_str: str | None,
         current_options = conn.execute(
             "SELECT strike, option_type, oi, volume, ltp "
             "FROM option_snapshots WHERE snapshot_id = ? AND index_name = ? "
+            "AND COALESCE(volume, 0) >= ? "
             "ORDER BY strike DESC, option_type",
-            (current["id"], index_name),
+            (current["id"], index_name, MIN_ELIGIBLE_VOLUME),
         ).fetchall()
         previous_options = conn.execute(
             "SELECT strike, option_type, oi, volume, ltp "
