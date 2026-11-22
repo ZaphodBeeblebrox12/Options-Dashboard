@@ -59,7 +59,7 @@ export function saveHideZeroVolumeStrikes(enabled: boolean): void {
   }
 }
 
-export { MIN_ELIGIBLE_VOLUME, hasEligibleVolumeContract, shouldHideStrikeForVolume } from '../zeroVolumePolicy.js';
+export { MIN_ELIGIBLE_VOLUME, hasEligibleVolumeContract, hasStoredEligibleVolumeContract, shouldHideStrikeForVolume } from '../zeroVolumePolicy.js';
 
 export { HIDE_ZERO_VOLUME_EVENT };
 
