@@ -11,6 +11,10 @@ export declare function hasEligibleVolumeContract(
   contract: VolumeEligibleContract | null | undefined,
 ): boolean;
 
+export declare function hasStoredEligibleVolumeContract(
+  contract: VolumeEligibleContract | null | undefined,
+): boolean;
+
 export declare function isConfirmedZeroVolume(
   contract: VolumeEligibleContract | null | undefined,
 ): boolean;
