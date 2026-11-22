@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from "react"
 import { fmtOI, fmtDelta, fmtPx } from "./mobileFormat";
 import { nearestStrike } from "../../strikeUtils";
 import { HIDE_ZERO_VOLUME_EVENT, hasEligibleVolumeContract, loadHideZeroVolumeStrikes } from "../optionChainColumns";
+import { shouldHideStrikeForVolume } from "../../zeroVolumePolicy.js";
 
 interface Opt {
   strike: number; option_type: string; oi: number; oi_change: number;
@@ -108,10 +109,11 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
 
   // Single source of truth: backend ATM when it remains in the eligible chain.
   const atmStrike = useMemo(() => {
-    if (data?.atm != null && volumeEligibleRows.some(r => r.strike === data.atm)) return data.atm;
-    if (spot == null || !volumeEligibleRows.length) return null;
-    return nearestStrike(spot, volumeEligibleRows.map(r => r.strike));
-  }, [data?.atm, volumeEligibleRows, spot]);
+    if (data?.atm != null && rows.some(r => r.strike === data.atm)) return data.atm;
+    if (spot == null || !rows.length) return null;
+    const candidates = volumeEligibleRows.length ? volumeEligibleRows : rows;
+    return nearestStrike(spot, candidates.map(r => r.strike));
+  }, [data?.atm, rows, volumeEligibleRows, spot]);
 
   const walls = useMemo(() => {
     let ceW: number | null = null, peW: number | null = null, ceM = -1, peM = -1;
@@ -198,12 +200,12 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
   }, [centerKey, rows.length, atmStrike]);
 
   const displayRows = useMemo(() => {
-    const sourceRows = hideZeroVolumeStrikes ? volumeEligibleRows : rows;
-    return sourceRows.map(r => ({
-      ...r,
-      ce: hasEligibleVolumeContract(r.ce) ? r.ce : undefined,
-      pe: hasEligibleVolumeContract(r.pe) ? r.pe : undefined,
-    }));
+    const sourceRows = hideZeroVolumeStrikes
+      ? rows.filter(r => !shouldHideStrikeForVolume(r.ce, r.pe))
+      : rows;
+    // Keep historical contract values visible; the stricter verified-volume
+    // rule applies to walls/GEX, not replay-chain rendering.
+    return sourceRows;
   }, [rows, volumeEligibleRows, hideZeroVolumeStrikes]);
 
   if (!rows.length || !displayRows.length) {
@@ -213,7 +215,7 @@ export default function MobileChain({ data, onSelect, floating = true, recenterT
           ? data?.market_open === false
             ? <>Session closed for {data?.index_name ?? "this instrument"}.<br />Live chain resumes in the next session.</>
             : <>Waiting for option ticks on {data?.index_name ?? "…"}<br /><span style={{ fontSize: 11 }}>{data?.window_state ?? ""}</span></>
-          : <>No contracts meet the minimum volume of 2.<br /><span style={{ fontSize: 11 }}>Change this in Settings → Display to show inactive strike rows.</span></>}
+          : <>All strikes at this snapshot have confirmed zero volume.</>}
       </div>
     );
   }
