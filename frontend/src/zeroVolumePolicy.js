@@ -1,9 +1,11 @@
 /**
- * Shared per-contract volume eligibility for the option chain, OI walls and GEX.
+ * Separate display filtering from analytical volume eligibility.
  *
- * An eligible contract must have a verified volume tick and volume >= 2.
- * Migrated historical rows have volume_valid=0 because their original feed
- * receipt cannot be reconstructed; their stored volume number is not enough.
+ * OI walls and GEX use hasEligibleVolumeContract() and require a verified
+ * volume tick >= 2. The option-chain display must not discard historical
+ * rows merely because older snapshots have no reconstructable volume_valid
+ * provenance. Only hide a strike when BOTH sides have a verified zero-volume
+ * tick; unknown/unverified history stays visible.
  */
 export const MIN_ELIGIBLE_VOLUME = 2;
 
@@ -15,6 +17,12 @@ export function hasEligibleVolumeContract(contract) {
     volume >= MIN_ELIGIBLE_VOLUME;
 }
 
+export function isConfirmedZeroVolume(contract) {
+  const volume = contract?.volume;
+  const valid = contract?.volume_valid === true || contract?.volume_valid === 1;
+  return valid && typeof volume === 'number' && Number.isFinite(volume) && volume === 0;
+}
+
 export function shouldHideStrikeForVolume(ce, pe) {
-  return !hasEligibleVolumeContract(ce) && !hasEligibleVolumeContract(pe);
+  return isConfirmedZeroVolume(ce) && isConfirmedZeroVolume(pe);
 }
