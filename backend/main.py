@@ -1000,9 +1000,11 @@ _WALL_HISTORY_CACHE_TTL = 10.0
 def _load_wall_history_payload(date_str: str, index_name: str) -> dict:
     """Return actionable CE and PE OI walls from volume-eligible contracts.
 
-    Each contract is evaluated independently and needs a verified volume tick
-    plus volume >= 2. Legacy migrated rows with volume_valid=0 are excluded;
-    their stored option rows remain untouched and available for audit.
+    Each contract is evaluated independently and needs stored volume >= 2.
+    Older snapshots predate reliable volume_valid provenance and default that
+    flag to zero after migration. Their saved volume values remain usable for
+    historical wall reconstruction; zero/one-volume contracts stay excluded.
+    Raw option rows remain untouched and available for audit.
     """
     with get_db() as conn:
         rows = conn.execute(
@@ -1025,7 +1027,6 @@ def _load_wall_history_payload(date_str: str, index_name: str) -> dict:
                 WHERE s.index_name = ?
                   AND date(s.timestamp) = ?
                   AND o.option_type IN ('CE', 'PE')
-                  AND COALESCE(o.volume_valid, 0) = 1
                   AND COALESCE(o.volume, 0) >= ?
             )
             SELECT timestamp, side, strike, oi
@@ -1253,7 +1254,6 @@ async def get_gex_history(
             LEFT JOIN option_snapshots AS o
               ON o.snapshot_id = s.id
              AND o.index_name = s.index_name
-             AND COALESCE(o.volume_valid, 0) = 1
              AND COALESCE(o.volume, 0) >= ?
             WHERE date(s.timestamp) = ?
               AND s.index_name = ?
@@ -1285,7 +1285,6 @@ async def get_gex_by_strike(
             SELECT strike, option_type, gex
             FROM option_snapshots
             WHERE snapshot_id = ?
-              AND COALESCE(volume_valid, 0) = 1
               AND COALESCE(volume, 0) >= ?
             ORDER BY strike
         """, (snapshot["id"], MIN_ELIGIBLE_VOLUME)).fetchall()
