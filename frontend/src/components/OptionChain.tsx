@@ -2,7 +2,7 @@ import React, { useMemo, useRef, useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom';
 import { AlertTriangle, ArrowDown, ArrowUp, Bell, BellRing, Loader2 } from 'lucide-react';
 import { ScreenshotButton } from './ScreenshotButton';
-import { COMPACT_OPTION_CHAIN_COLUMNS, hasEligibleVolumeContract, type OptionChainColumnVisibility } from './optionChainColumns';
+import { COMPACT_OPTION_CHAIN_COLUMNS, hasEligibleVolumeContract, hasStoredEligibleVolumeContract, type OptionChainColumnVisibility } from './optionChainColumns';
 import { shouldHideStrikeForVolume } from '../zeroVolumePolicy.js';
 
 interface OptionData {
@@ -1125,8 +1125,14 @@ const OptionChainComponent: React.FC<OptionChainProps> = ({
               const ceRank = ceOiRanks[row.strike];
               const peRank = peOiRanks[row.strike];
               const buildup = buildupByStrike.get(row.strike);
-              const ceBuildup = hasEligibleVolumeContract(ce) ? buildup?.CE ?? null : null;
-              const peBuildup = hasEligibleVolumeContract(pe) ? buildup?.PE ?? null : null;
+              // Replay has legacy snapshots whose volume_valid flag defaults
+              // to false after migration. Use their saved volume value in replay;
+              // live classifications still require verified feed provenance.
+              const isBuildupEligible = liveMode
+                ? hasEligibleVolumeContract
+                : hasStoredEligibleVolumeContract;
+              const ceBuildup = isBuildupEligible(ce) ? buildup?.CE ?? null : null;
+              const peBuildup = isBuildupEligible(pe) ? buildup?.PE ?? null : null;
               // FIX (ITM tint): CE is ITM below spot, PE is ITM above spot.
               const ceItm = spot != null && row.strike < spot;
               const peItm = spot != null && row.strike > spot;
