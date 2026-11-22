@@ -460,7 +460,7 @@ class InstrumentStreamer:
                 g = (feed_data.get(int(strike)) or {}).get(opt_type) or {}
                 iv, delta, gamma, theta, vega = (g.get("iv"), g.get("delta"),
                                                  g.get("gamma"), g.get("theta"), g.get("vega"))
-                volume_eligible = has_eligible_volume(opt.get("volume"))
+                volume_eligible = has_eligible_volume(opt.get("volume"), opt.get("volume_valid"))
                 if iv is not None and volume_eligible:
                     iv_map[(strike, opt_type)] = iv
                 elif volume_eligible:
@@ -876,7 +876,7 @@ class InstrumentStreamer:
                 eligible_count = 0
                 for opt_type in ("CE", "PE"):
                     opt = (data.get(strike) or {}).get(opt_type) or {}
-                    if not has_eligible_volume(opt.get("volume")):
+                    if not has_eligible_volume(opt.get("volume"), opt.get("volume_valid")):
                         continue
                     eligible_count += 1
                     lu, ltp = opt.get("last_update"), opt.get("ltp", 0)
@@ -996,7 +996,7 @@ class InstrumentStreamer:
             ce_oi = pe_oi = -1
             for (strike, ot), oi in fresh.items():
                 opt = (data.get(strike) or {}).get(ot) or {}
-                if not has_eligible_volume(opt.get("volume")):
+                if not has_eligible_volume(opt.get("volume"), opt.get("volume_valid")):
                     continue
                 if ot == "CE" and oi > ce_oi:
                     ce_oi, ce_wall = oi, strike
