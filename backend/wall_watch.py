@@ -48,6 +48,7 @@ def normalize_wall_options(options: Any) -> List[dict]:
             "option_type": side,
             "oi": oi if oi is not None else 0.0,
             "volume": contract.get("volume"),
+            "volume_valid": contract.get("volume_valid"),
             "gex": _number(contract.get("gex"), 0.0),
         })
 
@@ -76,15 +77,15 @@ def calculate_wall_strikes(options: Any, spot: Optional[float] = None) -> Dict[s
     """Return the strongest CE and PE OI concentrations among volume-eligible contracts.
 
     Volume eligibility is independent for each side: each contract must have
-    at least two traded contracts. The raw snapshot is never modified.
-    Missing or invalid volume is ineligible, not inferred to be active.
+    volume_valid=true and at least two traded contracts. Migrated rows with
+    unverifiable volume provenance are ineligible. The raw snapshot is untouched.
 
     The boolean reports whether eligible contracts for that side were present.
     Equal-OI ties resolve to the lower strike for deterministic results.
     """
     rows = [
         row for row in normalize_wall_options(options)
-        if has_eligible_volume(row.get("volume"))
+        if has_eligible_volume(row.get("volume"), row.get("volume_valid"))
     ]
     results: Dict[str, Tuple[Optional[float], bool]] = {}
     for side in SIDES:
