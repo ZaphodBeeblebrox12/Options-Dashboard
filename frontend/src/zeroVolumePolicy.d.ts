@@ -1,5 +1,6 @@
 export interface VolumeEligibleContract {
   volume?: number | null;
+  volume_valid?: boolean | number | null;
 }
 
 export declare const MIN_ELIGIBLE_VOLUME: 2;
