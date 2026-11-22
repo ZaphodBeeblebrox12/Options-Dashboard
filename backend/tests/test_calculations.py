@@ -127,8 +127,8 @@ def test_analytics_excludes_sub_two_volume_contracts_from_gex_and_gamma_flip(mon
 
     strikes = {
         25000: {
-            "CE": {"ltp": 250, "oi": 1000, "volume": 1},
-            "PE": {"ltp": 250, "oi": 1000, "volume": 2},
+            "CE": {"ltp": 250, "oi": 1000, "volume": 1, "volume_valid": True},
+            "PE": {"ltp": 250, "oi": 1000, "volume": 2, "volume_valid": True},
         }
     }
     result = calculations.calculate_analytics(
