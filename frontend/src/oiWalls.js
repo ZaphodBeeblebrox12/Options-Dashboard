@@ -1,4 +1,4 @@
-import { hasEligibleVolumeContract } from './zeroVolumePolicy.js';
+import { hasEligibleVolumeContract, hasStoredEligibleVolumeContract } from './zeroVolumePolicy.js';
 
 /**
  * Select the strongest Call and Put OI concentrations from eligible contracts
@@ -7,17 +7,22 @@ import { hasEligibleVolumeContract } from './zeroVolumePolicy.js';
  *
  * Ties are resolved to the lower strike for deterministic results.
  *
- * @param {Array<{strike:number, option_type:string, oi?:number|null, volume?:number|null}>|null|undefined} options
+ * @param {Array<{strike:number, option_type:string, oi?:number|null, volume?:number|null, volume_valid?:boolean|number|null}>|null|undefined} options
+ * @param {'live'|'replay'} mode Replay uses saved numeric volume because legacy
+ *   snapshots cannot reconstruct volume_valid. Both modes enforce volume >= 2.
  * @returns {{ceWall:number|null, peWall:number|null}}
  */
-export function computeOiWalls(options) {
+export function computeOiWalls(options, mode = 'live') {
+  const isEligible = mode === 'replay'
+    ? hasStoredEligibleVolumeContract
+    : hasEligibleVolumeContract;
   let ceWall = null;
   let peWall = null;
   let ceOi = Number.NEGATIVE_INFINITY;
   let peOi = Number.NEGATIVE_INFINITY;
 
   for (const option of Array.isArray(options) ? options : []) {
-    if (!option || typeof option !== 'object' || !hasEligibleVolumeContract(option)) continue;
+    if (!option || typeof option !== 'object' || !isEligible(option)) continue;
 
     const strike = Number(option.strike);
     const oi = Number(option.oi ?? 0);
