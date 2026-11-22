@@ -24,7 +24,7 @@ import { Monitor, AlertTriangle, Info, WifiOff, Bell, Settings, X, ChevronDown }
 import { hoursForType, isSessionOpen, fmtSessionRange, getMarketDateIST, InstrumentKind, SessionHours } from './session';
 import { canReturnToLive, resolveLiveStatus, resolveInitialReplayDate } from './replayPolicy.js';
 import { computeOiWalls } from './oiWalls.js';
-import { hasEligibleVolumeContract } from './zeroVolumePolicy.js';
+import { hasEligibleVolumeContract, hasStoredEligibleVolumeContract } from './zeroVolumePolicy.js';
 import { useIsMobile } from "./components/mobile/useIsMobile";
 import MobileApp from "./components/mobile/MobileApp";
 
@@ -429,11 +429,15 @@ function App() {
     return result;
   }, [options]);
 
-  // Contracts below the minimum volume are excluded independently by side
-  // from OI-wall selection and all GEX aggregation.
+  // Live data requires verified feed provenance. Legacy replay snapshots
+  // predate that flag, so replay uses the stored numeric volume with the same
+  // >=2 cutoff. This restores saved GEX without relaxing live validation.
+  const isSnapshotVolumeEligible = liveMode
+    ? hasEligibleVolumeContract
+    : hasStoredEligibleVolumeContract;
   const eligibleOptions = React.useMemo(
-    () => (normalizedOptions as any[]).filter(hasEligibleVolumeContract),
-    [normalizedOptions]
+    () => (normalizedOptions as any[]).filter(isSnapshotVolumeEligible),
+    [normalizedOptions, liveMode]
   );
 
   // Headline GEX metrics are reconstructed from eligible per-contract values
@@ -461,8 +465,8 @@ function App() {
   // Spot is deliberately not an input: price crossing a wall must never make
   // the GEX overlay jump to another strike.
   const { ceWall, peWall } = React.useMemo(
-    () => computeOiWalls(eligibleOptions),
-    [eligibleOptions]
+    () => computeOiWalls(eligibleOptions, liveMode ? 'live' : 'replay'),
+    [eligibleOptions, liveMode]
   );
 
   // Live GEX bars use eligible contracts only; replay applies this same filter
