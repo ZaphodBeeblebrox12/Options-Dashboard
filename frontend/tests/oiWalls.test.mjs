@@ -84,3 +84,25 @@ test('contracts with unverified legacy volume cannot create walls', () => {
     { strike: 25500, option_type: 'CE', oi: 1000, volume: 2, volume_valid: true },
   ]), { ceWall: 25500, peWall: 26000 });
 });
+
+
+test('replay wall selection uses stored volume >=2 without legacy provenance flag', () => {
+  assert.deepEqual(computeOiWalls([
+    { strike: 26000, option_type: 'CE', oi: 90000, volume: 1, volume_valid: false },
+    { strike: 26000, option_type: 'PE', oi: 80000, volume: 200, volume_valid: false },
+    { strike: 25500, option_type: 'CE', oi: 1000, volume: 20, volume_valid: false },
+  ], 'replay'), {
+    ceWall: 25500,
+    peWall: 26000,
+  });
+});
+
+test('live wall selection still requires verified volume', () => {
+  assert.deepEqual(computeOiWalls([
+    { strike: 26000, option_type: 'CE', oi: 90000, volume: 200, volume_valid: false },
+    { strike: 25500, option_type: 'CE', oi: 1000, volume: 20, volume_valid: true },
+  ], 'live'), {
+    ceWall: 25500,
+    peWall: null,
+  });
+});
