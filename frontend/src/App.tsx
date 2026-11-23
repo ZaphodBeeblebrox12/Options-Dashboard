@@ -64,6 +64,7 @@ function makeTabAlertTitle(indexName: string, ruleName: string): string {
 interface TabAlertHeadline {
   key: string;
   title: string;
+  timestamp: string;
 }
 
 interface PersistedState {
@@ -413,6 +414,7 @@ function App() {
         const headline: TabAlertHeadline = {
           key: alertKey,
           title: makeTabAlertTitle(alertData.index_name, alertData.rule_name),
+          timestamp: alertData.timestamp,
         };
         setTabAlertIndex(0);
         setTabAlertHeadlines((current) => [
@@ -709,11 +711,21 @@ function App() {
         return;
       }
 
-      setUnseenAlertCount(unseenEntries.length);
-      setTabAlertHeadlines(unseenEntries.slice(0, 5).map((entry: any) => ({
+      const refreshedHeadlines: TabAlertHeadline[] = unseenEntries.slice(0, 5).map((entry: any) => ({
         key: String(entry.id ?? `${entry.timestamp}|${entry.rule_type}`),
         title: makeTabAlertTitle(entry.index_name, entry.rule_name),
-      })));
+        timestamp: entry.timestamp,
+      }));
+      // The history API can lag the live WebSocket event briefly. Merge both
+      // sources so a refresh cannot temporarily erase a just-arrived alert.
+      setUnseenAlertCount((current) => Math.max(current, unseenEntries.length));
+      setTabAlertHeadlines((current) => {
+        const byKey = new Map<string, TabAlertHeadline>();
+        [...refreshedHeadlines, ...current].forEach((item) => byKey.set(item.key, item));
+        return [...byKey.values()]
+          .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+          .slice(0, 5);
+      });
       setTabAlertIndex(0);
     } catch {}
   }, []);
