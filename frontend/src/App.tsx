@@ -32,11 +32,39 @@ const STORAGE_KEY = 'option_chain_view_state';
 const HIGHEST_VOLUME_HIGHLIGHT_STORAGE_KEY = 'option_chain_highest_volume_highlight_v1';
 const HISTORY_LAST_OPENED_KEY = 'history_last_opened_at';
 const SCROLL_KEY = 'option_chain_scroll_y';
+const BASE_TAB_TITLE = 'Options dashboard';
+const BASE_TAB_FAVICON = '/options-chain.svg';
+const ALERT_TAB_FAVICON = '/options-chain-alert.svg';
 
 // Source freshness threshold: every required upstream feed must have
 // delivered a tick within 75 seconds. These ages are measured by the backend
 // at receipt time, not inferred from when a payload was rebroadcast.
 const STALE_AFTER_MS = 75_000;
+
+function setTabFavicon(href: string): void {
+  let link = document.querySelector<HTMLLinkElement>('link[rel~="icon"]');
+  if (!link) {
+    link = document.createElement('link');
+    link.rel = 'icon';
+    link.type = 'image/svg+xml';
+    document.head.appendChild(link);
+  }
+  if (link.getAttribute('href') !== href) link.href = href;
+}
+
+function isTabInBackground(): boolean {
+  return document.visibilityState === 'hidden' || !document.hasFocus();
+}
+
+function makeTabAlertTitle(indexName: string, ruleName: string): string {
+  const title = `${indexName || 'Market'}: ${ruleName || 'New alert'}`.replace(/\s+/g, ' ').trim();
+  return title.length > 48 ? `${title.slice(0, 45)}…` : title;
+}
+
+interface TabAlertHeadline {
+  key: string;
+  title: string;
+}
 
 interface PersistedState {
   selectedIndex: string;
@@ -109,6 +137,8 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showAlertHistory, setShowAlertHistory] = useState(false);
   const [unseenAlertCount, setUnseenAlertCount] = useState(0);
+  const [tabAlertHeadlines, setTabAlertHeadlines] = useState<TabAlertHeadline[]>([]);
+  const [tabAlertIndex, setTabAlertIndex] = useState(0);
   const [showFeedDetails, setShowFeedDetails] = useState(false);
   const feedDetailsRef = useRef<HTMLDivElement>(null);
   // Re-evaluate feed health even if the WebSocket stops delivering messages.
@@ -118,6 +148,84 @@ function App() {
   const enteringLiveRef = useRef(false);
   const scrollRestoredRef = useRef(false);
   const hasUserSelectedDateRef = useRef(false);
+  const tabWasHiddenRef = useRef(isTabInBackground());
+
+  const markTabAlertsRead = useCallback(() => {
+    saveLastOpenedHistory(new Date().toISOString());
+    setUnseenAlertCount(0);
+    setTabAlertHeadlines([]);
+    setTabAlertIndex(0);
+    document.title = BASE_TAB_TITLE;
+    setTabFavicon(BASE_TAB_FAVICON);
+  }, []);
+
+  // A tab activation is the acknowledgement gesture: all alerts that arrived
+  // while this page was in the background are now considered seen.
+  useEffect(() => {
+    const markActiveTabRead = () => {
+      if (isTabInBackground()) return;
+      tabWasHiddenRef.current = false;
+      markTabAlertsRead();
+    };
+
+    const handleVisibilityChange = () => {
+      if (isTabInBackground()) {
+        tabWasHiddenRef.current = true;
+      } else if (tabWasHiddenRef.current) {
+        markActiveTabRead();
+      }
+    };
+
+    const handleBlur = () => {
+      tabWasHiddenRef.current = true;
+    };
+
+    const handleFocus = () => {
+      if (tabWasHiddenRef.current) markActiveTabRead();
+    };
+
+    if (!isTabInBackground()) markActiveTabRead();
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleBlur);
+    window.addEventListener('focus', handleFocus);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleBlur);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [markTabAlertsRead]);
+
+  // Show the existing options-chain mark with a red unread dot, and rotate the
+  // latest alert headline while the dashboard is in the background.
+  useEffect(() => {
+    if (!isTabInBackground()) {
+      document.title = BASE_TAB_TITLE;
+      setTabFavicon(BASE_TAB_FAVICON);
+      return;
+    }
+
+    if (unseenAlertCount <= 0) {
+      document.title = BASE_TAB_TITLE;
+      setTabFavicon(BASE_TAB_FAVICON);
+      return;
+    }
+
+    const headline = tabAlertHeadlines.length > 0
+      ? tabAlertHeadlines[tabAlertIndex % tabAlertHeadlines.length].title
+      : 'New market alert';
+    const countLabel = unseenAlertCount > 1 ? ` · ${unseenAlertCount}` : '';
+    document.title = `⚠ ${headline}${countLabel}`;
+    setTabFavicon(ALERT_TAB_FAVICON);
+  }, [tabAlertHeadlines, tabAlertIndex, unseenAlertCount]);
+
+  useEffect(() => {
+    if (!isTabInBackground() || tabAlertHeadlines.length < 2 || unseenAlertCount < 2) return;
+    const timer = setInterval(() => {
+      setTabAlertIndex((current) => (current + 1) % tabAlertHeadlines.length);
+    }, 4500);
+    return () => clearInterval(timer);
+  }, [tabAlertHeadlines.length, unseenAlertCount]);
 
   const wsUrl = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
   const { connected, lastMessage } = useWebSocket(wsUrl);
@@ -299,8 +407,22 @@ function App() {
 
     if (lastMessage.type === 'alert') {
       const alertData: AlertFiring = lastMessage.data;
-      if (!showAlertHistory) {
+      if (isTabInBackground()) {
         setUnseenAlertCount((c) => c + 1);
+        const alertKey = `${alertData.timestamp}|${alertData.rule_type}`;
+        const headline: TabAlertHeadline = {
+          key: alertKey,
+          title: makeTabAlertTitle(alertData.index_name, alertData.rule_name),
+        };
+        setTabAlertIndex(0);
+        setTabAlertHeadlines((current) => [
+          headline,
+          ...current.filter((item) => item.key !== alertKey),
+        ].slice(0, 5));
+      } else {
+        // Foreground alerts are immediately seen; persist that point-in-time
+        // so the periodic history refresh does not resurrect them as unread.
+        markTabAlertsRead();
       }
       if (alertScope === 'all' || alertData.index_name === selectedIndex) {
         const channels = alertData.channels_fired ?? [];
@@ -315,7 +437,7 @@ function App() {
         }
       }
     }
-  }, [lastMessage, selectedIndex, alertSettings, alertScope, addToast, playAlertSound]);
+  }, [lastMessage, selectedIndex, alertSettings, alertScope, addToast, playAlertSound, markTabAlertsRead]);
 
   useEffect(() => {
     if (isPlaying) {
@@ -565,18 +687,34 @@ function App() {
 
   const refreshUnseenCount = useCallback(async () => {
     const today = getMarketDateIST();
-    const lastOpened = getLastOpenedHistory();
     try {
       const res = await fetch(`/api/alerts/history?date=${today}&page_size=200`);
       if (!res.ok) return;
       const data = await res.json();
       const entries = data.entries || [];
+
+      // Read the timestamp after the request completes. If the user returned
+      // to this tab while the request was in flight, the activation timestamp
+      // wins and older alerts are not incorrectly shown as unread.
+      const lastOpened = getLastOpenedHistory();
       const lastOpenedDate = lastOpened ? new Date(lastOpened) : null;
-      const unseen = entries.filter((e: any) => {
-        if (!lastOpenedDate) return true;
-        return new Date(e.timestamp) > lastOpenedDate;
-      }).length;
-      setUnseenAlertCount(unseen);
+      const unseenEntries = entries
+        .filter((entry: any) => !lastOpenedDate || new Date(entry.timestamp) > lastOpenedDate)
+        .sort((a: any, b: any) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+      if (!isTabInBackground()) {
+        setUnseenAlertCount(0);
+        setTabAlertHeadlines([]);
+        setTabAlertIndex(0);
+        return;
+      }
+
+      setUnseenAlertCount(unseenEntries.length);
+      setTabAlertHeadlines(unseenEntries.slice(0, 5).map((entry: any) => ({
+        key: String(entry.id ?? `${entry.timestamp}|${entry.rule_type}`),
+        title: makeTabAlertTitle(entry.index_name, entry.rule_name),
+      })));
+      setTabAlertIndex(0);
     } catch {}
   }, []);
 
@@ -657,7 +795,7 @@ function App() {
           </span>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => { setShowAlertHistory(true); setUnseenAlertCount(0); saveLastOpenedHistory(new Date().toISOString()); }} className="relative flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono bg-terminal-bg text-terminal-muted hover:text-terminal-text transition-colors">
+          <button onClick={() => { setShowAlertHistory(true); markTabAlertsRead(); }} className="relative flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono bg-terminal-bg text-terminal-muted hover:text-terminal-text transition-colors">
             <Bell className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">History</span>
             {unseenAlertCount > 0 && (
