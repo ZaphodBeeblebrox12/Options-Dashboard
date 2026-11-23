@@ -20,7 +20,7 @@ import { AlertToastContainer } from './components/AlertToast';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useSnapshots, useSnapshot, useGexHistory, useStrikeHistory, useAvailableDates, useLastKnownSnapshot } from './hooks/useApi';
 import { useAlertSettings, useAlertNotifications, AlertFiring } from './hooks/useAlerts';
-import { Monitor, AlertTriangle, Info, WifiOff, Bell, Settings, X, ChevronDown } from 'lucide-react';
+import { AlertTriangle, Info, WifiOff, Bell, Settings, X, ChevronDown } from 'lucide-react';
 import { hoursForType, isSessionOpen, fmtSessionRange, getMarketDateIST, InstrumentKind, SessionHours } from './session';
 import { canReturnToLive, resolveLiveStatus, resolveInitialReplayDate } from './replayPolicy.js';
 import { computeOiWalls } from './oiWalls.js';
@@ -646,7 +646,7 @@ function App() {
 
       <div className="border-b border-terminal-border bg-terminal-panel px-3 sm:px-4 py-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-0">
         <div className="flex items-center gap-2 flex-wrap">
-          <Monitor className="w-5 h-5 text-terminal-atm shrink-0" />
+          <img src="/options-chain.svg" alt="" aria-hidden="true" className="h-6 w-6 shrink-0" />
           <h1 className="text-sm font-bold tracking-wide">
             <span className="sm:hidden">{selectedIndex} Dashboard</span>
             <span className="hidden sm:inline">{selectedIndex} Option Chain Replay Dashboard</span>
