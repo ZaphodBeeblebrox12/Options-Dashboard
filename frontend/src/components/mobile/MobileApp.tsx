@@ -329,6 +329,7 @@ export default function MobileApp({ connected, lastMessage, toasts, removeToast,
         <>
           <header className="mc-hd">
             <button className="mc-instsel" onClick={() => setSheet("inst")}>
+              <img src="/options-chain.svg" alt="" aria-hidden="true" style={{ width: 16, height: 16, flexShrink: 0 }} />
               <span className="mc-instsel-nm num">{selected}</span>
               <span className="mc-instsel-kind">{kind}</span>
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" style={{ color: "var(--mfaint)" }}><path d="M6 9l6 6 6-6" /></svg>
