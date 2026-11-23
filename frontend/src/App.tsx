@@ -150,6 +150,7 @@ function App() {
   const scrollRestoredRef = useRef(false);
   const hasUserSelectedDateRef = useRef(false);
   const tabWasHiddenRef = useRef(isTabInBackground());
+  const processedAlertKeysRef = useRef<Set<string>>(new Set());
 
   const markTabAlertsRead = useCallback(() => {
     saveLastOpenedHistory(new Date().toISOString());
@@ -408,34 +409,48 @@ function App() {
 
     if (lastMessage.type === 'alert') {
       const alertData: AlertFiring = lastMessage.data;
-      if (isTabInBackground()) {
-        setUnseenAlertCount((c) => c + 1);
-        const alertKey = `${alertData.timestamp}|${alertData.rule_type}`;
-        const headline: TabAlertHeadline = {
-          key: alertKey,
-          title: makeTabAlertTitle(alertData.index_name, alertData.rule_name),
-          timestamp: alertData.timestamp,
-        };
-        setTabAlertIndex(0);
-        setTabAlertHeadlines((current) => [
-          headline,
-          ...current.filter((item) => item.key !== alertKey),
-        ].slice(0, 5));
-      } else {
-        // Foreground alerts are immediately seen; persist that point-in-time
-        // so the periodic history refresh does not resurrect them as unread.
-        markTabAlertsRead();
-      }
-      if (alertScope === 'all' || alertData.index_name === selectedIndex) {
-        const channels = alertData.channels_fired ?? [];
-        if (channels.includes('toast')) {
-          addToast(alertData);
+      const alertKey = `${alertData.timestamp}|${alertData.rule_type}|${alertData.index_name}`;
+      const processedKeys = processedAlertKeysRef.current;
+
+      // Other dependencies in this effect (selected index, scope, settings)
+      // can change while lastMessage still points at the same event. Handle
+      // each alert once so unread counts, toasts and sounds are not duplicated.
+      if (!processedKeys.has(alertKey)) {
+        processedKeys.add(alertKey);
+        if (processedKeys.size > 200) {
+          const oldestKey = processedKeys.values().next().value;
+          if (oldestKey) processedKeys.delete(oldestKey);
         }
-        if (channels.includes('sound') && alertSettings?.sound.master_enabled) {
-          const ruleConfig = alertSettings?.rules.find((r) => r.rule_type === alertData.rule_type);
-          const soundId = ruleConfig?.custom_sound_id || ruleConfig?.sound_choice || 'alert';
-          const volume = (alertSettings.sound.volume_percent || 80) / 100;
-          playAlertSound(soundId, volume);
+
+        if (isTabInBackground()) {
+          setUnseenAlertCount((c) => c + 1);
+          const headline: TabAlertHeadline = {
+            key: alertKey,
+            title: makeTabAlertTitle(alertData.index_name, alertData.rule_name),
+            timestamp: alertData.timestamp,
+          };
+          setTabAlertIndex(0);
+          setTabAlertHeadlines((current) => [
+            headline,
+            ...current.filter((item) => item.key !== alertKey),
+          ].slice(0, 5));
+        } else {
+          // Foreground alerts are immediately seen; persist that point-in-time
+          // so the periodic history refresh does not resurrect them as unread.
+          markTabAlertsRead();
+        }
+
+        if (alertScope === 'all' || alertData.index_name === selectedIndex) {
+          const channels = alertData.channels_fired ?? [];
+          if (channels.includes('toast')) {
+            addToast(alertData);
+          }
+          if (channels.includes('sound') && alertSettings?.sound.master_enabled) {
+            const ruleConfig = alertSettings?.rules.find((r) => r.rule_type === alertData.rule_type);
+            const soundId = ruleConfig?.custom_sound_id || ruleConfig?.sound_choice || 'alert';
+            const volume = (alertSettings.sound.volume_percent || 80) / 100;
+            playAlertSound(soundId, volume);
+          }
         }
       }
     }
@@ -712,7 +727,7 @@ function App() {
       }
 
       const refreshedHeadlines: TabAlertHeadline[] = unseenEntries.slice(0, 5).map((entry: any) => ({
-        key: String(entry.id ?? `${entry.timestamp}|${entry.rule_type}`),
+        key: `${entry.timestamp}|${entry.rule_type}|${entry.index_name}`,
         title: makeTabAlertTitle(entry.index_name, entry.rule_name),
         timestamp: entry.timestamp,
       }));
