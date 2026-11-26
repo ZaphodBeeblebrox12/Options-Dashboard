@@ -1237,6 +1237,51 @@ async def get_strike_history(
     return {"strike": strike, "index_name": index, "timeseries": timeseries}
 
 
+@app.get("/api/chart/crypto/candles")
+async def get_chart_crypto_candles(
+    exchange: str = Query(..., description="BINANCE or OKX"),
+    interval: str = Query(default="5m"),
+    date_str: str = Query(default=None, alias="date"),
+):
+    """Public BTC/USDT spot OHLCV for a UTC calendar day.
+
+    Historical candles are fetched from the selected exchange REST API.
+    Live candles are subscribed to separately by the chart's browser feed.
+    Neither provider requires credentials for these public market-data calls.
+    """
+    from crypto_market_data import fetch_crypto_candles
+
+    selected_exchange = exchange.strip().upper()
+    if selected_exchange not in ("BINANCE", "OKX"):
+        raise HTTPException(status_code=422, detail="exchange must be BINANCE or OKX")
+    if not date_str:
+        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    try:
+        selected_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date must use YYYY-MM-DD")
+    if selected_date > datetime.now(timezone.utc).date():
+        raise HTTPException(status_code=422, detail="date cannot be in the future")
+    try:
+        candles = await asyncio.to_thread(
+            fetch_crypto_candles, selected_exchange, interval, date_str
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        logging.warning("[CryptoData] %s %s %s failed: %s",
+                        selected_exchange, interval, date_str, exc)
+        raise HTTPException(status_code=502, detail="Exchange market-data request failed")
+    return {
+        "exchange": selected_exchange,
+        "symbol": "BTC/USDT",
+        "interval": interval,
+        "date": date_str,
+        "timezone": "UTC",
+        "candles": candles,
+    }
+
+
 @app.get("/api/chart/options/expiries")
 async def get_chart_option_expiries(
     index: str = Query(default="NIFTY", description="Instrument name"),
