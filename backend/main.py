@@ -1236,6 +1236,175 @@ async def get_strike_history(
     _STRIKE_HISTORY_CACHE[cache_key] = (now_mono, timeseries)
     return {"strike": strike, "index_name": index, "timeseries": timeseries}
 
+
+@app.get("/api/chart/options/expiries")
+async def get_chart_option_expiries(
+    index: str = Query(default="NIFTY", description="Instrument name"),
+    date_str: str = Query(default=None, alias="date"),
+):
+    """Expiries actually persisted for one index/session.
+
+    Legacy snapshots written before the expiry migration remain NULL and are
+    returned separately as unknown. No expiry is inferred from today's master.
+    """
+    index_name = index.strip().upper()
+    if index_name not in ("NIFTY", "SENSEX"):
+        raise HTTPException(status_code=422, detail="index must be NIFTY or SENSEX")
+    if not date_str:
+        date_str = date.today().isoformat()
+    try:
+        day_start = datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date must use YYYY-MM-DD")
+    next_day = (day_start + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    def _query():
+        with get_db() as conn:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(snapshots)").fetchall()}
+            if "expiry" not in columns:
+                return [], 0, True
+            rows = conn.execute(
+                "SELECT expiry, COUNT(*) AS snapshot_count FROM snapshots "
+                "WHERE index_name = ? AND timestamp >= ? AND timestamp < ? "
+                "GROUP BY expiry ORDER BY expiry",
+                (index_name, date_str + " 00:00:00", next_day + " 00:00:00"),
+            ).fetchall()
+        expiries = [row["expiry"] for row in rows if row["expiry"]]
+        unknown_count = sum(row["snapshot_count"] for row in rows if row["expiry"] is None)
+        return expiries, unknown_count, False
+
+    expiries, unknown_count, migration_missing = await asyncio.to_thread(_query)
+    return {
+        "index_name": index_name,
+        "date": date_str,
+        "expiries": expiries,
+        "unknown_snapshot_count": unknown_count,
+        "migration_missing": migration_missing,
+    }
+
+
+@app.get("/api/chart/options/history")
+async def get_chart_option_history(
+    index: str = Query(default="NIFTY", description="Underlying index"),
+    expiry: str = Query(..., description="Exact expiry key, or UNKNOWN for legacy rows"),
+    strike: int = Query(..., ge=1),
+    option_type: str = Query(..., description="CE or PE"),
+    date_str: str = Query(default=None, alias="date"),
+):
+    """Read-only, expiry-aware option history for TradeThesis Charts.
+
+    Two-step lookup: first find the day's snapshot IDs for the exact index and
+    expiry, then load only the selected strike/side. Old rows with expiry NULL
+    are accessible only through expiry=UNKNOWN and are never merged with a
+    dated contract series.
+    """
+    index_name = index.strip().upper()
+    side = option_type.strip().upper()
+    selected_expiry = expiry.strip().upper()
+    if index_name not in ("NIFTY", "SENSEX"):
+        raise HTTPException(status_code=422, detail="index must be NIFTY or SENSEX")
+    if side not in ("CE", "PE"):
+        raise HTTPException(status_code=422, detail="option_type must be CE or PE")
+    if not selected_expiry:
+        raise HTTPException(status_code=422, detail="expiry is required")
+    if not date_str:
+        date_str = date.today().isoformat()
+    try:
+        day_start = datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date must use YYYY-MM-DD")
+    next_day = (day_start + timedelta(days=1)).strftime("%Y-%m-%d")
+    expiry_is_unknown = selected_expiry in ("UNKNOWN", "LEGACY")
+
+    def _query():
+        with get_db() as conn:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(snapshots)").fetchall()}
+            if "expiry" not in columns:
+                return [], True
+            expiry_predicate = "expiry IS NULL" if expiry_is_unknown else "expiry = ?"
+            params = [index_name, date_str + " 00:00:00", next_day + " 00:00:00"]
+            if not expiry_is_unknown:
+                params.append(selected_expiry)
+            snapshot_rows = conn.execute(
+                "SELECT id, timestamp, spot, expiry FROM snapshots "
+                "WHERE index_name = ? AND timestamp >= ? AND timestamp < ? AND "
+                + expiry_predicate + " ORDER BY id",
+                tuple(params),
+            ).fetchall()
+            if not snapshot_rows:
+                return [], False
+
+            snapshot_by_id = {row["id"]: row for row in snapshot_rows}
+            snapshot_ids = list(snapshot_by_id)
+            marks = ",".join("?" for _ in snapshot_ids)
+            option_rows = conn.execute(
+                "SELECT snapshot_id, oi, oi_change, oi_change_pct, volume, volume_valid, "
+                "source_age_sec, ltp, iv, delta, gamma, theta, vega, gex "
+                "FROM option_snapshots WHERE strike = ? AND option_type = ? "
+                "AND snapshot_id IN (" + marks + ") ORDER BY snapshot_id",
+                (strike, side, *snapshot_ids),
+            ).fetchall()
+
+        points = []
+        for row in option_rows:
+            parent = snapshot_by_id[row["snapshot_id"]]
+            points.append({
+                "timestamp": parent["timestamp"],
+                "expiry": parent["expiry"],
+                "expiry_known": parent["expiry"] is not None,
+                "spot": parent["spot"],
+                "option_type": side,
+                "oi": row["oi"],
+                "oi_change": row["oi_change"],
+                "oi_change_pct": row["oi_change_pct"],
+                "volume": row["volume"],
+                "volume_valid": bool(row["volume_valid"]),
+                "source_age_sec": row["source_age_sec"],
+                "ltp": row["ltp"],
+                "iv": row["iv"],
+                "delta": row["delta"],
+                "gamma": row["gamma"],
+                "theta": row["theta"],
+                "vega": row["vega"],
+                "gex": row["gex"],
+            })
+        return points, False
+
+    points, migration_missing = await asyncio.to_thread(_query)
+    exchange = "NFO" if index_name == "NIFTY" else "BFO"
+    resolved_expiry = None if expiry_is_unknown else selected_expiry
+    times = []
+    for point in points:
+        try:
+            times.append(datetime.strptime(point["timestamp"], "%Y-%m-%d %H:%M:%S"))
+        except (TypeError, ValueError):
+            continue
+    gaps_detected = any((right - left).total_seconds() > 90 for left, right in zip(times, times[1:]))
+
+    return {
+        "instrument": {
+            "exchange": exchange,
+            "underlying": index_name,
+            "expiry": resolved_expiry,
+            "expiry_known": not expiry_is_unknown and not migration_missing,
+            "strike": strike,
+            "option_type": side,
+        },
+        "sampling": {
+            "source": "option_chain_snapshots",
+            "expected_seconds": 30,
+            "bar_semantics": "sampled_observations",
+        },
+        "points": points,
+        "quality": {
+            "migration_missing": migration_missing,
+            "missing_expiry_rows": len(points) if expiry_is_unknown else 0,
+            "gaps_detected": gaps_detected,
+            "last_timestamp": points[-1]["timestamp"] if points else None,
+        },
+    }
+
+
 @app.get("/api/gex-history")
 async def get_gex_history(
     date_str: str = Query(default=None, alias="date"),
