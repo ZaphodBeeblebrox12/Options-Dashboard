@@ -88,7 +88,9 @@ def _fetch_okx(interval: str, start_ms: int, end_ms: int,
                session: Any = requests) -> list[dict]:
     if interval not in OKX_INTERVALS:
         raise ValueError(f"Unsupported OKX interval: {interval}")
-    bar_code = "1Dutc" if interval == "1d" else ("1H" if interval == "1h" else interval)
+    # OKX names hourly intervals with an uppercase H; 1Dutc is the
+    # UTC-midnight daily candle variant.
+    bar_code = {"1h": "1H", "2h": "2H", "4h": "4H", "1d": "1Dutc"}.get(interval, interval)
     today_start = int(datetime.now(timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0
     ).timestamp() * 1000)
