@@ -16,7 +16,7 @@ BINANCE_REST = "https://data-api.binance.vision/api/v3/klines"
 OKX_CANDLES = "https://openapi.okx.com/api/v5/market/candles"
 OKX_HISTORY_CANDLES = "https://openapi.okx.com/api/v5/market/history-candles"
 
-BINANCE_INTERVALS = {"1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"}
+BINANCE_INTERVALS = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"}
 OKX_INTERVALS = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"}
 INTERVAL_MS = {
     "1m": 60_000, "3m": 180_000, "5m": 300_000,
@@ -97,10 +97,14 @@ def _fetch_okx(interval: str, start_ms: int, end_ms: int,
     endpoint = OKX_CANDLES if start_ms >= today_start else OKX_HISTORY_CANDLES
     output: dict[int, dict] = {}
     cursor = end_ms
-    for _ in range(12):
+    # The latest-candles endpoint allows 300 rows per page; the historical
+    # endpoint allows 100. A 1m UTC day needs 15 historical pages.
+    page_limit = 300 if endpoint == OKX_CANDLES else 100
+    max_pages = 8 if endpoint == OKX_CANDLES else 16
+    for _ in range(max_pages):
         response = session.get(
             endpoint,
-            params={"instId": "BTC-USDT", "bar": bar_code, "after": str(cursor), "limit": "300"},
+            params={"instId": "BTC-USDT", "bar": bar_code, "after": str(cursor), "limit": str(page_limit)},
             timeout=15,
         )
         response.raise_for_status()
@@ -115,7 +119,7 @@ def _fetch_okx(interval: str, start_ms: int, end_ms: int,
             if start_ms <= ts < end_ms:
                 output[ts] = _bar(ts, row[1], row[2], row[3], row[4], row[5])
         oldest = min(int(row[0]) for row in rows)
-        if oldest <= start_ms or len(rows) < 300 or oldest >= cursor:
+        if oldest <= start_ms or len(rows) < page_limit or oldest >= cursor:
             break
         cursor = oldest
     return [output[key] for key in sorted(output)]
