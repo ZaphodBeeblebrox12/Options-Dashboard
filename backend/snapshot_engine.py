@@ -439,6 +439,9 @@ class SnapshotEngine:
             snapshot = {
                 "timestamp": timestamp,
                 "index_name": index_name,
+                # Nullable for instruments / historical captures without a
+                # resolvable derivative expiry. Never infer this later.
+                "expiry": ek,
                 "spot": spot,
                 "futures": futures,
                 "futures_oi": futures_oi,
@@ -598,11 +601,12 @@ class SnapshotEngine:
 
         cursor.execute("""
             INSERT OR REPLACE INTO snapshots
-            (timestamp, index_name, spot, futures, futures_oi, futures_spread, net_gex, max_gex_strike, max_pain, gamma_flip)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (timestamp, index_name, expiry, spot, futures, futures_oi, futures_spread, net_gex, max_gex_strike, max_pain, gamma_flip)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             snapshot["timestamp"],
             snapshot["index_name"],
+            snapshot.get("expiry"),
             snapshot["spot"],
             snapshot["futures"],
             snapshot.get("futures_oi"),
