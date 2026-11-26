@@ -89,3 +89,16 @@ def test_exchange_and_interval_inputs_are_validated():
         assert "Unsupported Binance interval" in str(exc)
     else:
         raise AssertionError("unsupported interval should be rejected")
+
+
+def test_okx_hourly_intervals_use_documented_uppercase_bar_codes():
+    ts = int(datetime(2020, 11, 26, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    session = FakeSession({"code": "0", "msg": "", "data": [
+        [str(ts), "90000", "91000", "89500", "90500", "12.5", "1125000", "1125000", "1"],
+    ]})
+    start, end = crypto._utc_day_bounds("2020-11-26")
+
+    bars = crypto._fetch_okx("2h", start, end, session=session)
+
+    assert len(bars) == 1
+    assert session.calls[0][1]["bar"] == "2H"
