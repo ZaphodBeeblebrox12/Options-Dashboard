@@ -5,26 +5,27 @@ import database
 import main
 
 
-def _insert_option_snapshot(
+def _insert_parent_snapshot(conn, timestamp, expiry, *, index="NIFTY", spot=26000.0):
+    cursor = conn.execute(
+        "INSERT INTO snapshots (timestamp, index_name, expiry, spot) VALUES (?, ?, ?, ?)",
+        (timestamp, index, expiry, spot),
+    )
+    return cursor.lastrowid
+
+
+def _insert_option_row(
     conn,
-    timestamp,
-    expiry,
+    snapshot_id,
     strike,
     option_type,
     ltp,
     *,
     index="NIFTY",
-    spot=26000.0,
     oi=1000,
     volume=500,
     volume_valid=1,
     source_age_sec=1.2,
 ):
-    cursor = conn.execute(
-        "INSERT INTO snapshots (timestamp, index_name, expiry, spot) VALUES (?, ?, ?, ?)",
-        (timestamp, index, expiry, spot),
-    )
-    snapshot_id = cursor.lastrowid
     conn.execute(
         "INSERT INTO option_snapshots "
         "(snapshot_id, index_name, strike, option_type, ltp, oi, oi_change, "
@@ -35,7 +36,6 @@ def _insert_option_snapshot(
             volume, volume_valid, source_age_sec,
         ),
     )
-    return snapshot_id
 
 
 def test_chart_expiries_and_option_history_are_date_expiry_and_side_scoped(
@@ -45,29 +45,42 @@ def test_chart_expiries_and_option_history_are_date_expiry_and_side_scoped(
     database.init_db()
 
     with database.get_db() as conn:
-        _insert_option_snapshot(
-            conn, "2026-11-26 09:15:00", "26NOV2026", 26000, "CE", 100,
+        # CE and PE belong to the same snapshot; snapshots are unique by
+        # (timestamp, index_name), while option_snapshots contains both sides.
+        first_snapshot = _insert_parent_snapshot(
+            conn, "2026-11-26 09:15:00", "26NOV2026"
+        )
+        _insert_option_row(
+            conn, first_snapshot, 26000, "CE", 100,
             volume=500, source_age_sec=1.1,
         )
-        _insert_option_snapshot(
-            conn, "2026-11-26 09:15:00", "26NOV2026", 26000, "PE", 90,
+        _insert_option_row(conn, first_snapshot, 26000, "PE", 90)
+
+        second_snapshot = _insert_parent_snapshot(
+            conn, "2026-11-26 09:17:00", "26NOV2026"
         )
-        _insert_option_snapshot(
-            conn, "2026-11-26 09:17:00", "26NOV2026", 26000, "CE", 105,
+        _insert_option_row(
+            conn, second_snapshot, 26000, "CE", 105,
             volume=600, source_age_sec=2.2,
         )
+
         # Same strike on a different expiry must not leak into the selected series.
-        _insert_option_snapshot(
-            conn, "2026-11-26 09:17:30", "03DEC2026", 26000, "CE", 777,
+        other_expiry_snapshot = _insert_parent_snapshot(
+            conn, "2026-11-26 09:17:30", "03DEC2026"
         )
+        _insert_option_row(conn, other_expiry_snapshot, 26000, "CE", 777)
+
         # Legacy snapshots remain explicitly unknown rather than backfilled.
-        _insert_option_snapshot(
-            conn, "2026-11-26 09:18:00", None, 26000, "CE", 888,
+        legacy_snapshot = _insert_parent_snapshot(
+            conn, "2026-11-26 09:18:00", None
         )
+        _insert_option_row(conn, legacy_snapshot, 26000, "CE", 888)
+
         # The same expiry on the next date must not leak into 26 November.
-        _insert_option_snapshot(
-            conn, "2026-11-27 09:15:00", "26NOV2026", 26000, "CE", 999,
+        next_day_snapshot = _insert_parent_snapshot(
+            conn, "2026-11-27 09:15:00", "26NOV2026"
         )
+        _insert_option_row(conn, next_day_snapshot, 26000, "CE", 999)
         conn.commit()
 
     expiries = asyncio.run(main.get_chart_option_expiries(
