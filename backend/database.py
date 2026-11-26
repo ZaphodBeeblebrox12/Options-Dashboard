@@ -13,7 +13,13 @@ import os
 from contextlib import contextmanager
 from datetime import datetime
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "nifty_snapshots.db")
+# Optional override lets a local chart workstation reuse a database stored
+# outside this repository. Prefer an absolute path in backend/.env.
+_DEFAULT_DB_PATH = os.path.join(os.path.dirname(__file__), "nifty_snapshots.db")
+_CONFIGURED_DB_PATH = os.environ.get("TRADETHESIS_DB_PATH", "").strip()
+DB_PATH = os.path.abspath(os.path.expanduser(os.path.expandvars(
+    _CONFIGURED_DB_PATH or _DEFAULT_DB_PATH
+)))
 
 
 def _column_exists(conn, table, column):

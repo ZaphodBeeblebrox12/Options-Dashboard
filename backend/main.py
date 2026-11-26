@@ -31,7 +31,7 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime, date, timedelta, time as dt_time
+from datetime import datetime, date, timedelta, time as dt_time, timezone
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, UploadFile, File, Form
@@ -1237,6 +1237,51 @@ async def get_strike_history(
     return {"strike": strike, "index_name": index, "timeseries": timeseries}
 
 
+@app.get("/api/chart/crypto/candles")
+async def get_chart_crypto_candles(
+    exchange: str = Query(..., description="BINANCE or OKX"),
+    interval: str = Query(default="5m"),
+    date_str: str = Query(default=None, alias="date"),
+):
+    """Public BTC/USDT spot OHLCV for a UTC calendar day.
+
+    Historical candles are fetched from the selected exchange REST API.
+    Live candles are subscribed to separately by the chart's browser feed.
+    Neither provider requires credentials for these public market-data calls.
+    """
+    from crypto_market_data import fetch_crypto_candles
+
+    selected_exchange = exchange.strip().upper()
+    if selected_exchange not in ("BINANCE", "OKX"):
+        raise HTTPException(status_code=422, detail="exchange must be BINANCE or OKX")
+    if not date_str:
+        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    try:
+        selected_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date must use YYYY-MM-DD")
+    if selected_date > datetime.now(timezone.utc).date():
+        raise HTTPException(status_code=422, detail="date cannot be in the future")
+    try:
+        candles = await asyncio.to_thread(
+            fetch_crypto_candles, selected_exchange, interval, date_str
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        logging.warning("[CryptoData] %s %s %s failed: %s",
+                        selected_exchange, interval, date_str, exc)
+        raise HTTPException(status_code=502, detail="Exchange market-data request failed")
+    return {
+        "exchange": selected_exchange,
+        "symbol": "BTC/USDT",
+        "interval": interval,
+        "date": date_str,
+        "timezone": "UTC",
+        "candles": candles,
+    }
+
+
 @app.get("/api/chart/options/expiries")
 async def get_chart_option_expiries(
     index: str = Query(default="NIFTY", description="Instrument name"),
@@ -1283,6 +1328,65 @@ async def get_chart_option_expiries(
     }
 
 
+@app.get("/api/chart/options/strikes")
+async def get_chart_option_strikes(
+    index: str = Query(default="NIFTY", description="Underlying index"),
+    expiry: str = Query(..., description="Exact expiry key, or UNKNOWN for legacy rows"),
+    date_str: str = Query(default=None, alias="date"),
+):
+    """Return strikes observed for one index, date and exact persisted expiry.
+
+    Unlike /api/strikes, this does not choose one latest snapshot that may
+    belong to a different expiry after a rollover.
+    """
+    index_name = index.strip().upper()
+    selected_expiry = expiry.strip().upper()
+    if index_name not in ("NIFTY", "SENSEX"):
+        raise HTTPException(status_code=422, detail="index must be NIFTY or SENSEX")
+    if not selected_expiry:
+        raise HTTPException(status_code=422, detail="expiry is required")
+    if not date_str:
+        date_str = date.today().isoformat()
+    try:
+        day_start = datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date must use YYYY-MM-DD")
+    next_day = (day_start + timedelta(days=1)).strftime("%Y-%m-%d")
+    expiry_is_unknown = selected_expiry in ("UNKNOWN", "LEGACY")
+
+    def _query():
+        with get_db() as conn:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(snapshots)").fetchall()}
+            if "expiry" not in columns:
+                return [], True
+            expiry_predicate = "s.expiry IS NULL" if expiry_is_unknown else "s.expiry = ?"
+            params = [
+                index_name, index_name,
+                date_str + " 00:00:00", next_day + " 00:00:00",
+            ]
+            if not expiry_is_unknown:
+                params.append(selected_expiry)
+            rows = conn.execute(
+                "SELECT DISTINCT o.strike FROM option_snapshots AS o "
+                "JOIN snapshots AS s ON s.id = o.snapshot_id "
+                "WHERE s.index_name = ? AND o.index_name = ? "
+                "AND s.timestamp >= ? AND s.timestamp < ? AND "
+                + expiry_predicate + " ORDER BY o.strike",
+                tuple(params),
+            ).fetchall()
+        return [int(row["strike"]) for row in rows], False
+
+    strikes, migration_missing = await asyncio.to_thread(_query)
+    return {
+        "index_name": index_name,
+        "date": date_str,
+        "expiry": None if expiry_is_unknown else selected_expiry,
+        "expiry_known": not expiry_is_unknown and not migration_missing,
+        "migration_missing": migration_missing,
+        "strikes": strikes,
+    }
+
+
 @app.get("/api/chart/options/history")
 async def get_chart_option_history(
     index: str = Query(default="NIFTY", description="Underlying index"),
@@ -1320,7 +1424,7 @@ async def get_chart_option_history(
         with get_db() as conn:
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(snapshots)").fetchall()}
             if "expiry" not in columns:
-                return [], True
+                return [], True, 0
             expiry_predicate = "expiry IS NULL" if expiry_is_unknown else "expiry = ?"
             params = [index_name, date_str + " 00:00:00", next_day + " 00:00:00"]
             if not expiry_is_unknown:
@@ -1332,8 +1436,9 @@ async def get_chart_option_history(
                 tuple(params),
             ).fetchall()
             if not snapshot_rows:
-                return [], False
+                return [], False, 0
 
+            unknown_snapshot_count = len(snapshot_rows) if expiry_is_unknown else 0
             snapshot_by_id = {row["id"]: row for row in snapshot_rows}
             snapshot_ids = list(snapshot_by_id)
             marks = ",".join("?" for _ in snapshot_ids)
@@ -1368,9 +1473,9 @@ async def get_chart_option_history(
                 "vega": row["vega"],
                 "gex": row["gex"],
             })
-        return points, False
+        return points, False, unknown_snapshot_count
 
-    points, migration_missing = await asyncio.to_thread(_query)
+    points, migration_missing, unknown_snapshot_count = await asyncio.to_thread(_query)
     exchange = "NFO" if index_name == "NIFTY" else "BFO"
     resolved_expiry = None if expiry_is_unknown else selected_expiry
     times = []
@@ -1398,7 +1503,7 @@ async def get_chart_option_history(
         "points": points,
         "quality": {
             "migration_missing": migration_missing,
-            "missing_expiry_rows": len(points) if expiry_is_unknown else 0,
+            "missing_expiry_rows": unknown_snapshot_count if expiry_is_unknown else 0,
             "gaps_detected": gaps_detected,
             "last_timestamp": points[-1]["timestamp"] if points else None,
         },
@@ -2106,8 +2211,16 @@ async def scanner_candles(symbol: str = Query(...), tf: str = Query(...),
         raise HTTPException(status_code=400, detail="tf must be one of 5m|15m|30m|1H")
     if not date:
         date = datetime.now().strftime("%Y-%m-%d")
-    ones = candle_builder.load_1m(symbol.strip().upper(),
-                                  since_ts_minute=f"{date} 00:00:00")
+    try:
+        selected_day = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date must use YYYY-MM-DD")
+    next_day = (selected_day + timedelta(days=1)).strftime("%Y-%m-%d")
+    ones = candle_builder.load_1m(
+        symbol.strip().upper(),
+        since_ts_minute=f"{date} 00:00:00",
+        until_ts_minute=f"{next_day} 00:00:00",
+    )
     out, cur, part = [], None, []
     for c in ones:
         b = (five_m_bucket_minutes(c["ts_minute"]) if tf == "5m"

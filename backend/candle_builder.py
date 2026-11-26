@@ -365,17 +365,28 @@ class CandleBuilder:
 
     # ── historical queries (future scanner bootstrap) ────────
     def load_1m(self, symbol: str, limit: int = 500,
-                since_ts_minute: str | None = None) -> list:
-        """Chronological 1m candles for a symbol (newest `limit` when since is
-        None; forward from `since` otherwise). Read from the DB — the single
-        source of truth — so live + restarted aggregations agree."""
+                since_ts_minute: str | None = None,
+                until_ts_minute: str | None = None) -> list:
+        """Chronological 1m candles for a symbol.
+
+        With `since_ts_minute`, return the forward range
+        [since_ts_minute, until_ts_minute) when an upper bound is supplied.
+        Without `since_ts_minute`, return the newest `limit` rows. The
+        half-open range prevents later sessions leaking into date-scoped charts.
+        """
         conn = self._connect()
         try:
             if since_ts_minute:
-                rows = conn.execute(
+                query = (
                     "SELECT symbol, ts_minute, open, high, low, close, volume, tick_count"
                     " FROM candles_1m WHERE symbol = ? AND ts_minute >= ?"
-                    " ORDER BY ts_minute", (symbol.upper(), since_ts_minute)).fetchall()
+                )
+                params = [symbol.upper(), since_ts_minute]
+                if until_ts_minute:
+                    query += " AND ts_minute < ?"
+                    params.append(until_ts_minute)
+                query += " ORDER BY ts_minute"
+                rows = conn.execute(query, tuple(params)).fetchall()
             else:
                 rows = conn.execute(
                     "SELECT symbol, ts_minute, open, high, low, close, volume, tick_count"
