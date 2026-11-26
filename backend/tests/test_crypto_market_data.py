@@ -71,6 +71,7 @@ def test_okx_adapter_maps_history_candles_and_keeps_utc_timestamp():
     assert session.calls[0][0] == crypto.OKX_HISTORY_CANDLES
     assert session.calls[0][1]["instId"] == "BTC-USDT"
     assert session.calls[0][1]["bar"] == "1m"
+    assert session.calls[0][1]["limit"] == "100"
 
 
 def test_exchange_and_interval_inputs_are_validated():
