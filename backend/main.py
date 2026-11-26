@@ -1428,9 +1428,9 @@ async def get_chart_option_history(
                 "vega": row["vega"],
                 "gex": row["gex"],
             })
-        return points, False
+        return points, False, unknown_snapshot_count
 
-    points, migration_missing = await asyncio.to_thread(_query)
+    points, migration_missing, unknown_snapshot_count = await asyncio.to_thread(_query)
     exchange = "NFO" if index_name == "NIFTY" else "BFO"
     resolved_expiry = None if expiry_is_unknown else selected_expiry
     times = []
