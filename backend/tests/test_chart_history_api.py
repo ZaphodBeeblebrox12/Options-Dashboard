@@ -91,6 +91,7 @@ def test_chart_strikes_are_filtered_by_expiry_and_legacy_unknown(tmp_path, monke
         _insert_snapshot(conn, "2026-11-26 09:16:30", "26NOV2026", 26050)
         # Same expiry and strike on another date must not leak into this day.
         _insert_snapshot(conn, "2026-11-27 09:15:00", "26NOV2026", 26300)
+        conn.commit()
 
     selected = asyncio.run(main.get_chart_option_strikes(
         index="NIFTY", expiry="26NOV2026", date_str="2026-11-26"
