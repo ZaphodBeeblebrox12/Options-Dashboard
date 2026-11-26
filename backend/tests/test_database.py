@@ -27,6 +27,7 @@ def test_init_db_creates_expected_tables_and_columns(tmp_path, monkeypatch):
             row[1] for row in conn.execute("PRAGMA table_info(option_snapshots)")
         }
         assert "futures_oi" in snapshot_columns
+        assert "expiry" in snapshot_columns
         assert "index_name" in snapshot_columns
         assert "oi_change_pct" in option_columns
         assert {"volume_valid", "source_age_sec"} <= option_columns
@@ -95,6 +96,13 @@ def test_legacy_option_rows_migrate_as_unverified_volume(tmp_path, monkeypatch):
             (snapshot_id,),
         ).fetchone()
         assert row == (0, 0, None)
+
+        # Old snapshots have no reliable expiry and must remain unknown.
+        expiry = conn.execute(
+            "SELECT expiry FROM snapshots WHERE id = ?",
+            (snapshot_id,),
+        ).fetchone()
+        assert expiry == (None,)
     finally:
         conn.close()
 

@@ -30,6 +30,13 @@ def _migrate_db(conn):
         conn.execute("ALTER TABLE snapshots ADD COLUMN index_name TEXT NOT NULL DEFAULT 'NIFTY'")
         conn.commit()
 
+    # Nullable active option-chain expiry. Legacy rows remain NULL:
+    # the exact expiry cannot be reconstructed safely from today's master.
+    if not _column_exists(conn, "snapshots", "expiry"):
+        print("[DB] Migrating: adding expiry to snapshots...")
+        conn.execute("ALTER TABLE snapshots ADD COLUMN expiry TEXT")
+        conn.commit()
+
     # Add index_name to option_snapshots if missing
     if not _column_exists(conn, "option_snapshots", "index_name"):
         print("[DB] Migrating: adding index_name to option_snapshots...")
@@ -117,6 +124,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT NOT NULL,
             index_name TEXT NOT NULL DEFAULT 'NIFTY',
+            expiry TEXT,
             spot REAL,
             futures REAL,
             futures_oi INTEGER,
@@ -176,6 +184,7 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_date ON snapshots(date(timestamp))")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_index ON snapshots(index_name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_date_index ON snapshots(date(timestamp), index_name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_expiry_index_ts ON snapshots(index_name, expiry, timestamp)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_option_snapshots_snapshot ON option_snapshots(snapshot_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_option_snapshots_strike ON option_snapshots(strike)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_option_snapshots_combo ON option_snapshots(snapshot_id, option_type, strike)")
