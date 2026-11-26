@@ -34,15 +34,15 @@ def test_utc_day_bounds_are_a_full_utc_calendar_day():
 
 def test_binance_adapter_maps_spot_kline_and_uses_time_bounds():
     session = FakeSession([
-        [1795651200000, "90000", "91000", "89500", "90500", "12.5",
-         1795651259999, "1125000", 200, "6", "540000", "0"]
+        [1606348800000, "90000", "91000", "89500", "90500", "12.5",
+         1606348859999, "1125000", 200, "6", "540000", "0"]
     ])
     start, end = crypto._utc_day_bounds("2020-11-26")
 
     bars = crypto._fetch_binance("1m", start, end, session=session)
 
     assert bars == [{
-        "time": 1795651200000,
+        "time": 1606348800000,
         "open": 90000.0,
         "high": 91000.0,
         "low": 89500.0,
