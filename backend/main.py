@@ -1283,6 +1283,65 @@ async def get_chart_option_expiries(
     }
 
 
+@app.get("/api/chart/options/strikes")
+async def get_chart_option_strikes(
+    index: str = Query(default="NIFTY", description="Underlying index"),
+    expiry: str = Query(..., description="Exact expiry key, or UNKNOWN for legacy rows"),
+    date_str: str = Query(default=None, alias="date"),
+):
+    """Return strikes observed for one index, date and exact persisted expiry.
+
+    Unlike /api/strikes, this does not choose one latest snapshot that may
+    belong to a different expiry after a rollover.
+    """
+    index_name = index.strip().upper()
+    selected_expiry = expiry.strip().upper()
+    if index_name not in ("NIFTY", "SENSEX"):
+        raise HTTPException(status_code=422, detail="index must be NIFTY or SENSEX")
+    if not selected_expiry:
+        raise HTTPException(status_code=422, detail="expiry is required")
+    if not date_str:
+        date_str = date.today().isoformat()
+    try:
+        day_start = datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date must use YYYY-MM-DD")
+    next_day = (day_start + timedelta(days=1)).strftime("%Y-%m-%d")
+    expiry_is_unknown = selected_expiry in ("UNKNOWN", "LEGACY")
+
+    def _query():
+        with get_db() as conn:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(snapshots)").fetchall()}
+            if "expiry" not in columns:
+                return [], True
+            expiry_predicate = "s.expiry IS NULL" if expiry_is_unknown else "s.expiry = ?"
+            params = [
+                index_name, index_name,
+                date_str + " 00:00:00", next_day + " 00:00:00",
+            ]
+            if not expiry_is_unknown:
+                params.append(selected_expiry)
+            rows = conn.execute(
+                "SELECT DISTINCT o.strike FROM option_snapshots AS o "
+                "JOIN snapshots AS s ON s.id = o.snapshot_id "
+                "WHERE s.index_name = ? AND o.index_name = ? "
+                "AND s.timestamp >= ? AND s.timestamp < ? AND "
+                + expiry_predicate + " ORDER BY o.strike",
+                tuple(params),
+            ).fetchall()
+        return [int(row["strike"]) for row in rows], False
+
+    strikes, migration_missing = await asyncio.to_thread(_query)
+    return {
+        "index_name": index_name,
+        "date": date_str,
+        "expiry": None if expiry_is_unknown else selected_expiry,
+        "expiry_known": not expiry_is_unknown and not migration_missing,
+        "migration_missing": migration_missing,
+        "strikes": strikes,
+    }
+
+
 @app.get("/api/chart/options/history")
 async def get_chart_option_history(
     index: str = Query(default="NIFTY", description="Underlying index"),
@@ -1320,7 +1379,7 @@ async def get_chart_option_history(
         with get_db() as conn:
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(snapshots)").fetchall()}
             if "expiry" not in columns:
-                return [], True
+                return [], True, 0
             expiry_predicate = "expiry IS NULL" if expiry_is_unknown else "expiry = ?"
             params = [index_name, date_str + " 00:00:00", next_day + " 00:00:00"]
             if not expiry_is_unknown:
@@ -1332,8 +1391,9 @@ async def get_chart_option_history(
                 tuple(params),
             ).fetchall()
             if not snapshot_rows:
-                return [], False
+                return [], False, 0
 
+            unknown_snapshot_count = len(snapshot_rows) if expiry_is_unknown else 0
             snapshot_by_id = {row["id"]: row for row in snapshot_rows}
             snapshot_ids = list(snapshot_by_id)
             marks = ",".join("?" for _ in snapshot_ids)
@@ -1398,7 +1458,7 @@ async def get_chart_option_history(
         "points": points,
         "quality": {
             "migration_missing": migration_missing,
-            "missing_expiry_rows": len(points) if expiry_is_unknown else 0,
+            "missing_expiry_rows": unknown_snapshot_count if expiry_is_unknown else 0,
             "gaps_detected": gaps_detected,
             "last_timestamp": points[-1]["timestamp"] if points else None,
         },
@@ -2106,8 +2166,16 @@ async def scanner_candles(symbol: str = Query(...), tf: str = Query(...),
         raise HTTPException(status_code=400, detail="tf must be one of 5m|15m|30m|1H")
     if not date:
         date = datetime.now().strftime("%Y-%m-%d")
-    ones = candle_builder.load_1m(symbol.strip().upper(),
-                                  since_ts_minute=f"{date} 00:00:00")
+    try:
+        selected_day = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date must use YYYY-MM-DD")
+    next_day = (selected_day + timedelta(days=1)).strftime("%Y-%m-%d")
+    ones = candle_builder.load_1m(
+        symbol.strip().upper(),
+        since_ts_minute=f"{date} 00:00:00",
+        until_ts_minute=f"{next_day} 00:00:00",
+    )
     out, cur, part = [], None, []
     for c in ones:
         b = (five_m_bucket_minutes(c["ts_minute"]) if tf == "5m"
