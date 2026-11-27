@@ -228,6 +228,24 @@ def _freeze_watchdog():
             logging.error(f"[FreezeWatchdog] error: {e}")
 
 
+
+def _broadcast_chart_candle(candle: dict) -> None:
+    """Publish persisted one-minute cash candles to chart clients.
+
+    CandleBuilder calls subscribers on its dedicated writer thread only after
+    the DB batch has been committed. Hand off to FastAPI's event loop; never
+    perform websocket I/O on the broker tick or SQLite writer thread.
+    """
+    loop = _main_loop
+    if loop is None or not loop.is_running():
+        return
+    payload = {"type": "chart_candle", "data": dict(candle)}
+    try:
+        asyncio.run_coroutine_threadsafe(manager.broadcast(payload), loop)
+    except RuntimeError:
+        logging.debug("[Charts] event loop unavailable; skipped candle broadcast")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _main_loop
@@ -368,6 +386,7 @@ async def lifespan(app: FastAPI):
         streamer_adapter.start()
         wall_scanner.on_alert = _dispatch_scanner_alert
         candle_builder.subscribe_1m(wall_scanner.on_1m_close)
+        candle_builder.subscribe_1m(_broadcast_chart_candle)
         wall_scanner.start()
         for index_name in list(streamer_adapter.streamers.keys()):
             streamer = streamer_adapter.get_streamer(index_name)
@@ -1387,6 +1406,132 @@ async def get_chart_option_strikes(
     }
 
 
+@app.get("/api/chart/options/chain")
+async def get_chart_option_chain(
+    index: str = Query(default="NIFTY"),
+    expiry: str = Query(...),
+    date_str: str = Query(default=None, alias="date"),
+):
+    """Latest saved option-chain analytics for one selected date and expiry.
+
+    Returns only the selected session's most recent parent snapshot and its
+    child option rows. It is read-only and does not recalculate broker Greeks.
+    """
+    index_name = index.strip().upper()
+    selected_expiry = expiry.strip().upper()
+    if index_name not in ("NIFTY", "SENSEX"):
+        raise HTTPException(status_code=422, detail="index must be NIFTY or SENSEX")
+    if not selected_expiry:
+        raise HTTPException(status_code=422, detail="expiry is required")
+    if not date_str:
+        date_str = date.today().isoformat()
+    try:
+        selected_day = datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date must use YYYY-MM-DD")
+    next_day = (selected_day + timedelta(days=1)).strftime("%Y-%m-%d")
+    is_unknown = selected_expiry in ("UNKNOWN", "LEGACY")
+
+    def _query():
+        with get_db() as conn:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(snapshots)").fetchall()}
+            if "expiry" not in columns:
+                return None, [], True
+            predicate = "expiry IS NULL" if is_unknown else "expiry = ?"
+            params = [index_name, date_str + " 00:00:00", next_day + " 00:00:00"]
+            if not is_unknown:
+                params.append(selected_expiry)
+            snapshot = conn.execute(
+                "SELECT id, timestamp, spot, expiry, net_gex, max_gex_strike, "
+                "max_pain, gamma_flip FROM snapshots WHERE index_name = ? "
+                "AND timestamp >= ? AND timestamp < ? AND " + predicate +
+                " ORDER BY timestamp DESC LIMIT 1",
+                tuple(params),
+            ).fetchone()
+            if not snapshot:
+                return None, [], False
+            rows = conn.execute(
+                "SELECT strike, option_type, oi, oi_change, oi_change_pct, volume, "
+                "volume_valid, source_age_sec, ltp, iv, delta, gamma, theta, vega, gex "
+                "FROM option_snapshots WHERE snapshot_id = ? ORDER BY strike, option_type",
+                (snapshot["id"],),
+            ).fetchall()
+        return dict(snapshot), [dict(row) for row in rows], False
+
+    snapshot, rows, migration_missing = await asyncio.to_thread(_query)
+    if migration_missing:
+        return {
+            "index_name": index_name, "date": date_str, "expiry": None,
+            "asof": None, "spot": None, "strikes": [],
+            "analytics": {}, "quality": {"migration_missing": True},
+        }
+    if not snapshot:
+        return {
+            "index_name": index_name, "date": date_str,
+            "expiry": None if is_unknown else selected_expiry,
+            "asof": None, "spot": None, "strikes": [],
+            "analytics": {}, "quality": {"empty": True},
+        }
+
+    by_strike = {}
+    for row in rows:
+        strike = int(row["strike"])
+        bucket = by_strike.setdefault(strike, {"strike": strike, "CE": None, "PE": None})
+        side = row["option_type"].upper()
+        if side in ("CE", "PE"):
+            bucket[side] = {
+                key: row.get(key) for key in (
+                    "oi", "oi_change", "oi_change_pct", "volume", "volume_valid",
+                    "source_age_sec", "ltp", "iv", "delta", "gamma", "theta", "vega", "gex"
+                )
+            }
+    strikes = [by_strike[key] for key in sorted(by_strike)]
+    calls = [(row["strike"], (row["CE"] or {}).get("oi") or 0) for row in strikes]
+    puts = [(row["strike"], (row["PE"] or {}).get("oi") or 0) for row in strikes]
+    call_wall = max(calls, key=lambda item: item[1])[0] if calls and max(calls, key=lambda item: item[1])[1] else None
+    put_wall = max(puts, key=lambda item: item[1])[0] if puts and max(puts, key=lambda item: item[1])[1] else None
+
+    # Max-pain is calculated from the chain's observed open interest, using
+    # the standard expiry settlement payout proxy; if the backend snapshot
+    # already stored max_pain, prefer that audited value.
+    computed_max_pain = None
+    if strikes:
+        payout_by_strike = []
+        for settlement in (item["strike"] for item in strikes):
+            payout = sum(oi * max(settlement - strike, 0) for strike, oi in calls)
+            payout += sum(oi * max(strike - settlement, 0) for strike, oi in puts)
+            payout_by_strike.append((payout, settlement))
+        computed_max_pain = min(payout_by_strike)[1] if payout_by_strike else None
+
+    analytics = {
+        "call_wall": call_wall,
+        "put_wall": put_wall,
+        "max_pain": snapshot.get("max_pain") or computed_max_pain,
+        "gamma_flip": snapshot.get("gamma_flip"),
+        "max_gex_strike": snapshot.get("max_gex_strike"),
+        "net_gex": snapshot.get("net_gex"),
+        "max_pain_source": "snapshot" if snapshot.get("max_pain") is not None else (
+            "open_interest_estimate" if computed_max_pain is not None else None
+        ),
+    }
+    return {
+        "index_name": index_name,
+        "date": date_str,
+        "expiry": snapshot.get("expiry"),
+        "expiry_known": snapshot.get("expiry") is not None,
+        "asof": snapshot["timestamp"],
+        "spot": snapshot.get("spot"),
+        "strikes": strikes,
+        "analytics": analytics,
+        "quality": {
+            "snapshot_rows": len(strikes),
+            "missing_ce_pairs": sum(1 for row in strikes if row["CE"] is None),
+            "missing_pe_pairs": sum(1 for row in strikes if row["PE"] is None),
+            "legacy_expiry": is_unknown,
+        },
+    }
+
+
 @app.get("/api/chart/options/history")
 async def get_chart_option_history(
     index: str = Query(default="NIFTY", description="Underlying index"),
@@ -2204,11 +2349,25 @@ async def test_telegram(cfg: dict):
 @app.get("/api/scanner/candles")
 async def scanner_candles(symbol: str = Query(...), tf: str = Query(...),
                           date: str = Query(default=None)):
-    """HTF candles for the chart, derived from persisted candles_1m
-    (market-open anchored 15m/30m/1H; clock-aligned 5m)."""
-    from wall_scanner import htf_bucket_minutes, five_m_bucket_minutes, _aggregate, _label
-    if tf not in ("5m", "15m", "30m", "1H"):
-        raise HTTPException(status_code=400, detail="tf must be one of 5m|15m|30m|1H")
+    """Date-bounded tracked-underlying candles from the shared 1m store.
+
+    NSE/BSE index and equity bars are anchored to 09:15 IST. MCX commodity
+    bars are built from the configured front-month FUTCOM stream and anchored
+    to that symbol's MCX session (typically 09:00 IST). These are never
+    described as commodity spot candles.
+    """
+    from wall_scanner import _aggregate, _label
+
+    interval = tf.strip().upper()
+    aliases = {"1M": "1m", "5M": "5m", "15M": "15m", "30M": "30m",
+               "1H": "1H", "4H": "4H", "1D": "1D"}
+    interval = aliases.get(interval, tf.strip())
+    if interval not in ("1m", "5m", "15m", "30m", "1H", "4H", "1D"):
+        raise HTTPException(status_code=400, detail="tf must be one of 1m|5m|15m|30m|1H|4H|1D")
+
+    symbol_name = symbol.strip().upper()
+    if not symbol_name or len(symbol_name) > 40:
+        raise HTTPException(status_code=422, detail="invalid symbol")
     if not date:
         date = datetime.now().strftime("%Y-%m-%d")
     try:
@@ -2216,31 +2375,70 @@ async def scanner_candles(symbol: str = Query(...), tf: str = Query(...),
     except ValueError:
         raise HTTPException(status_code=400, detail="date must use YYYY-MM-DD")
     next_day = (selected_day + timedelta(days=1)).strftime("%Y-%m-%d")
-    ones = candle_builder.load_1m(
-        symbol.strip().upper(),
+
+    try:
+        instrument_kind = app_settings.get_instrument_kind(symbol_name).strip().upper()
+    except Exception:
+        instrument_kind = "INDEX" if symbol_name in ("NIFTY", "SENSEX") else "STOCK"
+    is_commodity = instrument_kind == "COMMODITY"
+    if is_commodity:
+        from scrip_master import mcx_hours
+        (open_h, open_m), (close_h, close_m) = mcx_hours(symbol_name)
+        source = "mcx_front_month_futures"
+    else:
+        open_h, open_m = 9, 15
+        close_h, close_m = 15, 30
+        source = "angel_one_cash_ticks"
+
+    session_open = open_h * 60 + open_m
+    session_close = close_h * 60 + close_m
+    ones = await asyncio.to_thread(
+        candle_builder.load_1m,
+        symbol_name,
         since_ts_minute=f"{date} 00:00:00",
         until_ts_minute=f"{next_day} 00:00:00",
     )
+
+    metadata = {
+        "symbol": symbol_name,
+        "kind": instrument_kind,
+        "source": source,
+        "session_open": f"{open_h:02d}:{open_m:02d}",
+        "session_close": f"{close_h:02d}:{close_m:02d}",
+    }
+    if interval == "1m":
+        filtered = [
+            candle for candle in ones
+            if session_open <= (int(candle["ts_minute"][11:13]) * 60
+                                + int(candle["ts_minute"][14:16])) <= session_close
+        ]
+        return {**metadata, "tf": interval, "date": date, "candles": filtered}
+
+    minutes_by_interval = {"5m": 5, "15m": 15, "30m": 30, "1H": 60, "4H": 240}
+    bucket_width = minutes_by_interval.get(interval)
     out, cur, part = [], None, []
-    for c in ones:
-        b = (five_m_bucket_minutes(c["ts_minute"]) if tf == "5m"
-             else htf_bucket_minutes(tf, c["ts_minute"]))
-        if b is None:
+    for candle in ones:
+        ts_minute = candle["ts_minute"]
+        minutes = int(ts_minute[11:13]) * 60 + int(ts_minute[14:16])
+        if minutes < session_open or minutes > session_close:
             continue
+        bucket_start = 0 if interval == "1D" else (
+            session_open + ((minutes - session_open) // bucket_width) * bucket_width
+        )
         if cur is None:
-            cur, part = b, [c]
-        elif b == cur:
-            part.append(c)
+            cur, part = bucket_start, [candle]
+        elif bucket_start == cur:
+            part.append(candle)
         else:
-            agg = _aggregate(symbol.upper(), part)
-            agg["ts_minute"] = _label(date, cur)
-            out.append(agg)
-            cur, part = b, [c]
+            aggregated = _aggregate(symbol_name, part)
+            aggregated["ts_minute"] = _label(date, session_open if interval == "1D" else cur)
+            out.append(aggregated)
+            cur, part = bucket_start, [candle]
     if part:
-        agg = _aggregate(symbol.upper(), part)
-        agg["ts_minute"] = _label(date, cur)
-        out.append(agg)
-    return {"symbol": symbol.upper(), "tf": tf, "date": date, "candles": out}
+        aggregated = _aggregate(symbol_name, part)
+        aggregated["ts_minute"] = _label(date, session_open if interval == "1D" else cur)
+        out.append(aggregated)
+    return {**metadata, "tf": interval, "date": date, "candles": out}
 
 
 @app.get("/api/scanner/alerts")

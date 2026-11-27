@@ -51,6 +51,7 @@ def test_scanner_candles_passes_selected_day_as_half_open_range(monkeypatch):
         return []
 
     monkeypatch.setattr(main.candle_builder, "load_1m", fake_load_1m)
+    monkeypatch.setattr(main.app_settings, "get_instrument_kind", lambda symbol: "INDEX")
 
     response = asyncio.run(main.scanner_candles(
         symbol="NIFTY",
