@@ -2349,12 +2349,14 @@ async def test_telegram(cfg: dict):
 @app.get("/api/scanner/candles")
 async def scanner_candles(symbol: str = Query(...), tf: str = Query(...),
                           date: str = Query(default=None)):
-    """Date-bounded cash/spot candles derived from the persisted one-minute store.
+    """Date-bounded tracked-underlying candles from the shared 1m store.
 
-    Supports tracked index/stock instruments. Timeframes are anchored to the
-    Indian cash session (09:15); 1D returns one aggregate for the selected day.
+    NSE/BSE index and equity bars are anchored to 09:15 IST. MCX commodity
+    bars are built from the configured front-month FUTCOM stream and anchored
+    to that symbol's MCX session (typically 09:00 IST). These are never
+    described as commodity spot candles.
     """
-    from wall_scanner import htf_bucket_minutes, five_m_bucket_minutes, _aggregate, _label
+    from wall_scanner import _aggregate, _label
 
     interval = tf.strip().upper()
     aliases = {"1M": "1m", "5M": "5m", "15M": "15m", "30M": "30m",
@@ -2362,6 +2364,7 @@ async def scanner_candles(symbol: str = Query(...), tf: str = Query(...),
     interval = aliases.get(interval, tf.strip())
     if interval not in ("1m", "5m", "15m", "30m", "1H", "4H", "1D"):
         raise HTTPException(status_code=400, detail="tf must be one of 1m|5m|15m|30m|1H|4H|1D")
+
     symbol_name = symbol.strip().upper()
     if not symbol_name or len(symbol_name) > 40:
         raise HTTPException(status_code=422, detail="invalid symbol")
@@ -2372,47 +2375,70 @@ async def scanner_candles(symbol: str = Query(...), tf: str = Query(...),
     except ValueError:
         raise HTTPException(status_code=400, detail="date must use YYYY-MM-DD")
     next_day = (selected_day + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    try:
+        instrument_kind = app_settings.get_instrument_kind(symbol_name).strip().upper()
+    except Exception:
+        instrument_kind = "INDEX" if symbol_name in ("NIFTY", "SENSEX") else "STOCK"
+    is_commodity = instrument_kind == "COMMODITY"
+    if is_commodity:
+        from scrip_master import mcx_hours
+        (open_h, open_m), (close_h, close_m) = mcx_hours(symbol_name)
+        source = "mcx_front_month_futures"
+    else:
+        open_h, open_m = 9, 15
+        close_h, close_m = 15, 30
+        source = "angel_one_cash_ticks"
+
+    session_open = open_h * 60 + open_m
+    session_close = close_h * 60 + close_m
     ones = await asyncio.to_thread(
         candle_builder.load_1m,
         symbol_name,
         since_ts_minute=f"{date} 00:00:00",
         until_ts_minute=f"{next_day} 00:00:00",
     )
+
+    metadata = {
+        "symbol": symbol_name,
+        "kind": instrument_kind,
+        "source": source,
+        "session_open": f"{open_h:02d}:{open_m:02d}",
+        "session_close": f"{close_h:02d}:{close_m:02d}",
+    }
     if interval == "1m":
-        return {"symbol": symbol_name, "tf": interval, "date": date, "candles": ones}
+        filtered = [
+            candle for candle in ones
+            if session_open <= (int(candle["ts_minute"][11:13]) * 60
+                                + int(candle["ts_minute"][14:16])) <= session_close
+        ]
+        return {**metadata, "tf": interval, "date": date, "candles": filtered}
 
+    minutes_by_interval = {"5m": 5, "15m": 15, "30m": 30, "1H": 60, "4H": 240}
+    bucket_width = minutes_by_interval.get(interval)
     out, cur, part = [], None, []
-    def bucket(ts_minute: str):
-        if interval == "5m":
-            return five_m_bucket_minutes(ts_minute)
-        if interval == "1D":
-            return 0
-        if interval == "4H":
-            minutes = int(ts_minute[11:13]) * 60 + int(ts_minute[14:16])
-            if minutes < 9 * 60 + 15 or minutes > 15 * 60 + 30:
-                return None
-            offset = minutes - (9 * 60 + 15)
-            return 9 * 60 + 15 + (offset // 240) * 240
-        return htf_bucket_minutes(interval, ts_minute)
-
     for candle in ones:
-        bucket_start = bucket(candle["ts_minute"])
-        if bucket_start is None:
+        ts_minute = candle["ts_minute"]
+        minutes = int(ts_minute[11:13]) * 60 + int(ts_minute[14:16])
+        if minutes < session_open or minutes > session_close:
             continue
+        bucket_start = 0 if interval == "1D" else (
+            session_open + ((minutes - session_open) // bucket_width) * bucket_width
+        )
         if cur is None:
             cur, part = bucket_start, [candle]
         elif bucket_start == cur:
             part.append(candle)
         else:
             aggregated = _aggregate(symbol_name, part)
-            aggregated["ts_minute"] = _label(date, cur if interval != "1D" else 9 * 60 + 15)
+            aggregated["ts_minute"] = _label(date, session_open if interval == "1D" else cur)
             out.append(aggregated)
             cur, part = bucket_start, [candle]
     if part:
         aggregated = _aggregate(symbol_name, part)
-        aggregated["ts_minute"] = _label(date, cur if interval != "1D" else 9 * 60 + 15)
+        aggregated["ts_minute"] = _label(date, session_open if interval == "1D" else cur)
         out.append(aggregated)
-    return {"symbol": symbol_name, "tf": interval, "date": date, "candles": out}
+    return {**metadata, "tf": interval, "date": date, "candles": out}
 
 
 @app.get("/api/scanner/alerts")
