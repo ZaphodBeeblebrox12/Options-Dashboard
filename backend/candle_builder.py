@@ -152,23 +152,40 @@ class CandleBuilder:
         logger.info("[Candles] builder stopped")
 
     # ── tick path (must stay O(1) and never block) ───────────
-    def _session_open(self) -> bool:
-        """Equity/index session gate (09:15–15:30 IST, Mon–Fri) + NSE holiday
-        calendar (v3.13). Pre-open ticks (09:00–09:08) must never form candles
-        (Drop 1 §3); holidays are excluded via snapshot_engine's cached XNSE
-        lookup (one calendar per process)."""
+    def _session_open(self, symbol: str, kind: str | None = None) -> bool:
+        """Market-session gate for a tracked cash/underlying instrument.
+
+        NSE/BSE index and equity candles use the local cash session (09:15–15:30)
+        and the existing NSE holiday calendar. MCX instruments are front-month
+        futures rather than cash commodities; use the symbol-specific MCX hours
+        (typically 09:00–23:30/23:55) and never label them as cash spot.
+        """
         now = datetime.now()
         if now.weekday() > 4:
             return False
         from datetime import time as _dt_time
+        selected_kind = (kind or "").strip().upper()
+        if not selected_kind:
+            try:
+                import app_settings
+                selected_kind = app_settings.get_instrument_kind(symbol).strip().upper()
+            except Exception:
+                selected_kind = "STOCK"
+        if selected_kind == "COMMODITY":
+            from scrip_master import mcx_hours
+            start, end = mcx_hours(symbol)
+            start_time = _dt_time(int(start[0]), int(start[1]))
+            end_time = _dt_time(int(end[0]), int(end[1]))
+            return start_time <= now.time() <= end_time
+
         if not (_dt_time(9, 15) <= now.time() <= _dt_time(15, 30)):
             return False
         from snapshot_engine import _is_trading_holiday
         return not _is_trading_holiday()
 
-    def on_tick(self, symbol: str, message: dict):
+    def on_tick(self, symbol: str, message: dict, kind: str | None = None):
         try:
-            if not self._session_open():
+            if not self._session_open(symbol, kind): 
                 return
             raw = message.get("last_traded_price", 0) or 0
             ltp = float(raw) / 100.0
