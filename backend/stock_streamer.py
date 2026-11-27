@@ -256,10 +256,11 @@ class InstrumentStreamer:
                 self.spot_poller.update_futures_from_ws(ltp)
             else:
                 self.spot_poller.update_from_ws(ltp)
-            if self.kind == "STOCK":
-                # 1m CASH candle feed (STOCK kind only). Fire-and-forget:
-                # O(1) in-memory update, never blocks, never raises.
-                candle_feed.on_tick(self.symbol, message)
+            if self.kind in ("STOCK", "COMMODITY"):
+                # 1m underlying candles use the same writer/store for both
+                # NSE cash equities and the MCX front-month futures contract.
+                # COMMODITY bars are futures-derived, not spot/cash commodity bars.
+                candle_feed.on_tick(self.symbol, message, kind=self.kind)
 
             with self.lock:
                 need_bootstrap = (self.option_meta
